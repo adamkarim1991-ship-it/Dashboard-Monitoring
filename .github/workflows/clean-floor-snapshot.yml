@@ -1,0 +1,17 @@
+name: Clean Floor Snapshot
+
+on:
+  schedule:
+    # 01:00 UTC = 08:00 WIB
+    - cron: '0 1 * * *'
+  workflow_dispatch:  # bisa trigger manual dari GitHub UI
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger clean floor capture
+        run: |
+          curl -fsS -X POST "${{ secrets.APP_URL }}/api/cron/clean-floor" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json"
