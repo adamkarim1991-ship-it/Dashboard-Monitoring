@@ -1,0 +1,88 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  MANAGER
+  SPV
+  HUB_LEAD
+}
+
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  name              String
+  password          String
+  role              Role
+  hmsToken          String?
+  leaderHmsToken    String?
+  hmsTokenUpdatedAt DateTime?
+  createdAt         DateTime  @default(now())
+  hubs              UserHub[]
+}
+
+model Cluster {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+  hubs      Hub[]
+}
+
+model Hub {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  region    String   @default("")
+  clusterId String
+  cluster   Cluster  @relation(fields: [clusterId], references: [id])
+  createdAt DateTime @default(now())
+  users     UserHub[]
+  metrics   HourlyMetric[]
+}
+
+model UserHub {
+  id     String @id @default(cuid())
+  userId String
+  hubId  String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  hub    Hub    @relation(fields: [hubId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, hubId])
+}
+
+model HourlyMetric {
+  id             String   @id @default(cuid())
+  hubId          String
+  hub            Hub      @relation(fields: [hubId], references: [id], onDelete: Cascade)
+  hourTimestamp  DateTime
+  inbound        Int      @default(0)
+  outbound       Int      @default(0)
+  delivered      Int      @default(0)
+  pending        Int      @default(0)
+  slaBreach      Int      @default(0)
+  activeCouriers Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  @@unique([hubId, hourTimestamp])
+  @@index([hubId, hourTimestamp])
+}
+
+model CleanFloorSnapshot {
+  id          String   @id @default(cuid())
+  facility    String
+  date        String
+  value       Float
+  numerator   Int
+  denominator Int
+  delivered   Int
+  ongoing     Int
+  ftd         Int
+  others      Int
+  capturedAt  DateTime @default(now())
+
+  @@unique([facility, date])
+}
