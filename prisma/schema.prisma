@@ -14,13 +14,16 @@ enum Role {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String
-  password  String
-  role      Role
-  createdAt DateTime @default(now())
-  hubs      UserHub[]
+  id                String    @id @default(cuid())
+  email             String    @unique
+  name              String
+  password          String
+  role              Role
+  hmsToken          String?
+  leaderHmsToken    String?
+  hmsTokenUpdatedAt DateTime?
+  createdAt         DateTime  @default(now())
+  hubs              UserHub[]
 }
 
 model Cluster {
@@ -33,6 +36,7 @@ model Cluster {
 model Hub {
   id        String   @id @default(cuid())
   name      String   @unique
+  region    String   @default("")
   clusterId String
   cluster   Cluster  @relation(fields: [clusterId], references: [id])
   createdAt DateTime @default(now())
@@ -65,4 +69,20 @@ model HourlyMetric {
 
   @@unique([hubId, hourTimestamp])
   @@index([hubId, hourTimestamp])
+}
+
+model CleanFloorSnapshot {
+  id          String   @id @default(cuid())
+  facility    String
+  date        String
+  value       Float
+  numerator   Int
+  denominator Int
+  delivered   Int
+  ongoing     Int
+  ftd         Int
+  others      Int
+  capturedAt  DateTime @default(now())
+
+  @@unique([facility, date])
 }

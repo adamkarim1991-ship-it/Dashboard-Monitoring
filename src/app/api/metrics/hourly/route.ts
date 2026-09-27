@@ -23,9 +23,9 @@ export async function GET(req: NextRequest) {
     targetHubIds = user.hubIds;
   }
 
+  // Ambil 48 jam terakhir (buffer timezone)
   const now = new Date();
-  const from = new Date(now);
-  from.setHours(now.getHours() - 23, 0, 0, 0);
+  const from = new Date(now.getTime() - 48 * 60 * 60 * 1000);
 
   const metrics = await prisma.hourlyMetric.findMany({
     where: {

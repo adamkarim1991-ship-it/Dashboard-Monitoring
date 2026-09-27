@@ -22,3 +22,9 @@
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+*.db
+*.db-journal
+*.bak
+prisma/dev.db
+.DS_Store
+*.tsbuildinfo

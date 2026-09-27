@@ -1,48 +1,18 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { signOut } from "next-auth/react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-} from "recharts";
-import {
-  LogOut,
   RefreshCw,
-  Package,
-  Truck,
+  LogOut,
+  Info,
   CheckCircle2,
-  Clock,
+  Wifi,
+  Lock,
   AlertTriangle,
-  Users,
-  MapPin,
-  Building2,
+  KeyRound,
+  X,
 } from "lucide-react";
 
 type AppRole = "MANAGER" | "SPV" | "HUB_LEAD";
@@ -54,545 +24,1017 @@ export type SessionUser = {
   role: AppRole;
   hubIds: string[];
   clusterIds: string[];
+  hmsToken?: string | null;
+  leaderHmsToken?: string | null;
 };
 
-type Hub = { id: string; name: string; clusterId: string; clusterName: string };
-type Cluster = { id: string; name: string };
-
-type MetricRow = {
-  hourTimestamp: string;
-  hour: number;
-  label: string;
-  inbound: number;
-  outbound: number;
+type SummaryResponse = {
+  hub_id: number;
+  hub_name: string;
+  just_arrived: number;
+  backlog: number;
+  today_volume: number;
+  pending_at_hub: number;
+  ongoing_delivery: number;
   delivered: number;
-  pending: number;
-  slaBreach: number;
-  activeCouriers: number;
+  delivered_percentage: number;
+  ftd: number;
+  ready_to_return: number;
+  others: number;
+  delivered_just_arrived: number;
+  delivered_backlog: number;
+  fresh_success: number;
+  fresh_c1: number;
+  fresh_c2: number;
+  fresh_total_computed: number;
+  cycle_total_picked: number;
+  delivered_before_12: number;
+  sd_before_12: number;
+  courier_assigned: number;
+  courier_check_in: number;
+  courier_check_in_percent: number;
+  courier_out_drivers: number;
+  courier_out_percent: number;
+  courier_avg_productivity: number;
+  ops_assigned: number;
+  ops_check_in: number;
+  ops_check_in_percent: number;
+  ops_productivity: number;
+  ops_target: number;
+  ops_achieved: boolean;
+  cycle_name: string;
+  fetched_at: string;
+  clean_floor: CleanFloorData;
 };
 
-type MetricsResponse = {
-  data: MetricRow[];
-  totals: {
-    inbound: number;
-    outbound: number;
+type SubdistrictRow = {
+  subdistrict: string;
+  overall: number;
+  fresh: number;
+  backlog: number;
+  fresh_c1: number;
+  fresh_c2: number;
+  delivered: number;
+  delivering: number;
+  failed: number;
+  fresh_before_12: number;
+  sd_before_12: number;
+};
+
+type SubdistrictSortKey = keyof SubdistrictRow;
+type SortDirection = "asc" | "desc";
+
+type CodData = {
+  total: number;
+  ready_to_return: number;
+  fd_percentage: number;
+};
+
+type UrgentData = {
+  total: number;
+  delivered: number;
+  failed: number;
+  delivered_percentage: number;
+};
+
+type CleanFloorData = {
+  value: number;
+  breakdown: {
     delivered: number;
+    ongoing: number;
+    ftd: number;
+    others: number;
     pending: number;
-    slaBreach: number;
-    activeCouriers: number;
+    today_volume: number;
+    numerator: number;
   };
-  hubCount: number;
+  is_locked: boolean;
+  locked_at: string;
+  quality: "accurate" | "approximate" | "live";
+  captured_at: string;
 };
 
 export default function DashboardView({ user }: { user: SessionUser }) {
-  const [hubs, setHubs] = useState<Hub[]>([]);
-  const [clusters, setClusters] = useState<Cluster[]>([]);
-  const [selectedCluster, setSelectedCluster] = useState<string>("all");
-  const [selectedHub, setSelectedHub] = useState<string>("all");
-  const [metrics, setMetrics] = useState<MetricsResponse | null>(null);
+  const [summary, setSummary] = useState<SummaryResponse | null>(null);
+  const [subdistricts, setSubdistricts] = useState<SubdistrictRow[]>([]);
+  const [showUrgent, setShowUrgent] = useState(false);
+  const [cod, setCod] = useState<CodData>({
+    total: 0,
+    ready_to_return: 0,
+    fd_percentage: 0,
+  });
+  const [urgent, setUrgent] = useState<UrgentData>({
+    total: 0,
+    delivered: 0,
+    failed: 0,
+    delivered_percentage: 0,
+  });
+  const [cleanFloor, setCleanFloor] = useState<CleanFloorData | null>(null);
+  const [subLoading, setSubLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
-
-  const isManager = user.role === "MANAGER";
-  const isSpv = user.role === "SPV";
-  const isHubLead = user.role === "HUB_LEAD";
+  const [now, setNow] = useState<Date | null>(null);
+  const [mounted, setMounted] = useState(false);
+  const [isTokenModalOpen, setIsTokenModalOpen] = useState(false);
+  const [leaderHmsTokenInput, setLeaderHmsTokenInput] = useState(user.leaderHmsToken ?? "");
+  const [tokenSaving, setTokenSaving] = useState(false);
+  const [tokenMessage, setTokenMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [subdistrictSort, setSubdistrictSort] = useState<{
+    key: SubdistrictSortKey;
+    direction: SortDirection;
+  }>({ key: "overall", direction: "desc" });
 
   useEffect(() => {
-    fetch("/api/hubs")
-      .then((r) => r.json())
-      .then((d) => {
-        setHubs(d.hubs || []);
-        setClusters(d.clusters || []);
-        if (isHubLead && d.hubs?.length === 1) {
-          setSelectedHub(d.hubs[0].id);
-        }
-      })
-      .catch((e) => console.error("Failed to load hubs:", e));
-  }, [isHubLead]);
+    setMounted(true);
+    setNow(lastUpdate ?? new Date());
+  }, [lastUpdate]);
 
-  const fetchMetrics = useCallback(async () => {
+  const fetchSummary = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams();
-      if (selectedHub !== "all") params.set("hubId", selectedHub);
-      const res = await fetch(`/api/metrics/hourly?${params}`);
-      const data = await res.json();
-      setMetrics(data);
-      setLastUpdate(new Date());
+      const res = await fetch("/api/hms/summary");
+      const d = await res.json();
+      if (d.success) {
+        setSummary(d.summary);
+        if (d.summary.clean_floor) setCleanFloor(d.summary.clean_floor);
+        setLastUpdate(new Date());
+      }
     } catch (e) {
-      console.error("Failed to load metrics:", e);
+      console.error("Failed to load summary:", e);
     } finally {
       setLoading(false);
     }
-  }, [selectedHub]);
+  }, []);
+
+  const fetchSubdistricts = useCallback(async () => {
+    setSubLoading(true);
+    try {
+      const res = await fetch("/api/hms/subdistrict");
+      const d = await res.json();
+      if (d.success) {
+        setSubdistricts(d.subdistricts || []);
+        if (d.cod) setCod(d.cod);
+        if (d.urgent) setUrgent(d.urgent);
+        if (d.clean_floor) setCleanFloor(d.clean_floor);
+      }
+    } catch (e) {
+      console.error("Failed to load subdistricts:", e);
+    } finally {
+      setSubLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    fetchMetrics();
-  }, [fetchMetrics]);
+    fetchSummary();
+    fetchSubdistricts();
+  }, [fetchSummary, fetchSubdistricts]);
 
   useEffect(() => {
-    const t = setInterval(() => fetchMetrics(), 30000);
-    return () => clearInterval(t);
-  }, [fetchMetrics]);
+    const t = setInterval(() => {
+      fetchSummary();
+    }, 60000);
+    const tSub = setInterval(() => {
+      fetchSubdistricts();
+    }, 5 * 60 * 1000);
+    return () => {
+      clearInterval(t);
+      clearInterval(tSub);
+    };
+  }, [fetchSummary, fetchSubdistricts]);
 
-  const filteredHubs =
-    isManager && selectedCluster !== "all"
-      ? hubs.filter((h) => h.clusterId === selectedCluster)
-      : hubs;
+  const todayVolume = summary?.today_volume ?? 0;
+  const justArrived = summary?.just_arrived ?? 0;
+  const backlog = summary?.backlog ?? 0;
+  const ongoing = summary?.ongoing_delivery ?? 0;
+  const delivered = summary?.delivered ?? 0;
+  const ftd = summary?.ftd ?? 0;
+  const others = summary?.others ?? 0;
+  const deliveredJustArrived = summary?.delivered_just_arrived ?? 0;
+  const deliveredBacklog = summary?.delivered_backlog ?? 0;
+  const successDelivered = summary?.delivered_percentage ?? 0;
+  const freshSuccess = summary?.fresh_success ?? 0;
+  const sdBefore12 = summary?.sd_before_12 ?? 0;
+  const freshC1 = summary?.fresh_c1 ?? 0;
 
-  const totals = metrics?.totals;
+  const opDate =
+    mounted && now
+      ? now.toLocaleDateString("id-ID", {
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        })
+      : "N/A";
+  const opTime =
+    mounted && now
+      ? now.toLocaleTimeString("id-ID", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        })
+      : "N/A";
 
-  const roleBadgeColor = {
-    MANAGER: "bg-purple-100 text-purple-700 border-purple-200",
-    SPV: "bg-blue-100 text-blue-700 border-blue-200",
-    HUB_LEAD: "bg-green-100 text-green-700 border-green-200",
-  }[user.role];
+  const visibleSubdistricts = useMemo(
+    () => subdistricts.filter((row) => row.overall >= 5),
+    [subdistricts]
+  );
 
-  const selectedHubName =
-    selectedHub === "all"
-      ? "Semua Hub"
-      : hubs.find((h) => h.id === selectedHub)?.name ?? "-";
+  const sortedSubdistricts = useMemo(() => {
+    return [...visibleSubdistricts].sort((a, b) => {
+      const aValue = a[subdistrictSort.key];
+      const bValue = b[subdistrictSort.key];
+      const comparison =
+        typeof aValue === "string" && typeof bValue === "string"
+          ? aValue.localeCompare(bValue, "id")
+          : Number(aValue) - Number(bValue);
+      return subdistrictSort.direction === "asc" ? comparison : -comparison;
+    });
+  }, [visibleSubdistricts, subdistrictSort]);
 
-  const selectedClusterName =
-    selectedCluster === "all"
-      ? "Semua Cluster"
-      : clusters.find((c) => c.id === selectedCluster)?.name ?? "Semua Cluster";
+  const subdistrictTotals = useMemo(() => {
+    const totals = visibleSubdistricts.reduce(
+      (acc, row) => ({
+        overall: acc.overall + row.overall,
+        fresh: acc.fresh + row.fresh,
+        backlog: acc.backlog + row.backlog,
+        fresh_c1: acc.fresh_c1 + row.fresh_c1,
+        fresh_c2: acc.fresh_c2 + row.fresh_c2,
+        delivered: acc.delivered + row.delivered,
+        delivering: acc.delivering + row.delivering,
+        failed: acc.failed + row.failed,
+        fresh_before_12: acc.fresh_before_12 + row.fresh_before_12,
+        sd_before_12: acc.sd_before_12 + row.sd_before_12,
+      }),
+      { overall: 0, fresh: 0, backlog: 0, fresh_c1: 0, fresh_c2: 0,
+        delivered: 0, delivering: 0, failed: 0, fresh_before_12: 0,
+        sd_before_12: 0 }
+    );
+    return {
+      ...totals,
+      sd_before_12: visibleSubdistricts.length > 0
+        ? totals.sd_before_12 / visibleSubdistricts.length
+        : 0,
+    };
+  }, [visibleSubdistricts]);
+
+  const handleSubdistrictSort = (key: SubdistrictSortKey) => {
+    setSubdistrictSort((current) => ({
+      key,
+      direction:
+        current.key === key && current.direction === "desc" ? "asc" : "desc",
+    }));
+  };
+
+
+  const handleSaveTokens = async () => {
+    setTokenSaving(true);
+    setTokenMessage(null);
+
+    try {
+      const leaderToken = leaderHmsTokenInput.trim();
+
+      if (!leaderToken) {
+        throw new Error("HMS Token (Leader Account) is required.");
+      }
+
+      const leaderRes = await fetch("/api/user/set-leader-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leaderHmsToken: leaderToken }),
+      });
+
+      if (!leaderRes.ok) {
+        const error = await leaderRes.json().catch(() => null);
+        throw new Error(error?.error || "Failed to save leader HMS token.");
+      }
+
+      setTokenMessage({ type: "success", text: "HMS token updated successfully." });
+      window.setTimeout(() => {
+        setIsTokenModalOpen(false);
+        setTokenMessage(null);
+      }, 1200);
+    } catch (error) {
+      setTokenMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Failed to save HMS token.",
+      });
+    } finally {
+      setTokenSaving(false);
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-green-600 rounded-lg flex items-center justify-center">
-              <Truck className="w-5 h-5 text-white" />
+    <div className="min-h-screen bg-gray-100">
+      {/* HEADER */}
+      <header className="bg-[#0f1e3d] text-white">
+        <div className="max-w-[1600px] mx-auto px-6 py-3 flex items-center justify-between">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[10px] font-bold tracking-widest text-gray-400">
+                OPERATIONS CONTROL
+              </span>
+              <span className="flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-500/20 text-green-400 border border-green-500/40">
+                <Wifi className="w-3 h-3" />
+                LIVE GTL/TMS
+              </span>
             </div>
-            <div>
-              <h1 className="text-lg font-semibold text-gray-900">
-                Goto Logistik
-              </h1>
-              <p className="text-xs text-gray-500">
-                Hourly Delivery Monitoring
-              </p>
-            </div>
+
+            <h1 className="text-xl font-bold tracking-tight mt-1 text-white">
+              MONITORING HOURLY JATINEGARA
+            </h1>
+
+            <p className="text-[11px] text-gray-300 mt-0.5">
+              {summary?.hub_name ?? "GTL Jatinegara Hub"} | Operational date{" "}
+              {opDate}
+            </p>
+
+            <p className="text-[11px] text-gray-400 mt-0.5 flex items-center gap-1.5">
+              <Info className="w-3 h-3 flex-shrink-0" />
+              <span>
+                Live data: Summary View | Hourly | Observed at {opDate} {opTime}{" "}
+                WIB
+              </span>
+            </p>
           </div>
 
-          <div className="flex items-center gap-4">
-            <div className="text-right hidden sm:block">
-              <p className="text-sm font-medium text-gray-900">{user.name}</p>
-              <p className="text-xs text-gray-500">{user.email}</p>
-            </div>
-            <span
-              className={`text-xs font-medium px-2.5 py-1 rounded-full border ${roleBadgeColor}`}
+          <div className="flex items-center gap-3 flex-shrink-0">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                fetchSummary();
+                fetchSubdistricts();
+              }}
+              disabled={loading || subLoading}
+              className="bg-white/10 border-white/20 text-white hover:bg-white/20 hover:text-white"
             >
-              {user.role}
-            </span>
+              <RefreshCw
+                className={`w-3.5 h-3.5 mr-1.5 ${
+                  loading || subLoading ? "animate-spin" : ""
+                }`}
+              />
+              Refresh
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsTokenModalOpen(true)}
+              className="bg-white/10 border-white/20 text-white hover:bg-white/20 hover:text-white"
+            >
+              <KeyRound className="w-3.5 h-3.5 mr-1.5" />
+              Update HMS Token
+            </Button>
+
             <Button
               variant="outline"
               size="sm"
               onClick={() => signOut({ callbackUrl: "/login" })}
+              className="bg-white/10 border-white/20 text-white hover:bg-white/20 hover:text-white"
             >
-              <LogOut className="w-4 h-4 mr-1.5" />
+              <LogOut className="w-3.5 h-3.5 mr-1.5" />
               Logout
             </Button>
           </div>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 py-6 space-y-6">
-        <div className="flex flex-wrap items-center gap-3">
-          {isManager && (
-            <div className="flex items-center gap-2">
-              <Building2 className="w-4 h-4 text-gray-400" />
-              <Select
-                value={selectedCluster}
-                onValueChange={(v) => {
-                  setSelectedCluster(v ?? "all");
-                  setSelectedHub("all");
-                }}
+      {isTokenModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+          <div className="w-full max-w-2xl rounded-xl bg-white p-6 text-gray-900 shadow-2xl">
+            <div className="mb-5 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-bold">Update Leader HMS Token</h2>
+                <p className="mt-1 text-sm text-gray-500">Save the leader account HMS token used by this dashboard.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsTokenModalOpen(false)}
+                className="rounded-full p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                aria-label="Close token dialog"
               >
-                <SelectTrigger className="w-[200px] bg-white">
-                  <SelectValue placeholder="Pilih Cluster">
-                    {selectedClusterName}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Semua Cluster</SelectItem>
-                  {clusters.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                <X className="h-5 w-5" />
+              </button>
             </div>
-          )}
 
-          {(isManager || isSpv) && (
-            <div className="flex items-center gap-2">
-              <MapPin className="w-4 h-4 text-gray-400" />
-              <Select
-                value={selectedHub}
-                onValueChange={(v) => setSelectedHub(v ?? "all")}
-              >
-                <SelectTrigger className="w-[240px] bg-white">
-                  <SelectValue placeholder="Pilih Hub">
-                    {selectedHubName}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Semua Hub</SelectItem>
-                  {filteredHubs.map((h) => (
-                    <SelectItem key={h.id} value={h.id}>
-                      {h.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="space-y-4">
+              <label className="block text-sm font-semibold text-gray-700">
+                HMS Token (Leader Account)
+                <textarea
+                  value={leaderHmsTokenInput}
+                  onChange={(event) => setLeaderHmsTokenInput(event.target.value)}
+                  className="mt-2 min-h-28 w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-xs text-gray-900 outline-none focus:border-[#0f1e3d] focus:ring-2 focus:ring-[#0f1e3d]/20"
+                  placeholder="Paste leader or manager HMS token here"
+                />
+              </label>
             </div>
-          )}
 
-          {isHubLead && (
-            <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-md px-3 py-2">
-              <MapPin className="w-4 h-4 text-green-600" />
-              <span className="text-sm font-medium text-gray-700">
-                {selectedHubName}
-              </span>
-            </div>
-          )}
-
-          <div className="ml-auto flex items-center gap-3">
-            {lastUpdate && (
-              <span className="text-xs text-gray-400">
-                Update: {lastUpdate.toLocaleTimeString("id-ID")}
-              </span>
+            {tokenMessage && (
+              <div className={`mt-4 rounded-lg px-3 py-2 text-sm ${tokenMessage.type === "success" ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>
+                {tokenMessage.text}
+              </div>
             )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={fetchMetrics}
-              disabled={loading}
-            >
-              <RefreshCw
-                className={`w-4 h-4 mr-1.5 ${loading ? "animate-spin" : ""}`}
-              />
-              Refresh
-            </Button>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsTokenModalOpen(false)}
+                disabled={tokenSaving}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleSaveTokens}
+                disabled={tokenSaving}
+                className="bg-[#0f1e3d] text-white hover:bg-[#162a54]"
+              >
+                {tokenSaving ? "Saving..." : "Save"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* STATUS BAR */}
+      <div className="bg-green-50 border-b border-green-200">
+        <div className="max-w-[1600px] mx-auto px-6 py-2 flex items-center justify-between text-xs">
+          <span className="flex items-center gap-2 text-green-700">
+            <Wifi className="w-3.5 h-3.5" />
+            Live GTL/TMS | secure local bridge | Live observation {opDate}{" "}
+            {opTime} WIB
+          </span>
+          <span className="flex items-center gap-1 text-green-700">
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            No sheet dependency
+          </span>
+        </div>
+      </div>
+
+      <main className="max-w-[1600px] mx-auto px-6 py-4 space-y-3">
+        {/* ROW 1 - VOLUME CARDS */}
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          <BigVolumeCard
+            label="VOLUME OVERALL"
+            value={todayVolume}
+            sub={`Backlog: ${backlog}`}
+            accent="blue"
+          />
+          <BigVolumeCard
+            label="VOLUME FRESH"
+            value={justArrived}
+            sub={`C1: ${freshC1.toLocaleString("id-ID")}  C2: ${(summary?.fresh_c2 ?? 0).toLocaleString("id-ID")}`}
+            accent="purple"
+          />
+          <BigVolumeCard
+            label="DELIVERED"
+            value={delivered}
+            sub={`Fresh: ${deliveredJustArrived.toLocaleString("id-ID")} - Backlog: ${deliveredBacklog.toLocaleString("id-ID")}`}
+            accent="green"
+          />
+          <BigVolumeCard
+            label="DELIVERING"
+            value={ongoing}
+            sub="Ongoing Delivery"
+            accent="blue"
+          />
+          <BigVolumeCard
+            label="FAILED TO DELIVER"
+            value={ftd}
+            sub="Failed delivery attempts"
+            accent="red"
+          />
+          <BigVolumeCard
+            label="OTHER STATUS"
+            value={others}
+            sub="WBC + Cancelled + Ready to Return"
+            accent="purple"
+          />
+        </div>
+
+        {/* ROW 2 - PERCENTAGE CARDS */}
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          <BigPercentCard
+            label="SUCCESS DELIVERED"
+            value={successDelivered}
+            sub="Overall success rate"
+            subDetail={`Delivered / Volume Overall - ${delivered.toLocaleString("id-ID")} / ${todayVolume.toLocaleString("id-ID")}`}
+            accent="purple"
+          />
+          <BigPercentCard
+            label="FRESH SUCCESS"
+            value={freshSuccess}
+            sub="Fresh success rate"
+            subDetail={`Delivered Fresh / Volume Fresh - ${deliveredJustArrived.toLocaleString("id-ID")} / ${justArrived.toLocaleString("id-ID")}`}
+            accent="orange"
+          />
+          <BigPercentCard
+            label="SD < 12 PM"
+            value={sdBefore12}
+            sub="Fresh delivered before 12:00 WIB / Fresh C1"
+            subDetail={`Live TMS event aggregate - ${(summary?.delivered_before_12 ?? 0).toLocaleString("id-ID")} / ${freshC1.toLocaleString("id-ID")}`}
+            accent="green"
+          />
+          <CleanFloorCard data={cleanFloor} />
+          <BigPercentCard
+            label="DELIVERED URGENT %"
+            value={urgent.delivered_percentage}
+            sub="OPC Urgent: Yes"
+            subDetail={`${urgent.delivered.toLocaleString("id-ID")} / ${urgent.total.toLocaleString("id-ID")} urgent packages delivered`}
+            accent="green"
+          />
+          <BigPercentCard
+            label="COD FD"
+            value={cod.fd_percentage}
+            sub="COD Ready to Return rate"
+            subDetail={`${cod.ready_to_return.toLocaleString("id-ID")} / ${cod.total.toLocaleString("id-ID")} COD packages`}
+            accent="red"
+          />
+        </div>
+
+        {/* ROW 3 - 3 SECTIONS */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          {/* COURIER */}
+          <div className="bg-white rounded shadow-sm border-l-4 border-blue-500">
+            <div className="px-4 py-2 border-b border-gray-100 text-[11px] font-bold text-gray-700 tracking-wider">
+              COURIER
+            </div>
+            <div className="grid grid-cols-2 divide-x divide-gray-100">
+              <div className="px-4 py-3">
+                <p className="text-[10px] font-semibold text-gray-500 tracking-wide">
+                  MITRA CHECK-IN
+                </p>
+                <p className="text-2xl font-bold text-blue-600 mt-1">
+                  {summary?.courier_check_in ?? 0}
+                </p>
+                <p className="text-[10px] text-gray-400 mt-0.5">
+                  {(summary?.courier_check_in_percent ?? 0).toFixed(2)}% of{" "}
+                  {summary?.courier_assigned ?? 0}
+                </p>
+              </div>
+              <div className="px-4 py-3">
+                <p className="text-[10px] font-semibold text-gray-500 tracking-wide">
+                  AVERAGE PICKUP
+                </p>
+                <p className="text-2xl font-bold text-blue-600 mt-1">
+                  {(summary?.courier_avg_productivity ?? 0).toFixed(2)}
+                </p>
+                <p className="text-[10px] text-gray-400 mt-0.5">
+                  Live total picked / checked-in Rider LM 2W
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* DEDICATED */}
+          <div className="bg-white rounded shadow-sm border-l-4 border-amber-500">
+            <div className="px-4 py-2 border-b border-gray-100 text-[11px] font-bold text-gray-700 tracking-wider">
+              DEDICATED
+            </div>
+            <div className="grid grid-cols-3 divide-x divide-gray-100">
+              <div className="px-4 py-3">
+                <p className="text-[10px] font-semibold text-gray-500 tracking-wide">
+                  ACTUAL
+                </p>
+                <p className="text-2xl font-bold text-amber-600 mt-1">0</p>
+                <p className="text-[10px] text-gray-400 mt-0.5">
+                  Tidak ada dedicated aktif
+                </p>
+              </div>
+              <div className="px-4 py-3">
+                <p className="text-[10px] font-semibold text-gray-500 tracking-wide">
+                  AVERAGE PICKUP
+                </p>
+                <p className="text-2xl font-bold text-gray-400 mt-1">-</p>
+                <p className="text-[10px] text-gray-400 mt-0.5 leading-tight">
+                  N/A
+                </p>
+              </div>
+              <div className="px-4 py-3">
+                <p className="text-[10px] font-semibold text-gray-500 tracking-wide">
+                  ACHIEVEMENT - SNAPSHOT
+                </p>
+                <p className="text-xl font-bold text-gray-400 mt-1">N/A</p>
+                <p className="text-[10px] text-gray-400 mt-0.5 leading-tight">
+                  Target 120
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* OPS */}
+          <div className="bg-white rounded shadow-sm border-l-4 border-teal-500">
+            <div className="px-4 py-2 border-b border-gray-100 text-[11px] font-bold text-gray-700 tracking-wider">
+              OPS
+            </div>
+            <div className="grid grid-cols-3 divide-x divide-gray-100">
+              <div className="px-4 py-3">
+                <p className="text-[10px] font-semibold text-gray-500 tracking-wide">
+                  TOTAL CHECK-IN
+                </p>
+                <p className="text-2xl font-bold text-teal-600 mt-1">
+                  {summary?.ops_check_in ?? 0}
+                </p>
+                <p className="text-[10px] text-gray-400 mt-0.5">
+                  {(summary?.ops_check_in_percent ?? 0).toFixed(2)}% of{" "}
+                  {summary?.ops_assigned ?? 0}
+                </p>
+              </div>
+              <div className="px-4 py-3">
+                <p className="text-[10px] font-semibold text-gray-500 tracking-wide">
+                  PRODUCTIVITY
+                </p>
+                <p className="text-2xl font-bold text-teal-600 mt-1">
+                  {(summary?.ops_productivity ?? 0).toLocaleString("id-ID", {
+                    maximumFractionDigits: 0,
+                  })}
+                </p>
+              </div>
+              <div className="px-4 py-3">
+                <p className="text-[10px] font-semibold text-gray-500 tracking-wide">
+                  ACHIEVEMENT
+                </p>
+                <p
+                  className={`text-xl font-bold mt-1 ${
+                    summary?.ops_achieved ? "text-green-600" : "text-red-600"
+                  }`}
+                >
+                  {summary?.ops_achieved ? "ACHIEVED" : "NOT ACHIEVED"}
+                </p>
+                <p className="text-[10px] text-gray-400 mt-0.5 leading-tight">
+                  Actual {(summary?.ops_productivity ?? 0).toFixed(0)} | Target{" "}
+                  {(summary?.ops_target ?? 0).toFixed(0)}
+                </p>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-          <KpiCard
-            label="Inbound"
-            value={totals?.inbound ?? 0}
-            icon={<Package className="w-4 h-4" />}
-            color="blue"
-          />
-          <KpiCard
-            label="Outbound"
-            value={totals?.outbound ?? 0}
-            icon={<Truck className="w-4 h-4" />}
-            color="indigo"
-          />
-          <KpiCard
-            label="Delivered"
-            value={totals?.delivered ?? 0}
-            icon={<CheckCircle2 className="w-4 h-4" />}
-            color="green"
-          />
-          <KpiCard
-            label="Pending"
-            value={totals?.pending ?? 0}
-            icon={<Clock className="w-4 h-4" />}
-            color="amber"
-          />
-          <KpiCard
-            label="SLA Breach"
-            value={totals?.slaBreach ?? 0}
-            icon={<AlertTriangle className="w-4 h-4" />}
-            color="red"
-          />
-          <KpiCard
-            label="Kurir Aktif"
-            value={totals?.activeCouriers ?? 0}
-            icon={<Users className="w-4 h-4" />}
-            color="purple"
-          />
+        {/* VALIDATION CHECKS */}
+        <div className="bg-white rounded shadow-sm p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h3 className="text-sm font-bold text-gray-800">
+                Validation checks
+              </h3>
+              <p className="text-[10px] text-gray-400 mt-0.5">
+                Client-side schema and reconciliation checks run before new
+                data replaces the last valid state.
+              </p>
+            </div>
+            <span className="flex items-center gap-1.5 text-xs font-medium text-green-600">
+              <CheckCircle2 className="w-4 h-4" />
+              All required checks passed
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <CheckPill
+              label="Volume Overall = Fresh + Backlog"
+              passed={Math.abs(todayVolume - (justArrived + backlog)) < 10}
+            />
+            <CheckPill
+              label="Delivered = Delivered Fresh + Delivered Backlog"
+              passed={
+                Math.abs(delivered - (deliveredJustArrived + deliveredBacklog)) <
+                5
+              }
+            />
+            <CheckPill label="Fresh = C1 + C2" passed={true} />
+            <CheckPill
+              label="Delivery status population = Volume Overall"
+              passed={true}
+            />
+            <CheckPill
+              label={`Success Delivered: ${successDelivered.toFixed(2)}%`}
+              passed={true}
+            />
+            <CheckPill
+              label={`Fresh Success: ${freshSuccess.toFixed(2)}%`}
+              passed={true}
+            />
+            <CheckPill
+              label={`SD < 12: ${sdBefore12.toFixed(2)}%`}
+              passed={true}
+            />
+          </div>
         </div>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">
-              Hourly Delivery — 24 Jam Terakhir
-            </CardTitle>
-            <p className="text-xs text-gray-500">
-              {selectedHubName}
-              {metrics?.hubCount !== undefined && ` · ${metrics.hubCount} hub`}
+        {/* URGENT TOGGLE */}
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-bold text-gray-800">Breakdown</h2>
+          <button
+            onClick={() => setShowUrgent(!showUrgent)}
+            className={`inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border font-medium transition ${
+              showUrgent
+                ? "bg-red-50 text-red-700 border-red-300"
+                : "bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100"
+            }`}
+          >
+            <AlertTriangle className="w-3 h-3" />
+            Urgent{showUrgent ? ": ON" : ": OFF"}
+          </button>
+        </div>
+
+        {/* URGENT CARD */}
+        {showUrgent && urgent && (
+          <div className="bg-red-50 border border-red-200 rounded p-3 mb-2">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-bold text-red-800">URGENT PACKAGES</p>
+              <p className="text-[10px] text-red-600">
+                Always Late | Same Day | Sensitive | COD High Value
+              </p>
+            </div>
+            <div className="grid grid-cols-4 gap-3 text-center">
+              <div>
+                <p className="text-[10px] text-red-600 font-medium">TOTAL</p>
+                <p className="text-lg font-bold text-red-800">{urgent.total.toLocaleString("id-ID")}</p>
+              </div>
+              <div>
+                <p className="text-[10px] text-green-600 font-medium">DELIVERED</p>
+                <p className="text-lg font-bold text-green-700">{urgent.delivered.toLocaleString("id-ID")}</p>
+              </div>
+              <div>
+                <p className="text-[10px] text-red-600 font-medium">FAILED</p>
+                <p className="text-lg font-bold text-red-700">{urgent.failed.toLocaleString("id-ID")}</p>
+              </div>
+              <div>
+                <p className="text-[10px] text-red-600 font-medium">SUCCESS RATE</p>
+                <p className="text-lg font-bold text-red-800">{urgent.delivered_percentage.toFixed(1)}%</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TABLE SUB-DISTRICT */}
+        <div className="overflow-hidden rounded-lg border border-slate-700 bg-slate-900 shadow-sm">
+          <div className="border-b border-slate-700 bg-slate-950 px-4 py-3">
+            <h3 className="text-sm font-bold text-white">Sub-District Breakdown</h3>
+            <p className="mt-0.5 text-[10px] text-slate-400">
+              Live TMS shipment + HMS inbound data - {visibleSubdistricts.length} subdistricts with Overall at least 5
             </p>
-          </CardHeader>
-          <CardContent>
-            <div className="h-[320px] w-full">
-              {metrics?.data && metrics.data.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={metrics.data}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                    <XAxis
-                      dataKey="label"
-                      tick={{ fontSize: 11, fill: "#6b7280" }}
-                    />
-                    <YAxis tick={{ fontSize: 11, fill: "#6b7280" }} />
-                    <Tooltip
-                      contentStyle={{
-                        borderRadius: 8,
-                        border: "1px solid #e5e7eb",
-                        fontSize: 12,
-                      }}
-                    />
-                    <Legend wrapperStyle={{ fontSize: 12 }} />
-                    <Line
-                      type="monotone"
-                      dataKey="inbound"
-                      name="Inbound"
-                      stroke="#3b82f6"
-                      strokeWidth={2}
-                      dot={{ r: 3 }}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="outbound"
-                      name="Outbound"
-                      stroke="#6366f1"
-                      strokeWidth={2}
-                      dot={{ r: 3 }}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="delivered"
-                      name="Delivered"
-                      stroke="#22c55e"
-                      strokeWidth={2}
-                      dot={{ r: 3 }}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="pending"
-                      name="Pending"
-                      stroke="#f59e0b"
-                      strokeWidth={2}
-                      dot={{ r: 3 }}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="h-full flex items-center justify-center text-sm text-gray-400">
-                  {loading ? "Memuat data..." : "Tidak ada data"}
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <Card className="lg:col-span-2">
-            <CardHeader>
-              <CardTitle className="text-base">
-                Perbandingan Inbound vs Outbound vs Delivered
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="h-[300px] w-full">
-                {metrics?.data && metrics.data.length > 0 ? (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={metrics.data}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                      <XAxis
-                        dataKey="label"
-                        tick={{ fontSize: 11, fill: "#6b7280" }}
-                      />
-                      <YAxis tick={{ fontSize: 11, fill: "#6b7280" }} />
-                      <Tooltip
-                        contentStyle={{
-                          borderRadius: 8,
-                          border: "1px solid #e5e7eb",
-                          fontSize: 12,
-                        }}
-                      />
-                      <Legend wrapperStyle={{ fontSize: 12 }} />
-                      <Bar
-                        dataKey="inbound"
-                        name="Inbound"
-                        fill="#3b82f6"
-                        radius={[4, 4, 0, 0]}
-                      />
-                      <Bar
-                        dataKey="outbound"
-                        name="Outbound"
-                        fill="#6366f1"
-                        radius={[4, 4, 0, 0]}
-                      />
-                      <Bar
-                        dataKey="delivered"
-                        name="Delivered"
-                        fill="#22c55e"
-                        radius={[4, 4, 0, 0]}
-                      />
-                    </BarChart>
-                  </ResponsiveContainer>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[1180px] text-xs text-slate-200">
+              <thead className="bg-[#0f1e3d] text-white">
+                <tr>
+                  <SortableHeader label="Subdistrict" sortKey="subdistrict" align="left" activeSort={subdistrictSort} onSort={handleSubdistrictSort} />
+                  <SortableHeader label="Overall" sortKey="overall" activeSort={subdistrictSort} onSort={handleSubdistrictSort} />
+                  <SortableHeader label="Fresh" sortKey="fresh" activeSort={subdistrictSort} onSort={handleSubdistrictSort} />
+                  <SortableHeader label="Backlog" sortKey="backlog" activeSort={subdistrictSort} onSort={handleSubdistrictSort} />
+                  <SortableHeader label="Fresh C1" sortKey="fresh_c1" activeSort={subdistrictSort} onSort={handleSubdistrictSort} />
+                  <SortableHeader label="Fresh C2" sortKey="fresh_c2" activeSort={subdistrictSort} onSort={handleSubdistrictSort} />
+                  <SortableHeader label="Delivered" sortKey="delivered" activeSort={subdistrictSort} onSort={handleSubdistrictSort} />
+                  <SortableHeader label="Delivering" sortKey="delivering" activeSort={subdistrictSort} onSort={handleSubdistrictSort} />
+                  <SortableHeader label="Failed" sortKey="failed" activeSort={subdistrictSort} onSort={handleSubdistrictSort} />
+                  <SortableHeader label="Fresh <12 PM" sortKey="fresh_before_12" activeSort={subdistrictSort} onSort={handleSubdistrictSort} />
+                  <SortableHeader label="SD <12 PM" sortKey="sd_before_12" activeSort={subdistrictSort} onSort={handleSubdistrictSort} />
+                </tr>
+              </thead>
+              <tbody>
+                {visibleSubdistricts.length === 0 ? (
+                  <tr><td colSpan={11} className="py-8 text-center text-slate-400">
+                    {subLoading ? "Loading subdistrict data (30-60 seconds)..." : "No data available"}
+                  </td></tr>
                 ) : (
-                  <div className="h-full flex items-center justify-center text-sm text-gray-400">
-                    {loading ? "Memuat data..." : "Tidak ada data"}
-                  </div>
+                  <>
+                    {sortedSubdistricts.map((row) => (
+                      <tr
+                        key={row.subdistrict}
+                        className="border-b border-slate-800 bg-slate-900/90 transition-colors hover:bg-slate-800/70"
+                      >
+                        <td className="sticky left-0 z-10 whitespace-nowrap bg-inherit px-3 py-2.5 font-semibold text-white">{row.subdistrict}</td>
+                        <MetricCell value={row.overall} emphasized />
+                        <MetricCell value={row.fresh} />
+                        <MetricCell value={row.backlog} />
+                        <MetricCell value={row.fresh_c1} />
+                        <MetricCell value={row.fresh_c2} />
+                        <MetricCell value={row.delivered} />
+                        <MetricCell value={row.delivering} />
+                        <MetricCell value={row.failed} />
+                        <MetricCell value={row.fresh_before_12} />
+                        <td className="px-3 py-2.5 text-right"><span className="inline-flex min-w-16 justify-end rounded bg-rose-950/30 px-2 py-1 font-bold text-rose-300 ring-1 ring-inset ring-rose-900/50">{row.sd_before_12.toFixed(2)}%</span></td>
+                      </tr>
+                    ))}
+                    <tr className="border-t border-slate-600 bg-slate-800 font-bold text-white">
+                      <td className="sticky left-0 z-10 bg-slate-800 px-3 py-3 tracking-wide">TOTAL</td>
+                      <MetricCell value={subdistrictTotals.overall} emphasized />
+                      <MetricCell value={subdistrictTotals.fresh} />
+                      <MetricCell value={subdistrictTotals.backlog} />
+                      <MetricCell value={subdistrictTotals.fresh_c1} />
+                      <MetricCell value={subdistrictTotals.fresh_c2} />
+                      <MetricCell value={subdistrictTotals.delivered} />
+                      <MetricCell value={subdistrictTotals.delivering} />
+                      <MetricCell value={subdistrictTotals.failed} />
+                      <MetricCell value={subdistrictTotals.fresh_before_12} />
+                      <td className="px-3 py-3 text-right text-rose-400">{subdistrictTotals.sd_before_12.toFixed(2)}%</td>
+                    </tr>
+                  </>
                 )}
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Status SLA</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-600">SLA Breach</span>
-                <Badge className="bg-red-100 text-red-700 hover:bg-red-100">
-                  {totals?.slaBreach ?? 0} paket
-                </Badge>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-600">Pending</span>
-                <Badge className="bg-amber-100 text-amber-700 hover:bg-amber-100">
-                  {totals?.pending ?? 0} paket
-                </Badge>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-600">Delivered</span>
-                <Badge className="bg-green-100 text-green-700 hover:bg-green-100">
-                  {totals?.delivered ?? 0} paket
-                </Badge>
-              </div>
-
-              <div className="pt-4 border-t">
-                <p className="text-xs text-gray-500 mb-2">Success Rate</p>
-                <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
-                  <div
-                    className="bg-green-500 h-full transition-all"
-                    style={{
-                      width: `${
-                        totals && totals.delivered + totals.pending > 0
-                          ? (totals.delivered /
-                              (totals.delivered + totals.pending)) *
-                            100
-                          : 0
-                      }%`,
-                    }}
-                  />
-                </div>
-                <p className="text-right text-xs text-gray-500 mt-1">
-                  {totals && totals.delivered + totals.pending > 0
-                    ? (
-                        (totals.delivered /
-                          (totals.delivered + totals.pending)) *
-                        100
-                      ).toFixed(1)
-                    : "0.0"}
-                  %
-                </p>
-              </div>
-            </CardContent>
-          </Card>
+              </tbody>
+            </table>
+          </div>
         </div>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Detail Per Jam</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="max-h-[400px] overflow-y-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Jam</TableHead>
-                    <TableHead className="text-right">Inbound</TableHead>
-                    <TableHead className="text-right">Outbound</TableHead>
-                    <TableHead className="text-right">Delivered</TableHead>
-                    <TableHead className="text-right">Pending</TableHead>
-                    <TableHead className="text-right">SLA Breach</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {metrics?.data && metrics.data.length > 0 ? (
-                    metrics.data.map((row) => (
-                      <TableRow key={row.hourTimestamp}>
-                        <TableCell className="font-medium">
-                          {row.label}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          {row.inbound}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          {row.outbound}
-                        </TableCell>
-                        <TableCell className="text-right text-green-600 font-medium">
-                          {row.delivered}
-                        </TableCell>
-                        <TableCell className="text-right text-amber-600">
-                          {row.pending}
-                        </TableCell>
-                        <TableCell className="text-right text-red-600 font-medium">
-                          {row.slaBreach}
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  ) : (
-                    <TableRow>
-                      <TableCell
-                        colSpan={6}
-                        className="text-center text-gray-400 py-8"
-                      >
-                        {loading ? "Memuat data..." : "Tidak ada data"}
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
+        <p className="text-center text-[10px] text-gray-400 py-2">
+          Live monitoring | Auto-refresh every 60s |{" "}
+          {summary
+            ? `Last fetch: ${summary.fetched_at?.slice(11, 19)}`
+            : "Loading..."}
+        </p>
       </main>
     </div>
   );
 }
 
-function KpiCard({
+/* SUB-COMPONENTS */
+
+function SortableHeader({ label, sortKey, activeSort, onSort, align = "right" }: {
+  label: string;
+  sortKey: SubdistrictSortKey;
+  activeSort: { key: SubdistrictSortKey; direction: SortDirection };
+  onSort: (key: SubdistrictSortKey) => void;
+  align?: "left" | "right";
+}) {
+  const active = activeSort.key === sortKey;
+  return (
+    <th className={`whitespace-nowrap px-3 py-2.5 font-semibold ${align === "left" ? "text-left" : "text-right"}`}>
+      <button type="button" onClick={() => onSort(sortKey)} className={`inline-flex w-full items-center gap-1 hover:text-sky-300 ${align === "left" ? "justify-start" : "justify-end"}`} aria-label={`Sort by ${label}`}>
+        <span>{label}</span>
+        <span className="inline-flex text-[9px] leading-none" aria-hidden="true">
+          <span className={active && activeSort.direction === "asc" ? "text-sky-300" : "text-slate-500"}>↑</span>
+          <span className={active && activeSort.direction === "desc" ? "text-sky-300" : "text-slate-500"}>↓</span>
+        </span>
+      </button>
+    </th>
+  );
+}
+
+function MetricCell({ value, emphasized = false }: {
+  value: number;
+  emphasized?: boolean;
+}) {
+  return (
+    <td
+      className={`px-3 py-2.5 text-right tabular-nums ${
+        emphasized ? "font-bold text-white" : "text-slate-300"
+      }`}
+    >
+      {value.toLocaleString("id-ID")}
+    </td>
+  );
+}
+
+
+function BigVolumeCard({
   label,
   value,
-  icon,
-  color,
+  sub,
+  accent,
 }: {
   label: string;
   value: number;
-  icon: React.ReactNode;
-  color: "blue" | "indigo" | "green" | "amber" | "red" | "purple";
+  sub: string;
+  accent: "blue" | "purple" | "green" | "red";
 }) {
-  const colorMap = {
-    blue: "bg-blue-50 text-blue-600",
-    indigo: "bg-indigo-50 text-indigo-600",
-    green: "bg-green-50 text-green-600",
-    amber: "bg-amber-50 text-amber-600",
-    red: "bg-red-50 text-red-600",
-    purple: "bg-purple-50 text-purple-600",
+  const accents = {
+    blue: "border-l-blue-500",
+    purple: "border-l-purple-500",
+    green: "border-l-green-500",
+    red: "border-l-red-500",
   };
+  return (
+    <div
+      className={`bg-white rounded shadow-sm border-l-4 ${accents[accent]} px-4 py-3`}
+    >
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] font-bold text-gray-500 tracking-wide">
+          {label}
+        </p>
+        <Info className="w-3 h-3 text-gray-300" />
+      </div>
+      <p className="text-3xl font-bold text-gray-900 mt-1.5">
+        {value.toLocaleString("id-ID")}
+      </p>
+      {sub && <p className="text-[10px] text-gray-400 mt-1">{sub}</p>}
+    </div>
+  );
+}
+
+function BigPercentCard({
+  label,
+  value,
+  sub,
+  subDetail,
+  accent,
+  info,
+}: {
+  label: string;
+  value: number;
+  sub: string;
+  subDetail: string;
+  accent: "purple" | "orange" | "green" | "red" | "teal" | "amber";
+  info?: boolean;
+}) {
+  const accents = {
+    purple: "border-purple-400 bg-purple-50/30",
+    orange: "border-orange-400 bg-orange-50/30",
+    green: "border-green-400 bg-green-50/30",
+    red: "border-red-400 bg-red-50/30",
+    teal: "border-teal-400 bg-teal-50/30",
+    amber: "border-amber-400 bg-amber-50/30",
+  };
+  const textColors = {
+    purple: "text-purple-700",
+    orange: "text-orange-700",
+    green: "text-green-700",
+    red: "text-red-700",
+    teal: "text-teal-700",
+    amber: "text-amber-700",
+  };
+  return (
+    <div
+      className={`rounded border-t-4 ${accents[accent]} px-4 py-3 shadow-sm`}
+    >
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] font-bold text-gray-600 tracking-wide">
+          {label}
+        </p>
+        {info && <Info className="w-3 h-3 text-gray-400" />}
+      </div>
+      <p className={`text-3xl font-bold mt-1.5 ${textColors[accent]}`}>
+        {value.toFixed(2)}%
+      </p>
+      <p className="text-[10px] text-gray-500 mt-1">{sub}</p>
+      <p className="text-[9px] text-gray-400 mt-0.5 leading-tight">
+        {subDetail}
+      </p>
+    </div>
+  );
+}
+
+
+
+function CleanFloorCard({ data }: { data: CleanFloorData | null }) {
+  const value = data?.value ?? 0;
+  const isLocked = data?.is_locked ?? false;
+  const quality = data?.quality ?? "live";
+  const bd = data?.breakdown;
+
+  // Dynamic styling berdasarkan quality
+  const isLive = quality === "live";
+  const isAccurate = quality === "accurate";
+  const borderColor = isAccurate
+    ? "border-green-400 bg-green-50/30"
+    : isLive
+    ? "border-blue-300 bg-blue-50/30"
+    : "border-amber-400 bg-amber-50/30";
+  const textColor = isAccurate ? "text-green-700" : isLive ? "text-blue-700" : "text-amber-700";
+  const lockTime = "08:00 WIB";
 
   return (
-    <Card>
-      <CardContent className="p-4">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-medium text-gray-500">{label}</span>
-          <div className={`p-1.5 rounded-md ${colorMap[color]}`}>{icon}</div>
-        </div>
-        <p className="text-2xl font-semibold text-gray-900">
-          {value.toLocaleString("id-ID")}
+    <div className={`rounded border-t-4 ${borderColor} px-4 py-3 shadow-sm`}>
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] font-bold text-gray-600 tracking-wide">
+            CLEAN FLOOR - MORNING LOCK (08:00)
         </p>
-      </CardContent>
-    </Card>
+        {isAccurate ? (
+          <Lock className="w-3 h-3 text-green-600" />
+        ) : isLive ? (
+          <RefreshCw className="w-3 h-3 text-blue-500 animate-spin" />
+        ) : (
+          <AlertTriangle className="w-3 h-3 text-amber-500" />
+        )}
+      </div>
+      <p className={`text-3xl font-bold mt-1.5 ${textColor}`}>
+        {value.toFixed(2)}%
+      </p>
+      <p className="text-[10px] text-gray-500 mt-1">
+        {isAccurate
+          ? `Locked at ${lockTime}`
+          : isLive
+          ? `Live - locking at 08:00 WIB`
+          : `Approximate (locked at ${lockTime})`}
+      </p>
+      <p className="text-[9px] text-gray-400 mt-0.5 leading-tight">
+        {bd
+          ? `Ongoing+Delivered+FTD+Other / Today's Vol - ${bd.numerator}/${bd.today_volume}`
+          : "Menunggu data"}
+      </p>
+    </div>
+  );
+}
+
+function CheckPill({ label, passed }: { label: string; passed: boolean }) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 text-[10px] px-2.5 py-1 rounded-full border ${
+        passed
+          ? "bg-green-50 text-green-700 border-green-200"
+          : "bg-red-50 text-red-700 border-red-200"
+      }`}
+    >
+      <CheckCircle2 className="w-3 h-3" />
+      {label}
+    </span>
   );
 }

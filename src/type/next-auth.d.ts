@@ -8,6 +8,8 @@ declare module "next-auth" {
       role: "MANAGER" | "SPV" | "HUB_LEAD";
       hubIds: string[];
       clusterIds: string[];
+      hmsToken?: string | null;
+      leaderHmsToken?: string | null;
       name?: string | null;
       email?: string | null;
       image?: string | null;
@@ -19,6 +21,8 @@ declare module "next-auth" {
     role: "MANAGER" | "SPV" | "HUB_LEAD";
     hubIds: string[];
     clusterIds: string[];
+    hmsToken?: string | null;
+    leaderHmsToken?: string | null;
   }
 }
 
@@ -28,5 +32,7 @@ declare module "next-auth/jwt" {
     role: "MANAGER" | "SPV" | "HUB_LEAD";
     hubIds: string[];
     clusterIds: string[];
+    hmsToken?: string | null;
+    leaderHmsToken?: string | null;
   }
 }

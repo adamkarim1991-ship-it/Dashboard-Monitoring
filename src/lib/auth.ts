@@ -51,6 +51,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           role: user.role as AppRole,
           hubIds,
           clusterIds,
+          hmsToken: user.hmsToken,
+          leaderHmsToken: user.leaderHmsToken,
         };
       },
     }),
@@ -62,6 +64,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.role = user.role;
         token.hubIds = user.hubIds;
         token.clusterIds = user.clusterIds;
+        token.hmsToken = user.hmsToken;
+        token.leaderHmsToken = user.leaderHmsToken;
       }
       return token;
     },
@@ -71,6 +75,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         session.user.role = token.role;
         session.user.hubIds = token.hubIds;
         session.user.clusterIds = token.clusterIds;
+        session.user.hmsToken = token.hmsToken;
+        session.user.leaderHmsToken = token.leaderHmsToken;
       }
       return session;
     },
