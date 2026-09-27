@@ -1,4 +1,4 @@
-import { getToken } from "next-auth/jwt";
+import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -59,18 +59,15 @@ async function fetchHMSPage(
 export async function GET(req: NextRequest) {
   console.log("=== HIT /api/hms/performance ===");
 
-  const token = await getToken({
-    req,
-    secret: process.env.NEXTAUTH_SECRET!,
-  });
+  const session = await auth();
 
-  if (!token?.id) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   // Ambil HMS token user dari DB
   const user = await prisma.user.findUnique({
-    where: { id: token.id as string },
+    where: { id: session.user.id },
     select: { hmsToken: true },
   });
 

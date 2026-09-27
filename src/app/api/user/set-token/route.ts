@@ -1,18 +1,15 @@
-import { getToken } from "next-auth/jwt";
+import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
   console.log("=== ROUTE HIT: /api/user/set-token ===");
 
-  const token = await getToken({
-    req,
-    secret: process.env.NEXTAUTH_SECRET!,
-  });
+  const session = await auth();
 
-  console.log("[set-token] Token:", token ? "FOUND" : "NONE");
+  console.log("[set-token] Session:", session ? "FOUND" : "NONE");
 
-  if (!token?.id) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -36,14 +33,14 @@ export async function POST(req: NextRequest) {
   }
 
   await prisma.user.update({
-    where: { id: token.id as string },
+    where: { id: session.user.id },
     data: {
       hmsToken,
       hmsTokenUpdatedAt: new Date(),
     },
   });
 
-  console.log(`[set-token] ✅ Token saved for user ${token.id}`);
+  console.log(`[set-token] ✅ Token saved for user ${session.user.id}`);
 
   return NextResponse.json({ ok: true });
 }

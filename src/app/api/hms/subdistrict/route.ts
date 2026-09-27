@@ -1,4 +1,4 @@
-import { getToken } from "next-auth/jwt";
+import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -435,19 +435,16 @@ async function getCleanFloor(
 export async function GET(req: NextRequest) {
   console.log("=== HIT /api/hms/subdistrict ===");
 
-  const token = await getToken({
-    req,
-    secret: process.env.NEXTAUTH_SECRET!,
-  });
+  const session = await auth();
 
-  if (!token?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+if (!session?.user?.id) {
+  return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+}
 
-  const user = await prisma.user.findUnique({
-    where: { id: token.id as string },
-    select: { hmsToken: true },
-  });
+const user = await prisma.user.findUnique({
+  where: { id: session.user.id },
+  select: { hmsToken: true },
+});
 
   if (!user?.hmsToken) {
     return NextResponse.json({ error: "No HMS token" }, { status: 403 });
