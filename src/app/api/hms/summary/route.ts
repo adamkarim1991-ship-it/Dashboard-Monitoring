@@ -303,10 +303,16 @@ if (!session?.user?.id) {
   return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 }
 
-const user = await prisma.user.findUnique({
-  where: { id: session.user.id },
-  select: { hmsToken: true },
-});
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { hmsToken: true },
+  });
+
+  if (!user?.hmsToken) {
+    return NextResponse.json(
+      { error: "No HMS token", message: "Buka HMS dulu." },
+      { status: 403 }
+    );
   }
 
   // Cache
