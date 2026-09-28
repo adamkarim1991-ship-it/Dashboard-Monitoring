@@ -36,6 +36,7 @@ model Cluster {
 model Hub {
   id        String   @id @default(cuid())
   name      String   @unique
+  hmsHubId  String   @unique
   region    String   @default("")
   clusterId String
   cluster   Cluster  @relation(fields: [clusterId], references: [id])

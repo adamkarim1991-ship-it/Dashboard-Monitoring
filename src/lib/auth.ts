@@ -40,21 +40,21 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!valid) return null;
 
         const hubIds = user.hubs.map((h) => h.hubId);
-        const clusterIds = Array.from(
-          new Set(user.hubs.map((h) => h.hub.clusterId))
-        );
-
+const hmsHubIds = user.hubs.map((h) => h.hub.hmsHubId);
+const clusterIds = Array.from(
+  new Set(user.hubs.map((h) => h.hub.clusterId))
+);
         return {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          role: user.role as AppRole,
-          hubIds,
-          clusterIds,
-          hmsToken: user.hmsToken,
-          leaderHmsToken: user.leaderHmsToken,
-        };
-      },
+  id: user.id,
+  email: user.email,
+  name: user.name,
+  role: user.role as AppRole,
+  hubIds,
+  hmsHubIds,
+  clusterIds,
+  hmsToken: user.hmsToken,
+  leaderHmsToken: user.leaderHmsToken,
+};      },
     }),
   ],
   callbacks: {
@@ -62,8 +62,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (user) {
         token.id = user.id;
         token.role = user.role;
-        token.hubIds = user.hubIds;
-        token.clusterIds = user.clusterIds;
+            token.hubIds = user.hubIds;
+    token.hmsHubIds = user.hmsHubIds;
+    token.clusterIds = user.clusterIds;
         token.hmsToken = user.hmsToken;
         token.leaderHmsToken = user.leaderHmsToken;
       }
@@ -73,8 +74,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (session.user) {
         session.user.id = token.id;
         session.user.role = token.role;
-        session.user.hubIds = token.hubIds;
-        session.user.clusterIds = token.clusterIds;
+            session.user.hubIds = token.hubIds;
+    session.user.hmsHubIds = token.hmsHubIds;
+    session.user.clusterIds = token.clusterIds;
         session.user.hmsToken = token.hmsToken;
         session.user.leaderHmsToken = token.leaderHmsToken;
       }

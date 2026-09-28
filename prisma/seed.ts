@@ -16,14 +16,15 @@ async function main() {
 
   // 2. Hub Jatinegara
   const hub = await prisma.hub.upsert({
-    where: { name: "GTL Jatinegara Hub" },
-    update: {},
-    create: {
-      name: "GTL Jatinegara Hub",
-      region: "Jakarta Timur",
-      clusterId: cluster.id,
-    },
-  });
+  where: { name: "GTL Jatinegara Hub" },
+  update: { hmsHubId: "460450593288" },
+  create: {
+    name: "GTL Jatinegara Hub",
+    hmsHubId: "460450593288",
+    region: "Jakarta Timur",
+    clusterId: cluster.id,
+  },
+});
   console.log(`✅ Hub: ${hub.name} (${hub.id})`);
 
   // 3. Users

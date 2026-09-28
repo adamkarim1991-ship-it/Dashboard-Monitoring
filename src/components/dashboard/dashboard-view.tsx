@@ -23,6 +23,7 @@ export type SessionUser = {
   email?: string | null;
   role: AppRole;
   hubIds: string[];
+  hmsHubIds: string[];        // ← TAMBAH INI
   clusterIds: string[];
   hmsToken?: string | null;
   leaderHmsToken?: string | null;
@@ -152,7 +153,8 @@ export default function DashboardView({ user }: { user: SessionUser }) {
   const fetchSummary = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/hms/summary");
+      const activeHubId = user.hmsHubIds?.[0] || "";
+const res = await fetch(`/api/hms/summary${activeHubId ? `?hubId=${activeHubId}` : ""}`);
       const d = await res.json();
       if (d.success) {
         setSummary(d.summary);
