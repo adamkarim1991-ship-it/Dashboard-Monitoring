@@ -7,6 +7,8 @@ import { prisma } from "@/lib/prisma";
 export type AppRole = "MANAGER" | "SPV" | "HUB_LEAD";
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  trustHost: true,
+  secret: process.env.NEXTAUTH_SECRET,
   session: { strategy: "jwt" },
   pages: { signIn: "/login" },
   providers: [
