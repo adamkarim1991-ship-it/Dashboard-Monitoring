@@ -14,18 +14,12 @@ const SERVICE_TYPES = '["INS","SDS","REG","NDD","OTHERS"]';
 const JOB_ROLES_CYCLE =
   '["Rider LM 2W - Mitra Prioritas","Ops LM - Mitra","Ops LM - Mitra Oncall","Rider LM 2W","Dedicated Rider LM 2W","Ops LM"]';
 
-// Cache (per hub)
 type CacheEntry = { data: any; timestamp: number };
 const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 5 * 1000;
 
-// ============================================================
-// HELPER: WIB Dates
-// ============================================================
 function getMainCurrDate(): string {
-  const now = new Date();
-  const wibOffsetMs = 7 * 60 * 60 * 1000;
-  const nowWIB = new Date(now.getTime() + wibOffsetMs);
+  const nowWIB = new Date(Date.now() + 7 * 60 * 60 * 1000);
   const y = nowWIB.getUTCFullYear();
   const m = nowWIB.getUTCMonth();
   const d = nowWIB.getUTCDate() - 1;
@@ -33,9 +27,7 @@ function getMainCurrDate(): string {
 }
 
 function getTodayDate(): string {
-  const now = new Date();
-  const wibOffsetMs = 7 * 60 * 60 * 1000;
-  const nowWIB = new Date(now.getTime() + wibOffsetMs);
+  const nowWIB = new Date(Date.now() + 7 * 60 * 60 * 1000);
   const y = nowWIB.getUTCFullYear();
   const m = nowWIB.getUTCMonth();
   const d = nowWIB.getUTCDate();
@@ -43,45 +35,46 @@ function getTodayDate(): string {
 }
 
 function getCycleList(): string {
-  const now = new Date();
-  const wibOffsetMs = 7 * 60 * 60 * 1000;
-  const nowWIB = new Date(now.getTime() + wibOffsetMs);
+  const nowWIB = new Date(Date.now() + 7 * 60 * 60 * 1000);
   const y = nowWIB.getUTCFullYear();
   const m = nowWIB.getUTCMonth();
   const d = nowWIB.getUTCDate() - 1;
-  const startMs = Date.UTC(y, m, d, 17, 0, 0) - wibOffsetMs;
-  const endMs = Date.UTC(y, m, d + 1, 17, 0, 0) - wibOffsetMs;
-  return JSON.stringify([`${Math.floor(startMs / 1000)}-${Math.floor(endMs / 1000)}`]);
+  const startMs = Date.UTC(y, m, d, 17, 0, 0) - 7 * 60 * 60 * 1000;
+  const endMs = Date.UTC(y, m, d + 1, 17, 0, 0) - 7 * 60 * 60 * 1000;
+  return JSON.stringify([
+    `${Math.floor(startMs / 1000)}-${Math.floor(endMs / 1000)}`,
+  ]);
 }
 
 function get8amWIBUnix(): number {
-  const now = new Date();
-  const wibOffsetMs = 7 * 60 * 60 * 1000;
-  const nowWIB = new Date(now.getTime() + wibOffsetMs);
+  const nowWIB = new Date(Date.now() + 7 * 60 * 60 * 1000);
   const y = nowWIB.getUTCFullYear();
   const m = nowWIB.getUTCMonth();
   const d = nowWIB.getUTCDate();
-  return Math.floor((Date.UTC(y, m, d, 8, 0, 0) - wibOffsetMs) / 1000);
+  return Math.floor(
+    (Date.UTC(y, m, d, 8, 0, 0) - 7 * 60 * 60 * 1000) / 1000
+  );
 }
 
 function getTodayWIBUnix(hour: number): number {
-  const now = new Date();
-  const wibOffsetMs = 7 * 60 * 60 * 1000;
-  const nowWIB = new Date(now.getTime() + wibOffsetMs);
+  const nowWIB = new Date(Date.now() + 7 * 60 * 60 * 1000);
   const y = nowWIB.getUTCFullYear();
   const m = nowWIB.getUTCMonth();
   const d = nowWIB.getUTCDate();
-  return Math.floor((Date.UTC(y, m, d, hour, 0, 0) - wibOffsetMs) / 1000);
+  return Math.floor(
+    (Date.UTC(y, m, d, hour, 0, 0) - 7 * 60 * 60 * 1000) / 1000
+  );
 }
 
 function get12amWIBUnix(): number {
   return getTodayWIBUnix(0);
 }
 
-// ============================================================
-// HELPER: Call HMS
-// ============================================================
-async function callHMS(token: string, apiId: string, params: Record<string, any>) {
+async function callHMS(
+  token: string,
+  apiId: string,
+  params: Record<string, any>
+) {
   const url = `${process.env.HMS_BASE_URL}/dc/v1/oneservice`;
   const res = await fetch(url, {
     method: "POST",
@@ -93,14 +86,15 @@ async function callHMS(token: string, apiId: string, params: Record<string, any>
       "x-location": "Asia/Jakarta",
       "x-request-source": "web",
       Origin: "https://gtl-id.tokgistic.com",
-      Referer: "https://gtl-id.tokgistic.com/tms/operation-performance-central",
+      Referer:
+        "https://gtl-id.tokgistic.com/tms/operation-performance-central",
     },
     body: JSON.stringify({ api_id: apiId, params }),
     cache: "no-store",
   });
   if (!res.ok) throw new Error(`HMS ${res.status}`);
   const json = await res.json();
-  if (json.code !== 200) throw new Error(`HMS error: ${json.msg}`);
+  if (json.code !== 200) throw new Error(`HMS error: ${json.msg || json.code}`);
   return json;
 }
 
@@ -109,7 +103,9 @@ function parseCompact(dataStr: string, fields: { name: string }[]) {
   if (rows.length === 0) return null;
   const obj: Record<string, any> = {};
   const row = rows[0];
-  fields.forEach((f, i) => { obj[f.name] = row[i]; });
+  fields.forEach((f, i) => {
+    obj[f.name] = row[i];
+  });
   return obj;
 }
 
@@ -120,7 +116,9 @@ function toUnixSeconds(value: unknown): number {
   if (typeof value === "string" && value) {
     const numeric = Number(value);
     if (Number.isFinite(numeric)) {
-      return numeric > 1_000_000_000_000 ? Math.floor(numeric / 1000) : numeric;
+      return numeric > 1_000_000_000_000
+        ? Math.floor(numeric / 1000)
+        : numeric;
     }
     const parsed = Date.parse(value);
     return Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000);
@@ -128,37 +126,54 @@ function toUnixSeconds(value: unknown): number {
   return 0;
 }
 
-async function fetchInboundTasksPage(token: string, page: number, fromTs: number, toTs: number) {
-  const res = await fetch(`${process.env.HMS_BASE_URL}/api/hms/v1/ui/task/search`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      Origin: "https://gtl-id.tokgistic.com",
-      Referer: "https://gtl-id.tokgistic.com/hms/order-management",
-    },
-    body: JSON.stringify({
-      filters: { received_at_from: fromTs, received_at_to: toTs },
-      page,
-      size: 100,
-    }),
-    cache: "no-store",
-  });
+async function fetchInboundTasksPage(
+  token: string,
+  page: number,
+  fromTs: number,
+  toTs: number
+) {
+  const res = await fetch(
+    `${process.env.HMS_BASE_URL}/api/hms/v1/ui/task/search`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Origin: "https://gtl-id.tokgistic.com",
+        Referer: "https://gtl-id.tokgistic.com/hms/order-management",
+      },
+      body: JSON.stringify({
+        filters: { received_at_from: fromTs, received_at_to: toTs },
+        page,
+        size: 100,
+      }),
+      cache: "no-store",
+    }
+  );
   if (!res.ok) throw new Error(`HMS task page ${page}: ${res.status}`);
   const json = await res.json();
-  if (json.code !== 200) throw new Error(`HMS task error: ${json.message || json.code}`);
+  if (json.code !== 200) {
+    throw new Error(`HMS task error: ${json.message || json.code}`);
+  }
   return json;
 }
 
-async function fetchShipmentsPage(token: string, page: number, awbNumbers: string[]) {
-  const url = new URL(`${process.env.HMS_BASE_URL}/tms/api/lms/v1/shipments`);
+async function fetchShipmentsPage(
+  token: string,
+  page: number,
+  awbNumbers: string[]
+) {
+  const url = new URL(
+    `${process.env.HMS_BASE_URL}/tms/api/lms/v1/shipments`
+  );
   url.searchParams.set("type", "order_management");
   url.searchParams.set("leg_type", "last_mile");
   url.searchParams.set("per_page", "100");
   url.searchParams.set("tab", "order_view");
   url.searchParams.set("page", String(page));
   url.searchParams.set("awb_numbers", awbNumbers.join(","));
+
   const res = await fetch(url.toString(), {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -181,7 +196,9 @@ async function fetchShipmentsForAwbs(token: string, awbs: string[]) {
   const shipments: any[] = [];
   for (let i = 0; i < chunks.length; i += 5) {
     const results = await Promise.all(
-      chunks.slice(i, i + 5).map((chunk) => fetchShipmentsPage(token, 1, chunk))
+      chunks
+        .slice(i, i + 5)
+        .map((chunk) => fetchShipmentsPage(token, 1, chunk))
     );
     for (const result of results) {
       shipments.push(...(result?.data?.shipments || []));
@@ -190,7 +207,10 @@ async function fetchShipmentsForAwbs(token: string, awbs: string[]) {
   return shipments;
 }
 
-async function computeC1FromInboundScan(hmsToken: string, hubName: string) {
+async function computeC1FromInboundScan(
+  hmsToken: string,
+  hubName: string
+) {
   const fromTs = get12amWIBUnix();
   const toTs = get8amWIBUnix();
   const firstPage = await fetchInboundTasksPage(hmsToken, 1, fromTs, toTs);
@@ -199,10 +219,15 @@ async function computeC1FromInboundScan(hmsToken: string, hubName: string) {
   let allTasks: any[] = firstPage?.data?.tasks || [];
 
   if (totalPages > 1) {
-    const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
+    const pages = Array.from(
+      { length: totalPages - 1 },
+      (_, i) => i + 2
+    );
     for (let i = 0; i < pages.length; i += 5) {
       const results = await Promise.all(
-        pages.slice(i, i + 5).map((page) => fetchInboundTasksPage(hmsToken, page, fromTs, toTs))
+        pages
+          .slice(i, i + 5)
+          .map((page) => fetchInboundTasksPage(hmsToken, page, fromTs, toTs))
       );
       for (const result of results) {
         allTasks = allTasks.concat(result?.data?.tasks || []);
@@ -214,7 +239,10 @@ async function computeC1FromInboundScan(hmsToken: string, hubName: string) {
   const uniqueFreshC1Tasks = Array.from(
     new Map(
       hubTasks.map((task, index) => [
-        task.awb_number || task.tracking_number || task.id || `row-${index}`,
+        task.awb_number ||
+          task.tracking_number ||
+          task.id ||
+          `row-${index}`,
         task,
       ])
     ).values()
@@ -222,14 +250,20 @@ async function computeC1FromInboundScan(hmsToken: string, hubName: string) {
   const deliveredFromTs = getTodayWIBUnix(0);
   const deliveredBeforeTs = getTodayWIBUnix(12);
   const freshC1Awbs = uniqueFreshC1Tasks
-    .map((task) => String(task.awb_number || task.tracking_number || "").trim())
+    .map((task) =>
+      String(task.awb_number || task.tracking_number || "").trim()
+    )
     .filter(Boolean);
   const shipments = await fetchShipmentsForAwbs(hmsToken, freshC1Awbs);
   const deliveredBefore12 = new Set(
     shipments
       .filter((shipment) => {
-        const deliveredAt = toUnixSeconds(shipment.destination_details?.delivery_time);
-        return deliveredAt >= deliveredFromTs && deliveredAt < deliveredBeforeTs;
+        const deliveredAt = toUnixSeconds(
+          shipment.destination_details?.delivery_time
+        );
+        return (
+          deliveredAt >= deliveredFromTs && deliveredAt < deliveredBeforeTs
+        );
       })
       .map((shipment) => String(shipment.awb_number || "").trim())
       .filter(Boolean)
@@ -238,10 +272,10 @@ async function computeC1FromInboundScan(hmsToken: string, hubName: string) {
   return { c1: uniqueFreshC1Tasks.length, deliveredBefore12 };
 }
 
-// ============================================================
-// RESOLVE ACTIVE HUB (dari session, bukan hardcode)
-// ============================================================
-async function resolveActiveHub(userId: string, requestedHmsHubId: string | null) {
+async function resolveActiveHub(
+  userId: string,
+  requestedHmsHubId: string | null
+) {
   const userHubs = await prisma.userHub.findMany({
     where: { userId },
     include: { hub: true },
@@ -249,19 +283,16 @@ async function resolveActiveHub(userId: string, requestedHmsHubId: string | null
 
   if (userHubs.length === 0) return null;
 
-  // Kalau user minta hub spesifik, validasi akses
   if (requestedHmsHubId) {
-    const match = userHubs.find((uh) => uh.hub.hmsHubId === requestedHmsHubId);
+    const match = userHubs.find(
+      (uh) => uh.hub.hmsHubId === requestedHmsHubId
+    );
     if (match) return match.hub;
   }
 
-  // Default: hub pertama
   return userHubs[0].hub;
 }
 
-// ============================================================
-// MAIN
-// ============================================================
 export async function GET(req: NextRequest) {
   console.log("=== HIT /api/hms/summary ===");
 
@@ -282,9 +313,11 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  // Resolve hub dari session
   const requestedHubId = req.nextUrl.searchParams.get("hubId");
-  const activeHub = await resolveActiveHub(session.user.id, requestedHubId);
+  const activeHub = await resolveActiveHub(
+    session.user.id,
+    requestedHubId
+  );
 
   if (!activeHub) {
     return NextResponse.json({ error: "No hub access" }, { status: 403 });
@@ -293,14 +326,16 @@ export async function GET(req: NextRequest) {
   const HUB_ID = activeHub.hmsHubId;
   const HUB_NAME = activeHub.name;
 
-  // Cache per hub
   const cacheKey = HUB_ID;
   const now = Date.now();
   const cached = cache.get(cacheKey);
   if (cached && now - cached.timestamp < CACHE_TTL_MS) {
     return NextResponse.json({
       success: true,
-      meta: { cached: true, cache_age_seconds: Math.floor((now - cached.timestamp) / 1000) },
+      meta: {
+        cached: true,
+        cache_age_seconds: Math.floor((now - cached.timestamp) / 1000),
+      },
       summary: cached.data,
     });
   }
@@ -312,51 +347,72 @@ export async function GET(req: NextRequest) {
     const todayDate = getTodayDate();
     const cycleList = getCycleList();
 
-    const [mainRes, codRes, cycleRes, opsRes, courierRes, c1Result] = await Promise.all([
-      callHMS(user.hmsToken, API_ID_MAIN, {
-        hub_ids: JSON.stringify([HUB_ID]),
-        curr_date: currDate,
-        payment_types: PAYMENT_TYPES,
-        service_types: SERVICE_TYPES,
-      }),
-      callHMS(user.hmsToken, API_ID_MAIN, {
-        hub_ids: JSON.stringify([HUB_ID]),
-        curr_date: currDate,
-        payment_types: PAYMENT_TYPES_COD,
-        service_types: SERVICE_TYPES,
-      }).catch((e) => {
-        console.warn("[cod-fd] Gagal fetch COD:", e.message);
-        return null;
-      }),
-      callHMS(user.hmsToken, API_ID_CYCLE1, {
-        hub_id: HUB_ID,
-        driver_name: "",
-        job_roles: JOB_ROLES_CYCLE,
-        cycle_list: cycleList,
-      }),
-      callHMS(user.hmsToken, API_ID_OPS, {
-        hub_ids: JSON.stringify([HUB_ID]),
-        curr_date_start: currDate,
-        date: todayDate,
-      }),
-      callHMS(user.hmsToken, API_ID_COURIER, {
-        hub_ids: JSON.stringify([HUB_ID]),
-        curr_date_start: currDate,
-        date: todayDate,
-        job_roles: JOB_ROLES_CYCLE,
-      }),
-      computeC1FromInboundScan(user.hmsToken, HUB_NAME).catch((e) => {
-        console.warn("[c1c2] Gagal:", e.message);
-        return { c1: 0, deliveredBefore12: 0 };
-      }),
-    ]);
+    const [mainRes, codRes, cycleRes, opsRes, courierRes, c1Result] =
+      await Promise.all([
+        callHMS(user.hmsToken, API_ID_MAIN, {
+          hub_ids: JSON.stringify([HUB_ID]),
+          curr_date: currDate,
+          payment_types: PAYMENT_TYPES,
+          service_types: SERVICE_TYPES,
+        }),
+        callHMS(user.hmsToken, API_ID_MAIN, {
+          hub_ids: JSON.stringify([HUB_ID]),
+          curr_date: currDate,
+          payment_types: PAYMENT_TYPES_COD,
+          service_types: SERVICE_TYPES,
+        }).catch((e) => {
+          console.warn("[cod] Gagal:", e.message);
+          return null;
+        }),
+        callHMS(user.hmsToken, API_ID_CYCLE1, {
+          hub_id: HUB_ID,
+          driver_name: "",
+          job_roles: JOB_ROLES_CYCLE,
+          cycle_list: cycleList,
+        }).catch((e) => {
+          console.warn("[cycle1] Gagal:", e.message);
+          return null;
+        }),
+        callHMS(user.hmsToken, API_ID_OPS, {
+          hub_ids: JSON.stringify([HUB_ID]),
+          curr_date_start: currDate,
+          date: todayDate,
+        }).catch((e) => {
+          console.warn("[ops] Gagal:", e.message);
+          return null;
+        }),
+        callHMS(user.hmsToken, API_ID_COURIER, {
+          hub_ids: JSON.stringify([HUB_ID]),
+          curr_date_start: currDate,
+          date: todayDate,
+          job_roles: JOB_ROLES_CYCLE,
+        }).catch((e) => {
+          console.warn("[courier] Gagal:", e.message);
+          return null;
+        }),
+        computeC1FromInboundScan(user.hmsToken, HUB_NAME).catch((e) => {
+          console.warn("[c1c2] Gagal:", e.message);
+          return { c1: 0, deliveredBefore12: 0 };
+        }),
+      ]);
 
     const main = parseCompact(mainRes.data.data, mainRes.data.fields)!;
-    const cycle = parseCompact(cycleRes.data.data, cycleRes.data.fields)!;
-    const ops = parseCompact(opsRes.data.data, opsRes.data.fields)!;
-    const courier = parseCompact(courierRes.data.data, courierRes.data.fields)!;
+    const cycle = cycleRes
+      ? parseCompact(cycleRes.data.data, cycleRes.data.fields)
+      : null;
+    const ops = opsRes
+      ? parseCompact(opsRes.data.data, opsRes.data.fields)
+      : null;
+    const courier = courierRes
+      ? parseCompact(courierRes.data.data, courierRes.data.fields)
+      : null;
 
-    let codReadyToReturn = 0, codJustArrived = 0, codBacklog = 0, codTotalVolume = 0, codFd = 0;
+    let codReadyToReturn = 0,
+      codJustArrived = 0,
+      codBacklog = 0,
+      codTotalVolume = 0,
+      codFd = 0;
+
     if (codRes) {
       const codMain = parseCompact(codRes.data.data, codRes.data.fields);
       if (codMain) {
@@ -364,7 +420,12 @@ export async function GET(req: NextRequest) {
         codJustArrived = codMain.just_arrived || 0;
         codBacklog = codMain.backlog || 0;
         codTotalVolume = codJustArrived + codBacklog;
-        codFd = codTotalVolume > 0 ? parseFloat(((codReadyToReturn / codTotalVolume) * 100).toFixed(2)) : 0;
+        codFd =
+          codTotalVolume > 0
+            ? parseFloat(
+                ((codReadyToReturn / codTotalVolume) * 100).toFixed(2)
+              )
+            : 0;
       }
     }
 
@@ -372,9 +433,18 @@ export async function GET(req: NextRequest) {
     const justArrived = Number(main.just_arrived) || 0;
     const freshC1 = Math.min(c1Result.c1, justArrived);
     const freshC2 = Math.max(justArrived - freshC1, 0);
-    const deliveredBefore12 = Math.min(c1Result.deliveredBefore12, freshC1);
-    const sdBefore12 = freshC1 > 0 ? (deliveredBefore12 / freshC1) * 100 : 0;
-    const freshSuccess = justArrived > 0 ? parseFloat(((deliveredJustArrived / justArrived) * 100).toFixed(2)) : 0;
+    const deliveredBefore12 = Math.min(
+      c1Result.deliveredBefore12,
+      freshC1
+    );
+    const sdBefore12 =
+      freshC1 > 0 ? (deliveredBefore12 / freshC1) * 100 : 0;
+    const freshSuccess =
+      justArrived > 0
+        ? parseFloat(
+            ((deliveredJustArrived / justArrived) * 100).toFixed(2)
+          )
+        : 0;
 
     const backlog = Number(main.backlog) || 0;
     const cleanFloorOngoing = Number(main.ongoing_delivery) || 0;
@@ -382,9 +452,15 @@ export async function GET(req: NextRequest) {
     const cleanFloorFtd = Number(main.ftd) || 0;
     const cleanFloorOthers = Number(main.others) || 0;
     const cleanFloorTodayVolume = justArrived + backlog;
-    const cleanFloorNumerator = cleanFloorOngoing + cleanFloorDelivered + cleanFloorFtd + cleanFloorOthers;
-    const cleanFloorValue = cleanFloorTodayVolume > 0 ? (cleanFloorNumerator / cleanFloorTodayVolume) * 100 : 0;
-    const currentWibHour = new Date(Date.now() + 7 * 60 * 60 * 1000).getUTCHours();
+    const cleanFloorNumerator =
+      cleanFloorOngoing + cleanFloorDelivered + cleanFloorFtd + cleanFloorOthers;
+    const cleanFloorValue =
+      cleanFloorTodayVolume > 0
+        ? (cleanFloorNumerator / cleanFloorTodayVolume) * 100
+        : 0;
+    const currentWibHour = new Date(
+      Date.now() + 7 * 60 * 60 * 1000
+    ).getUTCHours();
     const lockedAt = `${todayDate}T01:00:00.000Z`;
     const snapshotKey = { facility: HUB_ID, date: todayDate };
 
@@ -427,6 +503,7 @@ export async function GET(req: NextRequest) {
       const existing = await prisma.cleanFloorSnapshot.findUnique({
         where: { facility_date: snapshotKey },
       });
+
       if (existing) {
         cleanFloor = formatLockedSnapshot(existing);
       } else {
@@ -489,10 +566,12 @@ export async function GET(req: NextRequest) {
       sd_before_12: parseFloat(sdBefore12.toFixed(2)),
       courier_assigned: courier?.assigned || 0,
       courier_check_in: courier?.check_in || 0,
-      courier_check_in_percent: parseFloat(courier?.check_in_percent) || 0,
+      courier_check_in_percent:
+        parseFloat(courier?.check_in_percent) || 0,
       courier_out_drivers: courier?.out_drivers || 0,
       courier_out_percent: parseFloat(courier?.out_percent) || 0,
-      courier_avg_productivity: parseFloat(courier?.avg_productivity) || 0,
+      courier_avg_productivity:
+        parseFloat(courier?.avg_productivity) || 0,
       ops_assigned: ops?.assigned || 0,
       ops_check_in: ops?.check_in || 0,
       ops_check_in_percent: parseFloat(ops?.check_in_percent) || 0,
@@ -507,11 +586,19 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      meta: { cached: false, fetched_at: new Date().toISOString(), hub_id: HUB_ID, hub_name: HUB_NAME },
+      meta: {
+        cached: false,
+        fetched_at: new Date().toISOString(),
+        hub_id: HUB_ID,
+        hub_name: HUB_NAME,
+      },
       summary,
     });
   } catch (e: any) {
     console.error("[summary] Error:", e.message);
-    return NextResponse.json({ error: "HMS failed", detail: e.message }, { status: 502 });
+    return NextResponse.json(
+      { error: "HMS failed", detail: e.message },
+      { status: 502 }
+    );
   }
 }
