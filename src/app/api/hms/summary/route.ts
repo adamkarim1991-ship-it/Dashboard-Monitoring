@@ -18,51 +18,60 @@ type CacheEntry = { data: any; timestamp: number };
 const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 5 * 1000;
 
+function toWIB(offsetHours: number = 0): Date {
+  const d = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  if (offsetHours !== 0) {
+    d.setUTCDate(d.getUTCDate() + offsetHours);
+  }
+  return d;
+}
+
+function formatDate(d: Date): string {
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();
+  const day = d.getUTCDate();
+  return `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
 function getMainCurrDate(): string {
-  const nowWIB = new Date(Date.now() + 7 * 60 * 60 * 1000);
-  const y = nowWIB.getUTCFullYear();
-  const m = nowWIB.getUTCMonth();
-  const d = nowWIB.getUTCDate() - 1;
-  return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")} 17:00:00`;
+  const d = toWIB(-1);
+  return `${formatDate(d)} 17:00:00`;
 }
 
 function getTodayDate(): string {
-  const nowWIB = new Date(Date.now() + 7 * 60 * 60 * 1000);
-  const y = nowWIB.getUTCFullYear();
-  const m = nowWIB.getUTCMonth();
-  const d = nowWIB.getUTCDate();
-  return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  return formatDate(toWIB(0));
 }
 
 function getCycleList(): string {
-  const nowWIB = new Date(Date.now() + 7 * 60 * 60 * 1000);
-  const y = nowWIB.getUTCFullYear();
-  const m = nowWIB.getUTCMonth();
-  const d = nowWIB.getUTCDate() - 1;
-  const startMs = Date.UTC(y, m, d, 17, 0, 0) - 7 * 60 * 60 * 1000;
-  const endMs = Date.UTC(y, m, d + 1, 17, 0, 0) - 7 * 60 * 60 * 1000;
+  const startWIB = toWIB(0);
+  startWIB.setUTCDate(startWIB.getUTCDate() - 1);
+  startWIB.setUTCHours(17, 0, 0, 0);
+  const endWIB = toWIB(0);
+  endWIB.setUTCHours(17, 0, 0, 0);
+  const startMs = startWIB.getTime() - 7 * 60 * 60 * 1000;
+  const endMs = endWIB.getTime() - 7 * 60 * 60 * 1000;
   return JSON.stringify([
     `${Math.floor(startMs / 1000)}-${Math.floor(endMs / 1000)}`,
   ]);
 }
 
 function get8amWIBUnix(): number {
-  const nowWIB = new Date(Date.now() + 7 * 60 * 60 * 1000);
-  const y = nowWIB.getUTCFullYear();
-  const m = nowWIB.getUTCMonth();
-  const d = nowWIB.getUTCDate();
+  const d = toWIB(0);
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();
+  const day = d.getUTCDate();
   return Math.floor(
-    (Date.UTC(y, m, d, 8, 0, 0) - 7 * 60 * 60 * 1000) / 1000
+    (Date.UTC(y, m, day, 8, 0, 0) - 7 * 60 * 60 * 1000) / 1000
   );
 }
 
 function getTodayWIBUnix(hour: number): number {
-  const nowWIB = new Date(Date.now() + 7 * 60 * 60 * 1000);
-  const y = nowWIB.getUTCFullYear();
-  const m = nowWIB.getUTCMonth();
-  const d = nowWIB.getUTCDate();
+  const d = toWIB(0);
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();
+  const day = d.getUTCDate();
   return Math.floor(
-    (Date.UTC(y, m, d, hour, 0, 0) - 7 * 60 * 60 * 1000) / 1000
+    (Date.UTC(y, m, day, hour, 0, 0) - 7 * 60 * 60 * 1000) / 1000
   );
 }
 
@@ -92,9 +101,11 @@ async function callHMS(
     body: JSON.stringify({ api_id: apiId, params }),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`HMS ${res.status}`);
+  if (!res.ok) throw new Error(`HMS HTTP ${res.status}`);
   const json = await res.json();
-  if (json.code !== 200) throw new Error(`HMS error: ${json.msg || json.code}`);
+  if (json.code !== 200) {
+    throw new Error(`HMS code ${json.code}: ${json.data?.base_resp?.message || json.msg || "unknown"}`);
+  }
   return json;
 }
 
@@ -396,6 +407,13 @@ export async function GET(req: NextRequest) {
         }),
       ]);
 
+    if (!mainRes) {
+      return NextResponse.json(
+        { error: "HMS MAIN failed" },
+        { status: 502 }
+      );
+    }
+
     const main = parseCompact(mainRes.data.data, mainRes.data.fields)!;
     const cycle = cycleRes
       ? parseCompact(cycleRes.data.data, cycleRes.data.fields)
@@ -453,7 +471,10 @@ export async function GET(req: NextRequest) {
     const cleanFloorOthers = Number(main.others) || 0;
     const cleanFloorTodayVolume = justArrived + backlog;
     const cleanFloorNumerator =
-      cleanFloorOngoing + cleanFloorDelivered + cleanFloorFtd + cleanFloorOthers;
+      cleanFloorOngoing +
+      cleanFloorDelivered +
+      cleanFloorFtd +
+      cleanFloorOthers;
     const cleanFloorValue =
       cleanFloorTodayVolume > 0
         ? (cleanFloorNumerator / cleanFloorTodayVolume) * 100
