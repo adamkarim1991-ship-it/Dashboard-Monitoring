@@ -28,7 +28,6 @@ export async function GET() {
 
   const results: any[] = [];
 
-  // Filter untuk tiap job role
   const filters = [
     {
       label: "ALL",
@@ -37,7 +36,6 @@ export async function GET() {
     },
     { label: "DEDICATED ONLY", job_roles: '["Dedicated Rider LM 2W"]' },
     { label: "RIDER ONLY", job_roles: '["Rider LM 2W"]' },
-    { label: "OPS ONLY", job_roles: '["Ops LM","Ops LM - Mitra","Ops LM - Mitra Oncall"]' },
   ];
 
   for (const f of filters) {
