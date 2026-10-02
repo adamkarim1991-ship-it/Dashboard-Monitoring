@@ -6,7 +6,6 @@ export const runtime = "nodejs";
 const API_ID_MAIN = "7564027893345453074";
 const HUB_ID = "460450593288";
 const PAYMENT_TYPES_ALL = '["cashless","cod"]';
-const PAYMENT_TYPES_COD = '["cod"]';
 const SERVICE_TYPES = '["INS","SDS","REG","NDD","OTHERS"]';
 
 async function testCall(token: string, label: string, params: any) {
@@ -20,7 +19,8 @@ async function testCall(token: string, label: string, params: any) {
         "x-location": "Asia/Jakarta",
         "x-request-source": "web",
         Origin: "https://gtl-id.tokgistic.com",
-        Referer: "https://gtl-id.tokgistic.com/tms/operation-performance-central",
+        Referer:
+          "https://gtl-id.tokgistic.com/tms/operation-performance-central",
       },
       body: JSON.stringify({ api_id: API_ID_MAIN, params }),
       cache: "no-store",
@@ -33,11 +33,13 @@ async function testCall(token: string, label: string, params: any) {
     return {
       label,
       params,
-      httpStatus: res.status,
       hmsCode: parsed?.code,
       hmsMsg: parsed?.data?.base_resp?.message || parsed?.msg,
       ok: res.ok && parsed?.code === 200,
-      dataPreview: parsed?.data?.data?.slice?.(0, 200) || parsed?.data?.data,
+      dataPreview:
+        typeof parsed?.data?.data === "string"
+          ? parsed.data.data.slice(0, 150)
+          : parsed?.data?.data,
     };
   } catch (e: any) {
     return { label, params, error: e.message };
@@ -56,53 +58,51 @@ export async function GET() {
 
   const nowWIB = new Date(Date.now() + 7 * 60 * 60 * 1000);
   nowWIB.setUTCDate(nowWIB.getUTCDate() - 1);
-  const currDate = `${nowWIB.getUTCFullYear()}-${String(nowWIB.getUTCMonth() + 1).padStart(2, "0")}-${String(nowWIB.getUTCDate()).padStart(2, "0")} 17:00:00`;
-
-  // Test 1: Urgent — variasi param
-  const urgentTests = [
-    "is_urgent",
-    "urgent",
-    "urgent_filter",
-    "is_urgent_filter",
-  ];
-
-  // Test 2: COD — variasi format
-  const codTests = [
-    '["cod"]',
-    '["COD"]',
-    "cod",
-    '["cod","COD"]',
-  ];
+  const currDate = `${nowWIB.getUTCFullYear()}-${String(
+    nowWIB.getUTCMonth() + 1
+  ).padStart(2, "0")}-${String(nowWIB.getUTCDate()).padStart(2, "0")} 17:00:00`;
 
   const results: any[] = [];
 
-  // Baseline
-  results.push(await testCall(user.hmsToken, "BASELINE (all)", {
-    hub_ids: JSON.stringify([HUB_ID]),
-    curr_date: currDate,
-    payment_types: PAYMENT_TYPES_ALL,
-    service_types: SERVICE_TYPES,
-  }));
-
-  // Urgent variants
-  for (const key of urgentTests) {
-    results.push(await testCall(user.hmsToken, `URGENT: ${key}="true"`, {
+  // BASELINE
+  results.push(
+    await testCall(user.hmsToken, "BASELINE (all payment)", {
       hub_ids: JSON.stringify([HUB_ID]),
       curr_date: currDate,
       payment_types: PAYMENT_TYPES_ALL,
       service_types: SERVICE_TYPES,
-      [key]: "true",
-    }));
+    })
+  );
+
+  // URGENT variants
+  for (const key of [
+    "is_urgent",
+    "urgent",
+    "urgent_filter",
+    "is_urgent_filter",
+    "urgent_flag",
+  ]) {
+    results.push(
+      await testCall(user.hmsToken, `URGENT: ${key}="true"`, {
+        hub_ids: JSON.stringify([HUB_ID]),
+        curr_date: currDate,
+        payment_types: PAYMENT_TYPES_ALL,
+        service_types: SERVICE_TYPES,
+        [key]: "true",
+      })
+    );
   }
 
   // COD variants
-  for (const pt of codTests) {
-    results.push(await testCall(user.hmsToken, `COD: payment_types=${pt}`, {
-      hub_ids: JSON.stringify([HUB_ID]),
-      curr_date: currDate,
-      payment_types: pt,
-      service_types: SERVICE_TYPES,
-    }));
+  for (const pt of ['["cod"]', '["COD"]', "cod", '["cod","COD"]']) {
+    results.push(
+      await testCall(user.hmsToken, `COD: payment_types=${pt}`, {
+        hub_ids: JSON.stringify([HUB_ID]),
+        curr_date: currDate,
+        payment_types: pt,
+        service_types: SERVICE_TYPES,
+      })
+    );
   }
 
   return NextResponse.json({ results });
