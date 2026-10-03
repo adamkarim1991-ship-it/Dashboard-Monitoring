@@ -2,31 +2,28 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
-// API IDs
 const API_ID_MAIN = "7564027893345453074";
 const API_ID_CYCLE1 = "7657180282079970311";
 const API_ID_OPS = "7517597334683780103";
 const API_ID_COURIER = "7514949742451868679";
+const API_ID_DEDICATED = "7591486857905554439";
 
 const PAYMENT_TYPES = '["cashless","cod"]';
 const PAYMENT_TYPES_COD = '["cod"]';
 const SERVICE_TYPES = '["INS","SDS","REG","NDD","OTHERS"]';
 const JOB_ROLES_CYCLE =
   '["Rider LM 2W - Mitra Prioritas","Ops LM - Mitra","Ops LM - Mitra Oncall","Rider LM 2W","Dedicated Rider LM 2W","Ops LM"]';
+const JOB_ROLES_DEDICATED = '["Dedicated Rider LM 2W"]';
 
 type CacheEntry = { data: any; timestamp: number };
 const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 5 * 1000;
 
-function toWIB(offsetHours: number = 0): Date {
-  const d = new Date(Date.now() + 7 * 60 * 60 * 1000);
-  if (offsetHours !== 0) {
-    d.setUTCDate(d.getUTCDate() + offsetHours);
-  }
-  return d;
+function toWIB(): Date {
+  return new Date(Date.now() + 7 * 60 * 60 * 1000);
 }
 
-function formatDate(d: Date): string {
+function formatDateYMD(d: Date): string {
   const y = d.getUTCFullYear();
   const m = d.getUTCMonth();
   const day = d.getUTCDate();
@@ -34,29 +31,42 @@ function formatDate(d: Date): string {
 }
 
 function getMainCurrDate(): string {
-  const d = toWIB(-1);
-  return `${formatDate(d)} 17:00:00`;
+  const d = toWIB();
+  d.setUTCDate(d.getUTCDate() - 1);
+  return `${formatDateYMD(d)} 17:00:00`;
 }
 
 function getTodayDate(): string {
-  return formatDate(toWIB(0));
+  return formatDateYMD(toWIB());
 }
 
 function getCycleList(): string {
-  const startWIB = toWIB(0);
-  startWIB.setUTCDate(startWIB.getUTCDate() - 1);
-  startWIB.setUTCHours(17, 0, 0, 0);
-  const endWIB = toWIB(0);
-  endWIB.setUTCHours(17, 0, 0, 0);
-  const startMs = startWIB.getTime() - 7 * 60 * 60 * 1000;
-  const endMs = endWIB.getTime() - 7 * 60 * 60 * 1000;
+  const start = toWIB();
+  start.setUTCDate(start.getUTCDate() - 1);
+  start.setUTCHours(17, 0, 0, 0);
+  const end = toWIB();
+  end.setUTCHours(17, 0, 0, 0);
+  const startMs = start.getTime() - 7 * 60 * 60 * 1000;
+  const endMs = end.getTime() - 7 * 60 * 60 * 1000;
   return JSON.stringify([
     `${Math.floor(startMs / 1000)}-${Math.floor(endMs / 1000)}`,
   ]);
 }
 
+function getCycleUnix(): { start: number; end: number } {
+  const start = toWIB();
+  start.setUTCDate(start.getUTCDate() - 1);
+  start.setUTCHours(17, 0, 0, 0);
+  const end = toWIB();
+  end.setUTCHours(17, 0, 0, 0);
+  return {
+    start: Math.floor((start.getTime() - 7 * 60 * 60 * 1000) / 1000),
+    end: Math.floor((end.getTime() - 7 * 60 * 60 * 1000) / 1000),
+  };
+}
+
 function get8amWIBUnix(): number {
-  const d = toWIB(0);
+  const d = toWIB();
   const y = d.getUTCFullYear();
   const m = d.getUTCMonth();
   const day = d.getUTCDate();
@@ -66,7 +76,7 @@ function get8amWIBUnix(): number {
 }
 
 function getTodayWIBUnix(hour: number): number {
-  const d = toWIB(0);
+  const d = toWIB();
   const y = d.getUTCFullYear();
   const m = d.getUTCMonth();
   const day = d.getUTCDate();
@@ -104,7 +114,11 @@ async function callHMS(
   if (!res.ok) throw new Error(`HMS HTTP ${res.status}`);
   const json = await res.json();
   if (json.code !== 200) {
-    throw new Error(`HMS code ${json.code}: ${json.data?.base_resp?.message || json.msg || "unknown"}`);
+    throw new Error(
+      `HMS code ${json.code}: ${
+        json.data?.base_resp?.message || json.msg || "unknown"
+      }`
+    );
   }
   return json;
 }
@@ -357,55 +371,74 @@ export async function GET(req: NextRequest) {
     const currDate = getMainCurrDate();
     const todayDate = getTodayDate();
     const cycleList = getCycleList();
+    const cycleUnix = getCycleUnix();
 
-    const [mainRes, codRes, cycleRes, opsRes, courierRes, c1Result] =
-      await Promise.all([
-        callHMS(user.hmsToken, API_ID_MAIN, {
-          hub_ids: JSON.stringify([HUB_ID]),
-          curr_date: currDate,
-          payment_types: PAYMENT_TYPES,
-          service_types: SERVICE_TYPES,
-        }),
-        callHMS(user.hmsToken, API_ID_MAIN, {
-          hub_ids: JSON.stringify([HUB_ID]),
-          curr_date: currDate,
-          payment_types: PAYMENT_TYPES_COD,
-          service_types: SERVICE_TYPES,
-        }).catch((e) => {
-          console.warn("[cod] Gagal:", e.message);
-          return null;
-        }),
-        callHMS(user.hmsToken, API_ID_CYCLE1, {
-          hub_id: HUB_ID,
-          driver_name: "",
-          job_roles: JOB_ROLES_CYCLE,
-          cycle_list: cycleList,
-        }).catch((e) => {
-          console.warn("[cycle1] Gagal:", e.message);
-          return null;
-        }),
-        callHMS(user.hmsToken, API_ID_OPS, {
-          hub_ids: JSON.stringify([HUB_ID]),
-          curr_date_start: currDate,
-          date: todayDate,
-        }).catch((e) => {
-          console.warn("[ops] Gagal:", e.message);
-          return null;
-        }),
-        callHMS(user.hmsToken, API_ID_COURIER, {
-          hub_ids: JSON.stringify([HUB_ID]),
-          curr_date_start: currDate,
-          date: todayDate,
-          job_roles: JOB_ROLES_CYCLE,
-        }).catch((e) => {
-          console.warn("[courier] Gagal:", e.message);
-          return null;
-        }),
-        computeC1FromInboundScan(user.hmsToken, HUB_NAME).catch((e) => {
-          console.warn("[c1c2] Gagal:", e.message);
-          return { c1: 0, deliveredBefore12: 0 };
-        }),
-      ]);
+    const [
+      mainRes,
+      codRes,
+      cycleRes,
+      opsRes,
+      courierRes,
+      dedicatedRes,
+      c1Result,
+    ] = await Promise.all([
+      callHMS(user.hmsToken, API_ID_MAIN, {
+        hub_ids: JSON.stringify([HUB_ID]),
+        curr_date: currDate,
+        payment_types: PAYMENT_TYPES,
+        service_types: SERVICE_TYPES,
+      }),
+      callHMS(user.hmsToken, API_ID_MAIN, {
+        hub_ids: JSON.stringify([HUB_ID]),
+        curr_date: currDate,
+        payment_types: PAYMENT_TYPES_COD,
+        service_types: SERVICE_TYPES,
+      }).catch((e) => {
+        console.warn("[cod] Gagal:", e.message);
+        return null;
+      }),
+      callHMS(user.hmsToken, API_ID_CYCLE1, {
+        hub_id: HUB_ID,
+        driver_name: "",
+        job_roles: JOB_ROLES_CYCLE,
+        cycle_list: cycleList,
+      }).catch((e) => {
+        console.warn("[cycle1] Gagal:", e.message);
+        return null;
+      }),
+      callHMS(user.hmsToken, API_ID_OPS, {
+        hub_ids: JSON.stringify([HUB_ID]),
+        curr_date_start: currDate,
+        date: todayDate,
+      }).catch((e) => {
+        console.warn("[ops] Gagal:", e.message);
+        return null;
+      }),
+      callHMS(user.hmsToken, API_ID_COURIER, {
+        hub_ids: JSON.stringify([HUB_ID]),
+        curr_date_start: currDate,
+        date: todayDate,
+        job_roles: JOB_ROLES_CYCLE,
+      }).catch((e) => {
+        console.warn("[courier] Gagal:", e.message);
+        return null;
+      }),
+      callHMS(user.hmsToken, API_ID_DEDICATED, {
+        hub_id: HUB_ID,
+        driver_name: "",
+        job_roles: JOB_ROLES_DEDICATED,
+        cycle_level: "1",
+        cycle_start_time: String(cycleUnix.start),
+        cycle_end_time: String(cycleUnix.end),
+      }).catch((e) => {
+        console.warn("[dedicated] Gagal:", e.message);
+        return null;
+      }),
+      computeC1FromInboundScan(user.hmsToken, HUB_NAME).catch((e) => {
+        console.warn("[c1c2] Gagal:", e.message);
+        return { c1: 0, deliveredBefore12: 0 };
+      }),
+    ]);
 
     if (!mainRes) {
       return NextResponse.json(
@@ -425,6 +458,52 @@ export async function GET(req: NextRequest) {
       ? parseCompact(courierRes.data.data, courierRes.data.fields)
       : null;
 
+    // === PARSE DEDICATED ===
+    let dedicatedData = {
+      actual: 0,
+      total_picked: 0,
+      total_delivered: 0,
+      avg_pickup: 0,
+      achievement_pct: 0,
+    };
+    if (dedicatedRes?.data?.data && dedicatedRes?.data?.fields) {
+      try {
+        const rows = JSON.parse(dedicatedRes.data.data);
+        const fields: { name: string }[] = dedicatedRes.data.fields;
+        const pickedIdx = fields.findIndex(
+          (f: any) => f.name === "total_picked"
+        );
+        const deliveredIdx = fields.findIndex(
+          (f: any) => f.name === "total_delivered"
+        );
+
+        let totalPicked = 0;
+        let totalDelivered = 0;
+        for (const row of rows) {
+          totalPicked += Number(row[pickedIdx]) || 0;
+          totalDelivered += Number(row[deliveredIdx]) || 0;
+        }
+
+        dedicatedData.actual = rows.length;
+        dedicatedData.total_picked = totalPicked;
+        dedicatedData.total_delivered = totalDelivered;
+        dedicatedData.avg_pickup =
+          rows.length > 0
+            ? parseFloat((totalPicked / rows.length).toFixed(2))
+            : 0;
+        // Target default 120
+        dedicatedData.achievement_pct =
+          rows.length > 0
+            ? parseFloat(
+                ((totalPicked / (rows.length * 120)) * 100).toFixed(2)
+              )
+            : 0;
+      } catch (e: any) {
+        console.warn("[dedicated] Parse gagal:", e.message);
+      }
+    }
+
+    // === COD ===
     let codReadyToReturn = 0,
       codJustArrived = 0,
       codBacklog = 0,
@@ -593,6 +672,13 @@ export async function GET(req: NextRequest) {
       courier_out_percent: parseFloat(courier?.out_percent) || 0,
       courier_avg_productivity:
         parseFloat(courier?.avg_productivity) || 0,
+      // === DEDICATED ===
+      dedicated_actual: dedicatedData.actual,
+      dedicated_total_picked: dedicatedData.total_picked,
+      dedicated_total_delivered: dedicatedData.total_delivered,
+      dedicated_avg_pickup: dedicatedData.avg_pickup,
+      dedicated_achievement_pct: dedicatedData.achievement_pct,
+      // === OPS ===
       ops_assigned: ops?.assigned || 0,
       ops_check_in: ops?.check_in || 0,
       ops_check_in_percent: parseFloat(ops?.check_in_percent) || 0,
