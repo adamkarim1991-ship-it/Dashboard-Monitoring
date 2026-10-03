@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { signOut } from "next-auth/react";
@@ -23,7 +23,7 @@ export type SessionUser = {
   email?: string | null;
   role: AppRole;
   hubIds: string[];
-  hmsHubIds: string[];        // ← TAMBAH INI
+  hmsHubIds: string[];
   clusterIds: string[];
   hmsToken?: string | null;
   leaderHmsToken?: string | null;
@@ -66,6 +66,11 @@ type SummaryResponse = {
   cycle_name: string;
   fetched_at: string;
   clean_floor: CleanFloorData;
+  dedicated_actual?: number;
+  dedicated_total_picked?: number;
+  dedicated_total_delivered?: number;
+  dedicated_avg_pickup?: number;
+  dedicated_achievement_pct?: number;
 };
 
 type SubdistrictRow = {
@@ -98,6 +103,12 @@ type UrgentData = {
   delivered_percentage: number;
 };
 
+type DedicatedData = {
+  actual: number;
+  avg_pickup: number;
+  achievement_pct: number;
+};
+
 type CleanFloorData = {
   value: number;
   breakdown: {
@@ -123,6 +134,11 @@ export default function DashboardView({ user }: { user: SessionUser }) {
     total: 0,
     ready_to_return: 0,
     fd_percentage: 0,
+  });
+  const [dedicated, setDedicated] = useState<DedicatedData>({
+    actual: 0,
+    avg_pickup: 0,
+    achievement_pct: 0,
   });
   const [urgent, setUrgent] = useState<UrgentData>({
     total: 0,
@@ -154,11 +170,18 @@ export default function DashboardView({ user }: { user: SessionUser }) {
     setLoading(true);
     try {
       const activeHubId = user.hmsHubIds?.[0] || "";
-const res = await fetch(`/api/hms/summary${activeHubId ? `?hubId=${activeHubId}` : ""}`);
+      const res = await fetch(`/api/hms/summary${activeHubId ? `?hubId=${activeHubId}` : ""}`);
       const d = await res.json();
       if (d.success) {
         setSummary(d.summary);
         if (d.summary.clean_floor) setCleanFloor(d.summary.clean_floor);
+        if (d.summary.dedicated_actual !== undefined) {
+          setDedicated({
+            actual: d.summary.dedicated_actual,
+            avg_pickup: d.summary.dedicated_avg_pickup || 0,
+            achievement_pct: d.summary.dedicated_achievement_pct || 0,
+          });
+        }
         setLastUpdate(new Date());
       }
     } catch (e) {
@@ -285,7 +308,6 @@ const res = await fetch(`/api/hms/summary${activeHubId ? `?hubId=${activeHubId}`
         current.key === key && current.direction === "desc" ? "asc" : "desc",
     }));
   };
-
 
   const handleSaveTokens = async () => {
     setTokenSaving(true);
@@ -598,25 +620,37 @@ const res = await fetch(`/api/hms/summary${activeHubId ? `?hubId=${activeHubId}`
                 <p className="text-[10px] font-semibold text-gray-500 tracking-wide">
                   ACTUAL
                 </p>
-                <p className="text-2xl font-bold text-amber-600 mt-1">0</p>
+                <p className="text-2xl font-bold text-amber-600 mt-1">
+                  {dedicated.actual}
+                </p>
                 <p className="text-[10px] text-gray-400 mt-0.5">
-                  Tidak ada dedicated aktif
+                  {dedicated.actual > 0
+                    ? "Dedicated aktif"
+                    : "Tidak ada dedicated aktif"}
                 </p>
               </div>
               <div className="px-4 py-3">
                 <p className="text-[10px] font-semibold text-gray-500 tracking-wide">
                   AVERAGE PICKUP
                 </p>
-                <p className="text-2xl font-bold text-gray-400 mt-1">-</p>
+                <p className="text-2xl font-bold text-amber-600 mt-1">
+                  {dedicated.avg_pickup > 0
+                    ? dedicated.avg_pickup.toFixed(0)
+                    : "-"}
+                </p>
                 <p className="text-[10px] text-gray-400 mt-0.5 leading-tight">
-                  N/A
+                  {dedicated.actual > 0 ? "Parcel per user" : "N/A"}
                 </p>
               </div>
               <div className="px-4 py-3">
                 <p className="text-[10px] font-semibold text-gray-500 tracking-wide">
                   ACHIEVEMENT - SNAPSHOT
                 </p>
-                <p className="text-xl font-bold text-gray-400 mt-1">N/A</p>
+                <p className="text-xl font-bold text-amber-600 mt-1">
+                  {dedicated.achievement_pct > 0
+                    ? `${dedicated.achievement_pct.toFixed(0)}%`
+                    : "N/A"}
+                </p>
                 <p className="text-[10px] text-gray-400 mt-0.5 leading-tight">
                   Target 120
                 </p>
@@ -863,8 +897,8 @@ function SortableHeader({ label, sortKey, activeSort, onSort, align = "right" }:
       <button type="button" onClick={() => onSort(sortKey)} className={`inline-flex w-full items-center gap-1 hover:text-sky-300 ${align === "left" ? "justify-start" : "justify-end"}`} aria-label={`Sort by ${label}`}>
         <span>{label}</span>
         <span className="inline-flex text-[9px] leading-none" aria-hidden="true">
-          <span className={active && activeSort.direction === "asc" ? "text-sky-300" : "text-slate-500"}>↑</span>
-          <span className={active && activeSort.direction === "desc" ? "text-sky-300" : "text-slate-500"}>↓</span>
+          <span className={active && activeSort.direction === "asc" ? "text-sky-300" : "text-slate-500"}>▲</span>
+          <span className={active && activeSort.direction === "desc" ? "text-sky-300" : "text-slate-500"}>▼</span>
         </span>
       </button>
     </th>
@@ -885,7 +919,6 @@ function MetricCell({ value, emphasized = false }: {
     </td>
   );
 }
-
 
 function BigVolumeCard({
   label,
@@ -974,15 +1007,12 @@ function BigPercentCard({
   );
 }
 
-
-
 function CleanFloorCard({ data }: { data: CleanFloorData | null }) {
   const value = data?.value ?? 0;
   const isLocked = data?.is_locked ?? false;
   const quality = data?.quality ?? "live";
   const bd = data?.breakdown;
 
-  // Dynamic styling berdasarkan quality
   const isLive = quality === "live";
   const isAccurate = quality === "accurate";
   const borderColor = isAccurate
