@@ -70,7 +70,9 @@ type SummaryResponse = {
   dedicated_total_picked?: number;
   dedicated_total_delivered?: number;
   dedicated_avg_pickup?: number;
+  dedicated_avg_delivered?: number;
   dedicated_achievement_pct?: number;
+  dedicated_target?: number;
   dedicated_drivers?: string[];
 };
 
@@ -109,7 +111,9 @@ type DedicatedData = {
   total_picked: number;
   total_delivered: number;
   avg_pickup: number;
+  avg_delivered: number;
   achievement_pct: number;
+  target: number;
   drivers: string[];
 };
 
@@ -144,7 +148,9 @@ export default function DashboardView({ user }: { user: SessionUser }) {
     total_picked: 0,
     total_delivered: 0,
     avg_pickup: 0,
+    avg_delivered: 0,
     achievement_pct: 0,
+    target: 135,
     drivers: [],
   });
   const [urgent, setUrgent] = useState<UrgentData>({
@@ -188,7 +194,9 @@ export default function DashboardView({ user }: { user: SessionUser }) {
             total_picked: d.summary.dedicated_total_picked || 0,
             total_delivered: d.summary.dedicated_total_delivered || 0,
             avg_pickup: d.summary.dedicated_avg_pickup || 0,
+            avg_delivered: d.summary.dedicated_avg_delivered || 0,
             achievement_pct: d.summary.dedicated_achievement_pct || 0,
+            target: d.summary.dedicated_target || 135,
             drivers: d.summary.dedicated_drivers || [],
           });
         }
@@ -625,8 +633,8 @@ export default function DashboardView({ user }: { user: SessionUser }) {
             <div className="px-4 py-2 border-b border-gray-100 text-[11px] font-bold text-gray-700 tracking-wider">
               DEDICATED
             </div>
-            <div className="grid grid-cols-3 divide-x divide-gray-100">
-              <div className="px-4 py-3">
+            <div className="grid grid-cols-4 divide-x divide-gray-100">
+              <div className="px-3 py-3">
                 <p className="text-[10px] font-semibold text-gray-500 tracking-wide">
                   ACTUAL
                 </p>
@@ -636,23 +644,34 @@ export default function DashboardView({ user }: { user: SessionUser }) {
                 <p className="text-[10px] text-gray-400 mt-0.5">
                   {dedicated.actual > 0
                     ? `${dedicated.drivers.slice(0, 2).join(", ")}${dedicated.drivers.length > 2 ? `+${dedicated.drivers.length - 2}` : ""}`
-                    : "Tidak ada dedicated aktif"}
+                    : "Tidak ada"}
                 </p>
               </div>
-              <div className="px-4 py-3">
+              <div className="px-3 py-3">
                 <p className="text-[10px] font-semibold text-gray-500 tracking-wide">
-                  AVERAGE PICKUP
+                  AVG PICKUP
                 </p>
                 <p className="text-2xl font-bold text-amber-600 mt-1">
                   {dedicated.avg_pickup > 0 ? dedicated.avg_pickup : "-"}
                 </p>
                 <p className="text-[10px] text-gray-400 mt-0.5 leading-tight">
-                  {dedicated.actual > 0 ? "Parcel per user" : "N/A"}
+                  {dedicated.actual > 0 ? "Parcel / user" : "N/A"}
                 </p>
               </div>
-              <div className="px-4 py-3">
+              <div className="px-3 py-3">
                 <p className="text-[10px] font-semibold text-gray-500 tracking-wide">
-                  ACHIEVEMENT - SNAPSHOT
+                  AVG DELIVERED
+                </p>
+                <p className="text-2xl font-bold text-amber-600 mt-1">
+                  {dedicated.avg_delivered > 0 ? dedicated.avg_delivered : "-"}
+                </p>
+                <p className="text-[10px] text-gray-400 mt-0.5 leading-tight">
+                  {dedicated.actual > 0 ? "Parcel / user" : "N/A"}
+                </p>
+              </div>
+              <div className="px-3 py-3">
+                <p className="text-[10px] font-semibold text-gray-500 tracking-wide">
+                  ACHIEVEMENT
                 </p>
                 <p className="text-xl font-bold text-amber-600 mt-1">
                   {dedicated.achievement_pct > 0
@@ -660,7 +679,7 @@ export default function DashboardView({ user }: { user: SessionUser }) {
                     : "N/A"}
                 </p>
                 <p className="text-[10px] text-gray-400 mt-0.5 leading-tight">
-                  Target 120
+                  Target {dedicated.target}
                 </p>
               </div>
             </div>

@@ -14,6 +14,7 @@ const SERVICE_TYPES = '["INS","SDS","REG","NDD","OTHERS"]';
 const JOB_ROLES_CYCLE =
   '["Rider LM 2W - Mitra Prioritas","Ops LM - Mitra","Ops LM - Mitra Oncall","Rider LM 2W","Dedicated Rider LM 2W","Ops LM"]';
 const JOB_ROLES_DEDICATED = '["Dedicated Rider LM 2W"]';
+const DEDICATED_TARGET = 135;
 
 type CacheEntry = { data: any; timestamp: number };
 const cache = new Map<string, CacheEntry>();
@@ -301,26 +302,32 @@ async function resolveActiveHub(
 }
 
 /**
- * Fetch & merge data dedicated dari semua cycle (C1 + C2 + ...).
- * Menggunakan range cycle_level 1 s/d 3, lalu sum per driver.
+ * Fetch & merge data dedicated dari semua cycle (C1 + C2 + C3).
+ * Sum picked & delivered per driver.
+ * Achievement = (total delivered / (count × target)) × 100
  */
 async function fetchDedicatedMerged(
   token: string,
   hubId: string
-): Promise<{ actual: number; totalPicked: number; totalDelivered: number; avgPickup: number; achievementPct: number; drivers: string[] }> {
+): Promise<{
+  actual: number;
+  totalPicked: number;
+  totalDelivered: number;
+  avgPickup: number;
+  avgDelivered: number;
+  achievementPct: number;
+  drivers: string[];
+}> {
   const result = {
     actual: 0,
     totalPicked: 0,
     totalDelivered: 0,
     avgPickup: 0,
+    avgDelivered: 0,
     achievementPct: 0,
     drivers: [] as string[],
   };
 
-  // Cycle definitions (WIB):
-  // C1: 00:00 - 08:00
-  // C2: 08:01 - 14:00
-  // C3: 14:01 - 20:00
   const cycles = [
     { level: "1", startHour: 0, startMin: 0, endHour: 8, endMin: 0 },
     { level: "2", startHour: 8, startMin: 1, endHour: 14, endMin: 0 },
@@ -331,11 +338,12 @@ async function fetchDedicatedMerged(
 
   for (const cyc of cycles) {
     try {
+      const now = toWIB();
       const startUnix = Math.floor(
         (Date.UTC(
-          toWIB().getUTCFullYear(),
-          toWIB().getUTCMonth(),
-          toWIB().getUTCDate(),
+          now.getUTCFullYear(),
+          now.getUTCMonth(),
+          now.getUTCDate(),
           cyc.startHour,
           cyc.startMin,
           0
@@ -345,9 +353,9 @@ async function fetchDedicatedMerged(
       );
       const endUnix = Math.floor(
         (Date.UTC(
-          toWIB().getUTCFullYear(),
-          toWIB().getUTCMonth(),
-          toWIB().getUTCDate(),
+          now.getUTCFullYear(),
+          now.getUTCMonth(),
+          now.getUTCDate(),
           cyc.endHour,
           cyc.endMin,
           0
@@ -369,12 +377,19 @@ async function fetchDedicatedMerged(
 
       const rows = JSON.parse(res.data.data);
       const fields: { name: string }[] = res.data.fields;
-      const pickedIdx = fields.findIndex((f: any) => f.name === "total_picked");
-      const deliveredIdx = fields.findIndex((f: any) => f.name === "total_delivered");
-      const driverIdx = fields.findIndex((f: any) => f.name === "driver_name");
+      const pickedIdx = fields.findIndex(
+        (f: any) => f.name === "total_picked"
+      );
+      const deliveredIdx = fields.findIndex(
+        (f: any) => f.name === "total_delivered"
+      );
+      const driverIdx = fields.findIndex(
+        (f: any) => f.name === "driver_name"
+      );
 
       for (const row of rows) {
-        const driverName = driverIdx >= 0 ? String(row[driverIdx] || "").trim() : "";
+        const driverName =
+          driverIdx >= 0 ? String(row[driverIdx] || "").trim() : "";
         if (!driverName) continue;
         const picked = Number(row[pickedIdx]) || 0;
         const delivered = Number(row[deliveredIdx]) || 0;
@@ -407,9 +422,13 @@ async function fetchDedicatedMerged(
   result.totalDelivered = totalDelivered;
   result.avgPickup =
     driverMap.size > 0 ? Math.round(totalPicked / driverMap.size) : 0;
+  result.avgDelivered =
+    driverMap.size > 0 ? Math.round(totalDelivered / driverMap.size) : 0;
   result.achievementPct =
     driverMap.size > 0
-      ? parseFloat(((totalPicked / (driverMap.size * 120)) * 100).toFixed(2))
+      ? parseFloat(
+          ((totalDelivered / (driverMap.size * DEDICATED_TARGET)) * 100).toFixed(2)
+        )
       : 0;
   result.drivers = drivers;
 
@@ -527,6 +546,7 @@ export async function GET(req: NextRequest) {
           totalPicked: 0,
           totalDelivered: 0,
           avgPickup: 0,
+          avgDelivered: 0,
           achievementPct: 0,
           drivers: [],
         };
@@ -729,7 +749,9 @@ export async function GET(req: NextRequest) {
       dedicated_total_picked: dedicatedMerged.totalPicked,
       dedicated_total_delivered: dedicatedMerged.totalDelivered,
       dedicated_avg_pickup: dedicatedMerged.avgPickup,
+      dedicated_avg_delivered: dedicatedMerged.avgDelivered,
       dedicated_achievement_pct: dedicatedMerged.achievementPct,
+      dedicated_target: DEDICATED_TARGET,
       dedicated_drivers: dedicatedMerged.drivers,
       // === OPS ===
       ops_assigned: ops?.assigned || 0,
