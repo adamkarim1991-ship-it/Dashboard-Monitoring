@@ -300,6 +300,122 @@ async function resolveActiveHub(
   return userHubs[0].hub;
 }
 
+/**
+ * Fetch & merge data dedicated dari semua cycle (C1 + C2 + ...).
+ * Menggunakan range cycle_level 1 s/d 3, lalu sum per driver.
+ */
+async function fetchDedicatedMerged(
+  token: string,
+  hubId: string
+): Promise<{ actual: number; totalPicked: number; totalDelivered: number; avgPickup: number; achievementPct: number; drivers: string[] }> {
+  const result = {
+    actual: 0,
+    totalPicked: 0,
+    totalDelivered: 0,
+    avgPickup: 0,
+    achievementPct: 0,
+    drivers: [] as string[],
+  };
+
+  // Cycle definitions (WIB):
+  // C1: 00:00 - 08:00
+  // C2: 08:01 - 14:00
+  // C3: 14:01 - 20:00
+  const cycles = [
+    { level: "1", startHour: 0, startMin: 0, endHour: 8, endMin: 0 },
+    { level: "2", startHour: 8, startMin: 1, endHour: 14, endMin: 0 },
+    { level: "3", startHour: 14, startMin: 1, endHour: 20, endMin: 0 },
+  ];
+
+  const driverMap = new Map<string, { picked: number; delivered: number }>();
+
+  for (const cyc of cycles) {
+    try {
+      const startUnix = Math.floor(
+        (Date.UTC(
+          toWIB().getUTCFullYear(),
+          toWIB().getUTCMonth(),
+          toWIB().getUTCDate(),
+          cyc.startHour,
+          cyc.startMin,
+          0
+        ) -
+          7 * 60 * 60 * 1000) /
+          1000
+      );
+      const endUnix = Math.floor(
+        (Date.UTC(
+          toWIB().getUTCFullYear(),
+          toWIB().getUTCMonth(),
+          toWIB().getUTCDate(),
+          cyc.endHour,
+          cyc.endMin,
+          0
+        ) -
+          7 * 60 * 60 * 1000) /
+          1000
+      );
+
+      const res = await callHMS(token, API_ID_DEDICATED, {
+        hub_id: hubId,
+        driver_name: "",
+        job_roles: JOB_ROLES_DEDICATED,
+        cycle_start_time: String(startUnix),
+        cycle_end_time: String(endUnix),
+        cycle_level: cyc.level,
+      });
+
+      if (!res?.data?.data || !res?.data?.fields) continue;
+
+      const rows = JSON.parse(res.data.data);
+      const fields: { name: string }[] = res.data.fields;
+      const pickedIdx = fields.findIndex((f: any) => f.name === "total_picked");
+      const deliveredIdx = fields.findIndex((f: any) => f.name === "total_delivered");
+      const driverIdx = fields.findIndex((f: any) => f.name === "driver_name");
+
+      for (const row of rows) {
+        const driverName = driverIdx >= 0 ? String(row[driverIdx] || "").trim() : "";
+        if (!driverName) continue;
+        const picked = Number(row[pickedIdx]) || 0;
+        const delivered = Number(row[deliveredIdx]) || 0;
+
+        const existing = driverMap.get(driverName);
+        if (existing) {
+          existing.picked += picked;
+          existing.delivered += delivered;
+        } else {
+          driverMap.set(driverName, { picked, delivered });
+        }
+      }
+    } catch (e: any) {
+      console.warn(`[dedicated-c${cyc.level}] Gagal:`, e.message);
+    }
+  }
+
+  let totalPicked = 0;
+  let totalDelivered = 0;
+  const drivers: string[] = [];
+
+  for (const [driverName, data] of driverMap.entries()) {
+    totalPicked += data.picked;
+    totalDelivered += data.delivered;
+    drivers.push(driverName);
+  }
+
+  result.actual = driverMap.size;
+  result.totalPicked = totalPicked;
+  result.totalDelivered = totalDelivered;
+  result.avgPickup =
+    driverMap.size > 0 ? Math.round(totalPicked / driverMap.size) : 0;
+  result.achievementPct =
+    driverMap.size > 0
+      ? parseFloat(((totalPicked / (driverMap.size * 120)) * 100).toFixed(2))
+      : 0;
+  result.drivers = drivers;
+
+  return result;
+}
+
 export async function GET(req: NextRequest) {
   console.log("=== HIT /api/hms/summary ===");
 
@@ -360,7 +476,7 @@ export async function GET(req: NextRequest) {
       cycleRes,
       opsRes,
       courierRes,
-      dedicatedRes,
+      dedicatedMerged,
       c1Result,
     ] = await Promise.all([
       callHMS(user.hmsToken, API_ID_MAIN, {
@@ -404,16 +520,16 @@ export async function GET(req: NextRequest) {
         console.warn("[courier] Gagal:", e.message);
         return null;
       }),
-      callHMS(user.hmsToken, API_ID_DEDICATED, {
-        hub_id: HUB_ID,
-        driver_name: "",
-        job_roles: JOB_ROLES_DEDICATED,
-        cycle_start_time: String(get12amWIBUnix()),
-        cycle_end_time: String(get8amWIBUnix()),
-        cycle_level: "1",
-      }).catch((e) => {
+      fetchDedicatedMerged(user.hmsToken, HUB_ID).catch((e) => {
         console.warn("[dedicated] Gagal:", e.message);
-        return null;
+        return {
+          actual: 0,
+          totalPicked: 0,
+          totalDelivered: 0,
+          avgPickup: 0,
+          achievementPct: 0,
+          drivers: [],
+        };
       }),
       computeC1FromInboundScan(user.hmsToken, HUB_NAME).catch((e) => {
         console.warn("[c1c2] Gagal:", e.message);
@@ -438,59 +554,6 @@ export async function GET(req: NextRequest) {
     const courier = courierRes
       ? parseCompact(courierRes.data.data, courierRes.data.fields)
       : null;
-
-    // === PARSE DEDICATED ===
-    let dedicatedData = {
-      actual: 0,
-      total_picked: 0,
-      total_delivered: 0,
-      avg_pickup: 0,
-      achievement_pct: 0,
-      drivers: [] as string[],
-    };
-
-    if (dedicatedRes?.data?.data && dedicatedRes?.data?.fields) {
-      try {
-        const rows = JSON.parse(dedicatedRes.data.data);
-        const fields: { name: string }[] = dedicatedRes.data.fields;
-        const pickedIdx = fields.findIndex(
-          (f: any) => f.name === "total_picked"
-        );
-        const deliveredIdx = fields.findIndex(
-          (f: any) => f.name === "total_delivered"
-        );
-        const driverIdx = fields.findIndex(
-          (f: any) => f.name === "driver_name"
-        );
-
-        let totalPicked = 0;
-        let totalDelivered = 0;
-        const drivers: string[] = [];
-
-        for (const row of rows) {
-          totalPicked += Number(row[pickedIdx]) || 0;
-          totalDelivered += Number(row[deliveredIdx]) || 0;
-          if (driverIdx >= 0 && row[driverIdx]) {
-            drivers.push(String(row[driverIdx]));
-          }
-        }
-
-        dedicatedData.actual = rows.length;
-        dedicatedData.total_picked = totalPicked;
-        dedicatedData.total_delivered = totalDelivered;
-        dedicatedData.avg_pickup =
-          rows.length > 0 ? Math.round(totalPicked / rows.length) : 0;
-        dedicatedData.achievement_pct =
-          rows.length > 0
-            ? parseFloat(
-                ((totalPicked / (rows.length * 120)) * 100).toFixed(2)
-              )
-            : 0;
-        dedicatedData.drivers = drivers;
-      } catch (e: any) {
-        console.warn("[dedicated] Parse gagal:", e.message);
-      }
-    }
 
     // === COD ===
     let codReadyToReturn = 0,
@@ -661,13 +724,13 @@ export async function GET(req: NextRequest) {
       courier_out_percent: parseFloat(courier?.out_percent) || 0,
       courier_avg_productivity:
         parseFloat(courier?.avg_productivity) || 0,
-      // === DEDICATED ===
-      dedicated_actual: dedicatedData.actual,
-      dedicated_total_picked: dedicatedData.total_picked,
-      dedicated_total_delivered: dedicatedData.total_delivered,
-      dedicated_avg_pickup: dedicatedData.avg_pickup,
-      dedicated_achievement_pct: dedicatedData.achievement_pct,
-      dedicated_drivers: dedicatedData.drivers,
+      // === DEDICATED (C1 + C2 + C3 merged) ===
+      dedicated_actual: dedicatedMerged.actual,
+      dedicated_total_picked: dedicatedMerged.totalPicked,
+      dedicated_total_delivered: dedicatedMerged.totalDelivered,
+      dedicated_avg_pickup: dedicatedMerged.avgPickup,
+      dedicated_achievement_pct: dedicatedMerged.achievementPct,
+      dedicated_drivers: dedicatedMerged.drivers,
       // === OPS ===
       ops_assigned: ops?.assigned || 0,
       ops_check_in: ops?.check_in || 0,
