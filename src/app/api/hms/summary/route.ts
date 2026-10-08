@@ -53,28 +53,6 @@ function getCycleList(): string {
   ]);
 }
 
-function getCycleUnix(): { start: number; end: number } {
-  const start = toWIB();
-  start.setUTCDate(start.getUTCDate() - 1);
-  start.setUTCHours(17, 0, 0, 0);
-  const end = toWIB();
-  end.setUTCHours(17, 0, 0, 0);
-  return {
-    start: Math.floor((start.getTime() - 7 * 60 * 60 * 1000) / 1000),
-    end: Math.floor((end.getTime() - 7 * 60 * 60 * 1000) / 1000),
-  };
-}
-
-function get8amWIBUnix(): number {
-  const d = toWIB();
-  const y = d.getUTCFullYear();
-  const m = d.getUTCMonth();
-  const day = d.getUTCDate();
-  return Math.floor(
-    (Date.UTC(y, m, day, 8, 0, 0) - 7 * 60 * 60 * 1000) / 1000
-  );
-}
-
 function getTodayWIBUnix(hour: number): number {
   const d = toWIB();
   const y = d.getUTCFullYear();
@@ -87,6 +65,10 @@ function getTodayWIBUnix(hour: number): number {
 
 function get12amWIBUnix(): number {
   return getTodayWIBUnix(0);
+}
+
+function get8amWIBUnix(): number {
+  return getTodayWIBUnix(8);
 }
 
 async function callHMS(
@@ -371,7 +353,6 @@ export async function GET(req: NextRequest) {
     const currDate = getMainCurrDate();
     const todayDate = getTodayDate();
     const cycleList = getCycleList();
-    const cycleUnix = getCycleUnix();
 
     const [
       mainRes,
@@ -427,9 +408,9 @@ export async function GET(req: NextRequest) {
         hub_id: HUB_ID,
         driver_name: "",
         job_roles: JOB_ROLES_DEDICATED,
+        cycle_start_time: String(get12amWIBUnix()),
+        cycle_end_time: String(get8amWIBUnix()),
         cycle_level: "1",
-        cycle_start_time: String(cycleUnix.start),
-        cycle_end_time: String(cycleUnix.end),
       }).catch((e) => {
         console.warn("[dedicated] Gagal:", e.message);
         return null;
@@ -465,7 +446,9 @@ export async function GET(req: NextRequest) {
       total_delivered: 0,
       avg_pickup: 0,
       achievement_pct: 0,
+      drivers: [] as string[],
     };
+
     if (dedicatedRes?.data?.data && dedicatedRes?.data?.fields) {
       try {
         const rows = JSON.parse(dedicatedRes.data.data);
@@ -476,28 +459,34 @@ export async function GET(req: NextRequest) {
         const deliveredIdx = fields.findIndex(
           (f: any) => f.name === "total_delivered"
         );
+        const driverIdx = fields.findIndex(
+          (f: any) => f.name === "driver_name"
+        );
 
         let totalPicked = 0;
         let totalDelivered = 0;
+        const drivers: string[] = [];
+
         for (const row of rows) {
           totalPicked += Number(row[pickedIdx]) || 0;
           totalDelivered += Number(row[deliveredIdx]) || 0;
+          if (driverIdx >= 0 && row[driverIdx]) {
+            drivers.push(String(row[driverIdx]));
+          }
         }
 
         dedicatedData.actual = rows.length;
         dedicatedData.total_picked = totalPicked;
         dedicatedData.total_delivered = totalDelivered;
         dedicatedData.avg_pickup =
-          rows.length > 0
-            ? parseFloat((totalPicked / rows.length).toFixed(2))
-            : 0;
-        // Target default 120
+          rows.length > 0 ? Math.round(totalPicked / rows.length) : 0;
         dedicatedData.achievement_pct =
           rows.length > 0
             ? parseFloat(
                 ((totalPicked / (rows.length * 120)) * 100).toFixed(2)
               )
             : 0;
+        dedicatedData.drivers = drivers;
       } catch (e: any) {
         console.warn("[dedicated] Parse gagal:", e.message);
       }
@@ -678,6 +667,7 @@ export async function GET(req: NextRequest) {
       dedicated_total_delivered: dedicatedData.total_delivered,
       dedicated_avg_pickup: dedicatedData.avg_pickup,
       dedicated_achievement_pct: dedicatedData.achievement_pct,
+      dedicated_drivers: dedicatedData.drivers,
       // === OPS ===
       ops_assigned: ops?.assigned || 0,
       ops_check_in: ops?.check_in || 0,

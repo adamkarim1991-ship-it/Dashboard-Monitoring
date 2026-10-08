@@ -71,6 +71,7 @@ type SummaryResponse = {
   dedicated_total_delivered?: number;
   dedicated_avg_pickup?: number;
   dedicated_achievement_pct?: number;
+  dedicated_drivers?: string[];
 };
 
 type SubdistrictRow = {
@@ -105,8 +106,11 @@ type UrgentData = {
 
 type DedicatedData = {
   actual: number;
+  total_picked: number;
+  total_delivered: number;
   avg_pickup: number;
   achievement_pct: number;
+  drivers: string[];
 };
 
 type CleanFloorData = {
@@ -137,8 +141,11 @@ export default function DashboardView({ user }: { user: SessionUser }) {
   });
   const [dedicated, setDedicated] = useState<DedicatedData>({
     actual: 0,
+    total_picked: 0,
+    total_delivered: 0,
     avg_pickup: 0,
     achievement_pct: 0,
+    drivers: [],
   });
   const [urgent, setUrgent] = useState<UrgentData>({
     total: 0,
@@ -178,8 +185,11 @@ export default function DashboardView({ user }: { user: SessionUser }) {
         if (d.summary.dedicated_actual !== undefined) {
           setDedicated({
             actual: d.summary.dedicated_actual,
+            total_picked: d.summary.dedicated_total_picked || 0,
+            total_delivered: d.summary.dedicated_total_delivered || 0,
             avg_pickup: d.summary.dedicated_avg_pickup || 0,
             achievement_pct: d.summary.dedicated_achievement_pct || 0,
+            drivers: d.summary.dedicated_drivers || [],
           });
         }
         setLastUpdate(new Date());
@@ -625,7 +635,7 @@ export default function DashboardView({ user }: { user: SessionUser }) {
                 </p>
                 <p className="text-[10px] text-gray-400 mt-0.5">
                   {dedicated.actual > 0
-                    ? "Dedicated aktif"
+                    ? `${dedicated.drivers.slice(0, 2).join(", ")}${dedicated.drivers.length > 2 ? `+${dedicated.drivers.length - 2}` : ""}`
                     : "Tidak ada dedicated aktif"}
                 </p>
               </div>
@@ -634,9 +644,7 @@ export default function DashboardView({ user }: { user: SessionUser }) {
                   AVERAGE PICKUP
                 </p>
                 <p className="text-2xl font-bold text-amber-600 mt-1">
-                  {dedicated.avg_pickup > 0
-                    ? dedicated.avg_pickup.toFixed(0)
-                    : "-"}
+                  {dedicated.avg_pickup > 0 ? dedicated.avg_pickup : "-"}
                 </p>
                 <p className="text-[10px] text-gray-400 mt-0.5 leading-tight">
                   {dedicated.actual > 0 ? "Parcel per user" : "N/A"}
