@@ -6,9 +6,19 @@ import { Building2, Check, ChevronDown, Loader2 } from "lucide-react";
 import type { UserHubInfo } from "@/type/auth";
 
 export default function HubSwitcher() {
-  const { data: session, update } = useSession();
+  const { data: session, status, update } = useSession();
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
+
+  // Kalau session masih loading, tampilkan skeleton
+  if (status === "loading") {
+    return (
+      <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-white/10 border border-white/20 text-gray-400 text-xs">
+        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+        <span>Memuat hub...</span>
+      </div>
+    );
+  }
 
   const hubs = session?.user?.hubs ?? [];
   const activeHubId = session?.user?.activeHubId ?? null;
