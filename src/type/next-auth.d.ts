@@ -1,5 +1,8 @@
 import "next-auth";
 import "next-auth/jwt";
+import type { AppRole, HubRole, UserHubInfo } from "@/type/auth";
+
+export type { AppRole, HubRole, UserHubInfo };
 
 declare module "next-auth" {
   interface Session {

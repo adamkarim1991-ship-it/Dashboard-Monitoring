@@ -1,5 +1,6 @@
 ﻿"use client";
 
+import HubSwitcher from "@/components/dashboard/HubSwitcher";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { signOut } from "next-auth/react";
 import { Button } from "@/components/ui/button";
@@ -404,13 +405,14 @@ export default function DashboardView({ user }: { user: SessionUser }) {
           </div>
 
           <div className="flex items-center gap-3 flex-shrink-0">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                fetchSummary();
-                fetchSubdistricts();
-              }}
+  <HubSwitcher />
+  <Button
+    variant="outline"
+    size="sm"
+    onClick={() => {
+      fetchSummary();
+      fetchSubdistricts();
+    }}
               disabled={loading || subLoading}
               className="bg-white/10 border-white/20 text-white hover:bg-white/20 hover:text-white"
             >
