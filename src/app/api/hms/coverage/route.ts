@@ -23,7 +23,7 @@ async function callHMS(
   token: string,
   apiId: string,
   params: Record<string, any>,
-  retries = 2
+  retries = 3
 ) {
   const url = `${process.env.HMS_BASE_URL}/dc/v1/oneservice`;
   
@@ -48,9 +48,14 @@ async function callHMS(
       const json = await res.json();
       
       if (json.code !== 200) {
-        // Retry kalau bukan attempt terakhir
+        // Rate limit — retry dengan delay lebih panjang
+        if (json.code === 400 && json.msg?.includes("qps") && attempt < retries) {
+          console.warn(`[rate-limit] Retry ${attempt + 1}/${retries} — delay ${1500 * (attempt + 1)}ms`);
+          await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+          continue;
+        }
         if (attempt < retries) {
-          await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
           continue;
         }
         throw new Error(`HMS code ${json.code}`);
@@ -58,7 +63,7 @@ async function callHMS(
       return json;
     } catch (e: any) {
       if (attempt === retries) throw e;
-      await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+      await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
     }
   }
   throw new Error("HMS retry exhausted");
@@ -129,13 +134,16 @@ async function fetchHubSummary(
   }
 }
 
-// Batch fetch: proses hub satu batch kecil sekaligus + delay antar batch
+/**
+ * Batch fetch: 2 hub per batch + delay 1000ms.
+ * HMS rate limit = 5 QPS, jadi max 2 hub paralel.
+ */
 async function fetchInBatches(
   hubs: Array<{ hubId: string; hubName: string }>,
   token: string,
   currDate: string,
-  batchSize = 3,
-  delayMs = 500
+  batchSize = 2,
+  delayMs = 1000
 ) {
   const results: any[] = [];
   for (let i = 0; i < hubs.length; i += batchSize) {
@@ -144,7 +152,6 @@ async function fetchInBatches(
       batch.map((h) => fetchHubSummary(token, h.hubId, h.hubName, currDate))
     );
     results.push(...batchResults);
-    // Delay antar batch (kecuali batch terakhir)
     if (i + batchSize < hubs.length) {
       await new Promise((r) => setTimeout(r, delayMs));
     }
@@ -183,7 +190,7 @@ export async function GET(req: NextRequest) {
 
   const currDate = getMainCurrDate();
 
-  // Batch fetch (3 hub per batch + delay 500ms)
+  // Batch fetch: 2 hub per batch + delay 1000ms (HMS rate limit 5 QPS)
   const results = await fetchInBatches(
     userHubs.map((uh) => ({
       hubId: uh.hub.hmsHubId,
@@ -191,8 +198,8 @@ export async function GET(req: NextRequest) {
     })),
     user.hmsToken,
     currDate,
-    3,   // batch size
-    500  // delay ms
+    2,
+    1000
   );
 
   const aggregated = results.reduce(

@@ -720,6 +720,8 @@ export async function GET(req: NextRequest) {
       fresh_total_computed: freshC1 + freshC2,
       pending_at_hub: main.pending_at_hub || 0,
       ongoing_delivery: main.ongoing_delivery || 0,
+      ongoing_delivery_just_arrived: Number(main.ongoing_delivery_just_arrived) || 0,
+      ongoing_delivery_backlog: Number(main.ongoing_delivery_backlog) || 0,
       delivered: main.delivered || 0,
       delivered_percentage: parseFloat(main.delivered_percentage) || 0,
       ftd: main.ftd || 0,

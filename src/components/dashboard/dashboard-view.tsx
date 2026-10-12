@@ -74,6 +74,8 @@ type SummaryResponse = {
   dedicated_achievement_pct?: number;
   dedicated_target?: number;
   dedicated_drivers?: string[];
+  ongoing_delivery_just_arrived?: number;
+  ongoing_delivery_backlog?: number;
 };
 
 type SubdistrictRow = {
@@ -207,7 +209,7 @@ export default function DashboardView({ user }: { user: SessionUser }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [user.hmsHubIds]);
 
   const fetchSubdistricts = useCallback(async () => {
     setSubLoading(true);
@@ -258,6 +260,9 @@ export default function DashboardView({ user }: { user: SessionUser }) {
   const freshSuccess = summary?.fresh_success ?? 0;
   const sdBefore12 = summary?.sd_before_12 ?? 0;
   const freshC1 = summary?.fresh_c1 ?? 0;
+  const freshC2 = summary?.fresh_c2 ?? 0;
+  const ongoingFresh = summary?.ongoing_delivery_just_arrived ?? 0;
+  const ongoingBacklog = summary?.ongoing_delivery_backlog ?? 0;
 
   const opDate =
     mounted && now
@@ -522,10 +527,11 @@ export default function DashboardView({ user }: { user: SessionUser }) {
             sub={`Backlog: ${backlog}`}
             accent="blue"
           />
-          <BigVolumeCard
+           <BigVolumeCard
             label="VOLUME FRESH"
             value={justArrived}
-            sub={`C1: ${freshC1.toLocaleString("id-ID")}  C2: ${(summary?.fresh_c2 ?? 0).toLocaleString("id-ID")}`}
+            sub={`C1: ${freshC1.toLocaleString("id-ID")}`}
+            subSecond={`C2: ${freshC2.toLocaleString("id-ID")}`}
             accent="purple"
           />
           <BigVolumeCard
@@ -534,10 +540,11 @@ export default function DashboardView({ user }: { user: SessionUser }) {
             sub={`Fresh: ${deliveredJustArrived.toLocaleString("id-ID")} - Backlog: ${deliveredBacklog.toLocaleString("id-ID")}`}
             accent="green"
           />
-          <BigVolumeCard
+           <BigVolumeCard
             label="DELIVERING"
             value={ongoing}
-            sub="Ongoing Delivery"
+            sub={`Fresh: ${ongoingFresh.toLocaleString("id-ID")}`}
+            subSecond={`Backlog: ${ongoingBacklog.toLocaleString("id-ID")}`}
             accent="blue"
           />
           <BigVolumeCard
@@ -847,6 +854,9 @@ export default function DashboardView({ user }: { user: SessionUser }) {
                   <SortableHeader label="Fresh C1" sortKey="fresh_c1" activeSort={subdistrictSort} onSort={handleSubdistrictSort} />
                   <SortableHeader label="Fresh C2" sortKey="fresh_c2" activeSort={subdistrictSort} onSort={handleSubdistrictSort} />
                   <SortableHeader label="Delivered" sortKey="delivered" activeSort={subdistrictSort} onSort={handleSubdistrictSort} />
+                  <th className="whitespace-nowrap px-3 py-2.5 font-semibold text-right">
+                    Delivered %
+                  </th>
                   <SortableHeader label="Delivering" sortKey="delivering" activeSort={subdistrictSort} onSort={handleSubdistrictSort} />
                   <SortableHeader label="Failed" sortKey="failed" activeSort={subdistrictSort} onSort={handleSubdistrictSort} />
                   <SortableHeader label="Fresh <12 PM" sortKey="fresh_before_12" activeSort={subdistrictSort} onSort={handleSubdistrictSort} />
@@ -855,7 +865,7 @@ export default function DashboardView({ user }: { user: SessionUser }) {
               </thead>
               <tbody>
                 {visibleSubdistricts.length === 0 ? (
-                  <tr><td colSpan={11} className="py-8 text-center text-slate-400">
+                  <tr><td colSpan={12} className="py-8 text-center text-slate-400">
                     {subLoading ? "Loading subdistrict data (30-60 seconds)..." : "No data available"}
                   </td></tr>
                 ) : (
@@ -872,6 +882,17 @@ export default function DashboardView({ user }: { user: SessionUser }) {
                         <MetricCell value={row.fresh_c1} />
                         <MetricCell value={row.fresh_c2} />
                         <MetricCell value={row.delivered} />
+                        <td className="px-3 py-2.5 text-right tabular-nums">
+                          <span className={`font-semibold ${
+                            row.overall > 0 && (row.delivered / row.overall) * 100 >= 50
+                              ? "text-green-400"
+                              : row.overall > 0 && (row.delivered / row.overall) * 100 >= 25
+                              ? "text-amber-400"
+                              : "text-rose-400"
+                          }`}>
+                            {row.overall > 0 ? ((row.delivered / row.overall) * 100).toFixed(2) : "0.00"}%
+                          </span>
+                        </td>
                         <MetricCell value={row.delivering} />
                         <MetricCell value={row.failed} />
                         <MetricCell value={row.fresh_before_12} />
@@ -886,6 +907,11 @@ export default function DashboardView({ user }: { user: SessionUser }) {
                       <MetricCell value={subdistrictTotals.fresh_c1} />
                       <MetricCell value={subdistrictTotals.fresh_c2} />
                       <MetricCell value={subdistrictTotals.delivered} />
+                      <td className="px-3 py-3 text-right text-green-400">
+                        {subdistrictTotals.overall > 0
+                          ? ((subdistrictTotals.delivered / subdistrictTotals.overall) * 100).toFixed(2)
+                          : "0.00"}%
+                      </td>
                       <MetricCell value={subdistrictTotals.delivering} />
                       <MetricCell value={subdistrictTotals.failed} />
                       <MetricCell value={subdistrictTotals.fresh_before_12} />
@@ -951,11 +977,13 @@ function BigVolumeCard({
   label,
   value,
   sub,
+  subSecond,
   accent,
 }: {
   label: string;
   value: number;
   sub: string;
+  subSecond?: string;
   accent: "blue" | "purple" | "green" | "red";
 }) {
   const accents = {
@@ -978,6 +1006,7 @@ function BigVolumeCard({
         {value.toLocaleString("id-ID")}
       </p>
       {sub && <p className="text-[10px] text-gray-400 mt-1">{sub}</p>}
+      {subSecond && <p className="text-[10px] text-gray-400 mt-0.5">{subSecond}</p>}
     </div>
   );
 }
