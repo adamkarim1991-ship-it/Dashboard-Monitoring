@@ -388,7 +388,7 @@ function HubCard({ hub }: { hub: HubSummary }) {
         )}
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
         <div>
           <p className="text-gray-400 text-[10px]">Volume</p>
           <p className="font-bold text-gray-800">{(hub.today_volume || 0).toLocaleString("id-ID")}</p>
@@ -405,6 +405,25 @@ function HubCard({ hub }: { hub: HubSummary }) {
           <p className="text-gray-400 text-[10px]">FTD</p>
           <p className="font-bold text-red-600">{(hub.ftd || 0).toLocaleString("id-ID")}</p>
         </div>
+
+        {/* ═══ METRIK BARU — Tahap 1 ═══ */}
+        <div>
+          <p className="text-gray-400 text-[10px]">Fresh Success</p>
+          <p className="font-bold text-emerald-600">{(hub.fresh_success || 0).toFixed(2)}%</p>
+        </div>
+        <div>
+          <p className="text-gray-400 text-[10px]">SD &lt; 12 PM</p>
+          <p className="font-bold text-blue-600">{(hub.sd_before_12 || 0).toFixed(2)}%</p>
+        </div>
+        <div>
+          <p className="text-gray-400 text-[10px]">COD FD</p>
+          <p className="font-bold text-purple-600">{(hub.cod_fd || 0).toFixed(2)}%</p>
+        </div>
+        <div>
+          <p className="text-gray-400 text-[10px]">&nbsp;</p>
+          <p className="font-bold text-gray-300">—</p>
+        </div>
+        {/* ═══ END METRIK BARU ═══ */}
       </div>
 
       <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between">
