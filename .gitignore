@@ -33,3 +33,8 @@ prisma/dev.db
 *.bak
 *.backup
 
+
+# Prisma backups
+prisma/*.backup*
+*.backup-v1
+*.backup

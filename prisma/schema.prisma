@@ -7,29 +7,54 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ═══════════════════════════════════════════════════════
+// ENUMS
+// ═══════════════════════════════════════════════════════
+
 enum Role {
   MANAGER
   SPV
   HUB_LEAD
+  VIEWER       // ← tambahan: read-only user
 }
+
+// ═══════════════════════════════════════════════════════
+// USER & AUTH
+// ═══════════════════════════════════════════════════════
 
 model User {
   id                String    @id @default(cuid())
   email             String    @unique
   name              String
   password          String
-  role              Role
-  hmsToken          String?
-  leaderHmsToken    String?
+  // ⚠️ role global DIHAPUS — sekarang role ada di UserHub
+  // hmsToken juga DIHAPUS — pindah ke HmsCredential (per-hub)
+
+  // Legacy fields — simpan sementara untuk backward compat
+  // Akan dihapus setelah migrasi selesai
+  role              Role?          // nullable, deprecated
+  hmsToken          String?        // deprecated
+  leaderHmsToken    String?        // deprecated
   hmsTokenUpdatedAt DateTime?
+
   createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
   hubs              UserHub[]
+  ownedHubs         Hub[]     @relation("HubOwner")
+
+  @@index([email])
 }
+
+// ═══════════════════════════════════════════════════════
+// CLUSTER & HUB
+// ═══════════════════════════════════════════════════════
 
 model Cluster {
   id        String   @id @default(cuid())
   name      String   @unique
   createdAt DateTime @default(now())
+
   hubs      Hub[]
 }
 
@@ -40,25 +65,72 @@ model Hub {
   region    String   @default("")
   clusterId String
   cluster   Cluster  @relation(fields: [clusterId], references: [id])
+
+  // Owner = user pertama yang bikin/pairing hub ini
+  ownerId   String?
+  owner     User?    @relation("HubOwner", fields: [ownerId], references: [id])
+
   createdAt DateTime @default(now())
-  users     UserHub[]
-  metrics   HourlyMetric[]
+  updatedAt DateTime @updatedAt
+
+  users       UserHub[]
+  metrics     HourlyMetric[]
+  credential  HmsCredential?
+  cleanFloors CleanFloorSnapshot[]
+
+  @@index([hmsHubId])
 }
+
+// ═══════════════════════════════════════════════════════
+// USER ↔ HUB MAPPING (dengan role per-hub)
+// ═══════════════════════════════════════════════════════
 
 model UserHub {
-  id     String @id @default(cuid())
-  userId String
-  hubId  String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  hub    Hub    @relation(fields: [hubId], references: [id], onDelete: Cascade)
+  id       String   @id @default(cuid())
+  userId   String
+  hubId    String
+  role     Role     @default(VIEWER)  // ← role PER-HUB
+  joinedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  hub  Hub  @relation(fields: [hubId], references: [id], onDelete: Cascade)
 
   @@unique([userId, hubId])
+  @@index([userId])
+  @@index([hubId])
 }
+
+// ═══════════════════════════════════════════════════════
+// HMS CREDENTIAL (per-hub, encrypted)
+// ═══════════════════════════════════════════════════════
+
+model HmsCredential {
+  id            String    @id @default(cuid())
+  hubId         String    @unique
+  hub           Hub       @relation(fields: [hubId], references: [id], onDelete: Cascade)
+
+  // Cookie HMS terenkripsi (AES-256-GCM)
+  // Format: "iv:authTag:ciphertext" (hex)
+  cookieEnc     String
+  apiIds        Json      // { main, cycle1, ops, courier, ... }
+
+  expiresAt     DateTime?
+  lastPingAt    DateTime?
+  lastError     String?   // pesan error terakhir kalau fetch HMS gagal
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+// ═══════════════════════════════════════════════════════
+// METRICS
+// ═══════════════════════════════════════════════════════
 
 model HourlyMetric {
   id             String   @id @default(cuid())
   hubId          String
   hub            Hub      @relation(fields: [hubId], references: [id], onDelete: Cascade)
+
   hourTimestamp  DateTime
   inbound        Int      @default(0)
   outbound       Int      @default(0)
@@ -74,7 +146,14 @@ model HourlyMetric {
 
 model CleanFloorSnapshot {
   id          String   @id @default(cuid())
+
+  // Baru: relasi ke Hub (nullable untuk backward compat)
+  hubId       String?
+  hub         Hub?     @relation(fields: [hubId], references: [id], onDelete: Cascade)
+
+  // Legacy field — tetap ada untuk data lama
   facility    String
+
   date        String
   value       Float
   numerator   Int
@@ -85,5 +164,8 @@ model CleanFloorSnapshot {
   others      Int
   capturedAt  DateTime @default(now())
 
+  // Legacy unique — untuk backward compat
   @@unique([facility, date])
+  // New index untuk query per-hub
+  @@index([hubId, date])
 }
