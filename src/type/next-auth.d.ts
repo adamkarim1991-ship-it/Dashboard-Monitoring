@@ -8,12 +8,17 @@ declare module "next-auth" {
   interface Session {
     user: {
       id: string;
-      role: "MANAGER" | "SPV" | "HUB_LEAD";
+      role: AppRole;
       hubIds: string[];
       hmsHubIds: string[];
       clusterIds: string[];
       hmsToken?: string | null;
       leaderHmsToken?: string | null;
+
+      // Multi-tenant fields
+      hubs: UserHubInfo[];
+      activeHubId: string | null;
+
       name?: string | null;
       email?: string | null;
       image?: string | null;
@@ -22,23 +27,29 @@ declare module "next-auth" {
 
   interface User {
     id: string;
-    role: "MANAGER" | "SPV" | "HUB_LEAD";
+    role: AppRole;
     hubIds: string[];
     hmsHubIds: string[];
     clusterIds: string[];
     hmsToken?: string | null;
     leaderHmsToken?: string | null;
+
+    hubs: UserHubInfo[];
+    activeHubId: string | null;
   }
 }
 
 declare module "next-auth/jwt" {
   interface JWT {
     id: string;
-    role: "MANAGER" | "SPV" | "HUB_LEAD";
+    role: AppRole;
     hubIds: string[];
     hmsHubIds: string[];
     clusterIds: string[];
     hmsToken?: string | null;
     leaderHmsToken?: string | null;
+
+    hubs: UserHubInfo[];
+    activeHubId: string | null;
   }
 }
