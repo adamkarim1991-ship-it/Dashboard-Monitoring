@@ -5,19 +5,16 @@ import { NextRequest, NextResponse } from "next/server";
 // ============================================================
 // KONFIG
 // ============================================================
-const HUB_ID_JATINEGARA = "460450593288";
-const HUB_NAME_JATINEGARA = "GTL Jatinegara Hub";
-
 const API_ID_MAIN = "7564027893345453074";
 const PAYMENT_TYPES_ALL = '["cashless","cod"]';
 const PAYMENT_TYPES_COD = '["cod"]';
 const SERVICE_TYPES = '["INS","SDS","REG","NDD","OTHERS"]';
 
 // ============================================================
-// CACHE 30 detik
+// CACHE 30 detik (per-hub)
 // ============================================================
 type CacheEntry = { data: any; timestamp: number };
-let cache: CacheEntry | null = null;
+const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 30 * 1000;
 
 // ============================================================
@@ -115,6 +112,64 @@ function toSafeNumber(value: unknown): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
+function toUnixSeconds(value: unknown): number {
+  if (typeof value === "number") {
+    return value > 1_000_000_000_000 ? Math.floor(value / 1000) : value;
+  }
+  if (typeof value === "string" && value) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      return numeric > 1_000_000_000_000
+        ? Math.floor(numeric / 1000)
+        : numeric;
+    }
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000);
+  }
+  return 0;
+}
+
+function getShipmentStatus(status: unknown) {
+  const normalized = String(status || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+  if (normalized === "delivered") return "delivered";
+  if (normalized === "ofd" || normalized === "out_for_delivery") {
+    return "delivering";
+  }
+  if (normalized === "ftd" || normalized === "failed_to_deliver") {
+    return "failed";
+  }
+  return null;
+}
+
+/**
+ * Resolve hub dari request. Prioritas:
+ * 1. ?hubId=X kalau user punya akses
+ * 2. Fallback ke hub pertama user
+ */
+async function resolveActiveHub(
+  userId: string,
+  requestedHmsHubId: string | null
+) {
+  const userHubs = await prisma.userHub.findMany({
+    where: { userId },
+    include: { hub: true },
+  });
+
+  if (userHubs.length === 0) return null;
+
+  if (requestedHmsHubId) {
+    const match = userHubs.find(
+      (uh) => uh.hub.hmsHubId === requestedHmsHubId
+    );
+    if (match) return match.hub;
+  }
+
+  return userHubs[0].hub;
+}
+
 async function fetchShipmentsPage(
   token: string,
   page: number,
@@ -128,9 +183,6 @@ async function fetchShipmentsPage(
   url.searchParams.set("per_page", "100");
   url.searchParams.set("tab", "order_view");
   url.searchParams.set("page", String(page));
-
-  // AWB lookup is intentionally status- and date-unfiltered. The operational
-  // population is selected from inbound scans, then enriched from TMS.
   url.searchParams.set("awb_numbers", awbNumbers.join(","));
 
   const res = await fetch(url.toString(), {
@@ -184,6 +236,7 @@ async function fetchInboundTasksPage(
 
 async function fetchOperationalInboundByAwb(
   token: string,
+  hubName: string,
   fromTs: number,
   toTs: number
 ) {
@@ -208,7 +261,7 @@ async function fetchOperationalInboundByAwb(
 
   const inboundByAwb = new Map<string, number>();
   for (const task of allTasks) {
-    if (task.lm_facility !== HUB_NAME_JATINEGARA) continue;
+    if (task.lm_facility !== hubName) continue;
     if (task.delivery_type && task.delivery_type !== "Forward") continue;
 
     const awb = String(task.awb_number || task.tracking_number || "").trim();
@@ -234,11 +287,7 @@ async function fetchShipmentsForAwbs(
   for (let i = 0; i < chunks.length; i += 5) {
     const results = await Promise.all(
       chunks.slice(i, i + 5).map(async (chunk) => {
-        const firstPage = await fetchShipmentsPage(
-          token,
-          1,
-          chunk
-        );
+        const firstPage = await fetchShipmentsPage(token, 1, chunk);
         const totalRecords = Number(firstPage?.data?.total_records) || 0;
         const totalPages = Math.ceil(totalRecords / 100);
         let chunkShipments = firstPage?.data?.shipments || [];
@@ -246,11 +295,7 @@ async function fetchShipmentsForAwbs(
         if (totalPages > 1) {
           const pages = await Promise.all(
             Array.from({ length: totalPages - 1 }, (_, pageIndex) =>
-              fetchShipmentsPage(
-                token,
-                pageIndex + 2,
-                chunk
-              )
+              fetchShipmentsPage(token, pageIndex + 2, chunk)
             )
           );
           for (const page of pages) {
@@ -266,56 +311,19 @@ async function fetchShipmentsForAwbs(
   return shipments;
 }
 
-function toUnixSeconds(value: unknown): number {
-  if (typeof value === "number") {
-    return value > 1_000_000_000_000 ? Math.floor(value / 1000) : value;
-  }
-  if (typeof value === "string" && value) {
-    const numeric = Number(value);
-    if (Number.isFinite(numeric)) {
-      return numeric > 1_000_000_000_000
-        ? Math.floor(numeric / 1000)
-        : numeric;
-    }
-    const parsed = Date.parse(value);
-    return Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000);
-  }
-  return 0;
-}
-
-function getShipmentStatus(status: unknown) {
-  const normalized = String(status || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[\s-]+/g, "_");
-  if (normalized === "delivered") return "delivered";
-  if (normalized === "ofd" || normalized === "out_for_delivery") {
-    return "delivering";
-  }
-  if (normalized === "ftd" || normalized === "failed_to_deliver") {
-    return "failed";
-  }
-  return null;
-}
-
 // ============================================================
 // CLEAN FLOOR
 // Formula: (Ongoing Delivery + Delivered + FTD + Other Statuses) / (Just Arrived + Backlog) x 100
 // Lock: first complete snapshot at or after 08:00 WIB
-// The displayed lock time is always the fixed 08:00 WIB cutoff.
 // ============================================================
 async function getCleanFloor(
   mainAll: any,
-  wib: { date: string; hour: number; minute: number }
+  wib: { date: string; hour: number; minute: number },
+  hmsHubId: string
 ) {
   const lockedAt = `${wib.date}T01:00:00.000Z`;
-  const snapshotKey = {
-    facility: HUB_ID_JATINEGARA,
-    date: wib.date,
-  };
+  const snapshotKey = { facility: hmsHubId, date: wib.date };
 
-  // After the cutoff, persistence is authoritative. Never recalculate a row
-  // that has already been locked for this facility and operational date.
   if (wib.hour >= 8) {
     const existing = await prisma.cleanFloorSnapshot.findUnique({
       where: { facility_date: snapshotKey },
@@ -401,7 +409,6 @@ async function getCleanFloor(
       captured_at: created.capturedAt.toISOString(),
     };
   } catch (error: any) {
-    // Concurrent first calls can race. The winner's immutable row is returned.
     if (error.code === "P2002") {
       const existing = await prisma.cleanFloorSnapshot.findUnique({
         where: { facility_date: snapshotKey },
@@ -437,18 +444,31 @@ export async function GET(req: NextRequest) {
 
   const session = await auth();
 
-if (!session?.user?.id) {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-}
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
-const user = await prisma.user.findUnique({
-  where: { id: session.user.id },
-  select: { hmsToken: true },
-});
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { hmsToken: true },
+  });
 
   if (!user?.hmsToken) {
     return NextResponse.json({ error: "No HMS token" }, { status: 403 });
   }
+
+  // Resolve hub dari query param
+  const requestedHubId = req.nextUrl.searchParams.get("hubId");
+  const activeHub = await resolveActiveHub(session.user.id, requestedHubId);
+
+  if (!activeHub) {
+    return NextResponse.json({ error: "No hub access" }, { status: 403 });
+  }
+
+  const HUB_ID = activeHub.hmsHubId;
+  const HUB_NAME = activeHub.name;
+
+  console.log(`[subdistrict] hub = ${HUB_NAME} (${HUB_ID})`);
 
   const currDate = getMainCurrDate();
 
@@ -459,20 +479,19 @@ const user = await prisma.user.findUnique({
   try {
     const [allRes, codRes, urgentRes] = await Promise.all([
       callHMS(user.hmsToken, API_ID_MAIN, {
-        hub_ids: JSON.stringify([HUB_ID_JATINEGARA]),
+        hub_ids: JSON.stringify([HUB_ID]),
         curr_date: currDate,
         payment_types: PAYMENT_TYPES_ALL,
         service_types: SERVICE_TYPES,
       }),
       callHMS(user.hmsToken, API_ID_MAIN, {
-        hub_ids: JSON.stringify([HUB_ID_JATINEGARA]),
+        hub_ids: JSON.stringify([HUB_ID]),
         curr_date: currDate,
         payment_types: PAYMENT_TYPES_COD,
         service_types: SERVICE_TYPES,
       }),
-      // Mirrors OPC with the Urgent filter set to Yes.
       callHMS(user.hmsToken, API_ID_MAIN, {
-        hub_ids: JSON.stringify([HUB_ID_JATINEGARA]),
+        hub_ids: JSON.stringify([HUB_ID]),
         curr_date: currDate,
         payment_types: PAYMENT_TYPES_ALL,
         service_types: SERVICE_TYPES,
@@ -483,11 +502,11 @@ const user = await prisma.user.findUnique({
     mainCod = parseCompact(codRes.data.data, codRes.data.fields);
     mainUrgent = parseCompact(urgentRes.data.data, urgentRes.data.fields);
   } catch (e: any) {
-    console.warn("[summary] Gagal fetch MAIN:", e.message);
+    console.warn("[subdistrict] Gagal fetch MAIN:", e.message);
   }
 
   // Clean Floor
-  const cleanFloorData = await getCleanFloor(mainAll, getWIBDate());
+  const cleanFloorData = await getCleanFloor(mainAll, getWIBDate(), HUB_ID);
 
   // COD FD = COD Ready to Return / total COD shipments x 100.
   let codData = { total: 0, ready_to_return: 0, fd_percentage: 0 };
@@ -529,21 +548,22 @@ const user = await prisma.user.findUnique({
     };
   }
 
-  // Cache subdistrict
+  // Cache per-hub
   const now = Date.now();
-  if (cache && now - cache.timestamp < CACHE_TTL_MS) {
-    console.log("[subdistrict] Cache HIT");
+  const cached = cache.get(HUB_ID);
+  if (cached && now - cached.timestamp < CACHE_TTL_MS) {
+    console.log("[subdistrict] Cache HIT", HUB_ID);
     return NextResponse.json({
       success: true,
-      meta: { cached: true },
-      subdistricts: cache.data.subdistricts,
+      meta: { cached: true, hub_id: HUB_ID, hub_name: HUB_NAME },
+      subdistricts: cached.data.subdistricts,
       cod: codData,
       urgent: urgentData,
       clean_floor: cleanFloorData,
     });
   }
 
-  console.log("[subdistrict] Cache MISS -> fetch shipments")
+  console.log("[subdistrict] Cache MISS -> fetch shipments", HUB_ID);
 
   try {
     const fromTs = getCycleStartUnix();
@@ -554,6 +574,7 @@ const user = await prisma.user.findUnique({
     const before12Ts = getTodayWIBUnix(12);
     const operationalInboundByAwb = await fetchOperationalInboundByAwb(
       user.hmsToken,
+      HUB_NAME,
       fromTs,
       toTs
     );
@@ -568,7 +589,7 @@ const user = await prisma.user.findUnique({
       if (!uniqueMap.has(key)) uniqueMap.set(key, shipment);
     }
     const filtered = Array.from(uniqueMap.values()).filter(
-      (shipment) => shipment.actual_hub === HUB_NAME_JATINEGARA
+      (shipment) => shipment.actual_hub === HUB_NAME
     );
 
     type GroupData = {
@@ -648,16 +669,18 @@ const user = await prisma.user.findUnique({
       }))
       .sort((a, b) => b.overall - a.overall);
 
-    cache = {
+    cache.set(HUB_ID, {
       data: { subdistricts },
       timestamp: Date.now(),
-    };
+    });
 
     return NextResponse.json({
       success: true,
       meta: {
         cached: false,
         fetched_at: new Date().toISOString(),
+        hub_id: HUB_ID,
+        hub_name: HUB_NAME,
         total_shipments: filtered.length,
         operational_awbs: operationalInboundByAwb.size,
         missing_tms_shipments: Math.max(
