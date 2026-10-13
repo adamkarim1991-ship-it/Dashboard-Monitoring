@@ -2,9 +2,6 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
-// ============================================================
-// KONFIG
-// ============================================================
 const API_ID_MAIN = "7564027893345453074";
 const API_ID_OPS = "7517597334683780103";
 const API_ID_DEDICATED = "7591486857905554439";
@@ -19,9 +16,6 @@ type CacheEntry = { data: any; timestamp: number };
 const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 60 * 1000;
 
-// ============================================================
-// HELPER WAKTU
-// ============================================================
 function toWIB(): Date {
   return new Date(Date.now() + 7 * 60 * 60 * 1000);
 }
@@ -33,9 +27,11 @@ function formatDateYMD(d: Date): string {
   return `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
+// Operational date: 17:00 kemarin (konsisten HMS)
 function getMainCurrDate(): string {
   const d = toWIB();
-  return `${formatDateYMD(d)} 00:00:00`;
+  d.setUTCDate(d.getUTCDate() - 1);
+  return `${formatDateYMD(d)} 17:00:00`;
 }
 
 function getTodayDate(): string {
@@ -46,9 +42,6 @@ function getCurrentWIBHour(): number {
   return toWIB().getUTCHours();
 }
 
-// ============================================================
-// HMS CALL
-// ============================================================
 async function callHMS(
   token: string,
   apiId: string,
@@ -101,9 +94,6 @@ function parseCompact(dataStr: string, fields: { name: string }[]) {
   return obj;
 }
 
-// ============================================================
-// DEDICATED MERGED
-// ============================================================
 async function fetchDedicatedMerged(token: string, hubId: string) {
   const result = {
     actual: 0,
@@ -127,12 +117,10 @@ async function fetchDedicatedMerged(token: string, hubId: string) {
     try {
       const now = toWIB();
       const startUnix = Math.floor(
-        (Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cyc.startHour, cyc.startMin, 0) -
-          7 * 60 * 60 * 1000) / 1000
+        (Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cyc.startHour, cyc.startMin, 0) - 7 * 60 * 60 * 1000) / 1000
       );
       const endUnix = Math.floor(
-        (Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cyc.endHour, cyc.endMin, 0) -
-          7 * 60 * 60 * 1000) / 1000
+        (Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cyc.endHour, cyc.endMin, 0) - 7 * 60 * 60 * 1000) / 1000
       );
 
       const res = await callHMS(token, API_ID_DEDICATED, {
@@ -192,14 +180,11 @@ async function fetchDedicatedMerged(token: string, hubId: string) {
   return result;
 }
 
-// ============================================================
-// LIVE CLEAN FLOOR
-// Formula: (ongoing + delivered + ftd_total + others) / (just_arrived + backlog) × 100
-// ============================================================
+// Clean Floor: pakai ftd_total (bukan in_driver) karena numerator harus lengkap
 function computeCleanFloor(main: any): number {
   const delivered = Number(main.delivered) || 0;
   const ongoing = Number(main.ongoing_delivery) || 0;
-  const ftdTotal = Number(main.ftd) || 0;
+  const ftdTotal = Number(main.ftd) || 0; // pakai TOTAL (in_driver + returned)
   const others = Number(main.others) || 0;
   const justArrived = Number(main.just_arrived) || 0;
   const backlog = Number(main.backlog) || 0;
@@ -210,9 +195,6 @@ function computeCleanFloor(main: any): number {
   return denominator > 0 ? (numerator / denominator) * 100 : 0;
 }
 
-// ============================================================
-// FETCH HUB SUMMARY
-// ============================================================
 async function fetchHubSummary(
   token: string,
   hubId: string,
@@ -254,13 +236,8 @@ async function fetchHubSummary(
     }
 
     let dedicated = {
-      actual: 0,
-      totalPicked: 0,
-      totalDelivered: 0,
-      avgPickup: 0,
-      avgDelivered: 0,
-      achievementPct: 0,
-      drivers: [] as string[],
+      actual: 0, totalPicked: 0, totalDelivered: 0,
+      avgPickup: 0, avgDelivered: 0, achievementPct: 0, drivers: [] as string[],
     };
     try {
       dedicated = await fetchDedicatedMerged(token, hubId);
@@ -272,9 +249,10 @@ async function fetchHubSummary(
     const backlog = Number(main.backlog) || 0;
     const delivered = Number(main.delivered) || 0;
     const ongoing = Number(main.ongoing_delivery) || 0;
-    // FTD = in_driver saja (yang masih di tangan kurir)
+    // FTD untuk DISPLAY = in_driver saja
     const ftdInDriver = Number(main.in_driver) || 0;
     const ftdTotal = Number(main.ftd) || 0;
+    const pendingAtHub = Number(main.pending_at_hub) || 0;
 
     const others = Number(main.others) || 0;
     const todayVolume = justArrived + backlog;
@@ -300,9 +278,7 @@ async function fetchHubSummary(
       }
     }
 
-    let urgentPct = 0;
-    let urgentTotal = 0;
-    let urgentDelivered = 0;
+    let urgentPct = 0, urgentTotal = 0, urgentDelivered = 0;
     if (urgentRes) {
       const urg = parseCompact(urgentRes.data.data, urgentRes.data.fields);
       if (urg) {
@@ -329,10 +305,11 @@ async function fetchHubSummary(
       just_arrived: justArrived,
       backlog,
       today_volume: todayVolume,
+      pending_at_hub: pendingAtHub,
       delivered,
       ongoing_delivery: ongoing,
-      ftd: ftdInDriver,        // <-- FTD = in_driver only
-      ftd_total: ftdTotal,      // <-- FTD total (in_driver + returned) untuk referensi
+      ftd: ftdInDriver,       // DISPLAY = in_driver
+      ftd_total: ftdTotal,     // untuk clean floor
       others,
       delivered_percentage: parseFloat(deliveredPct.toFixed(2)),
       fresh_success: parseFloat(freshSuccess.toFixed(2)),
@@ -356,9 +333,6 @@ async function fetchHubSummary(
   }
 }
 
-// ============================================================
-// BATCH FETCH
-// ============================================================
 async function fetchInBatches(
   hubs: Array<{ hubId: string; hubName: string }>,
   token: string,
@@ -370,9 +344,7 @@ async function fetchInBatches(
   const results: any[] = [];
   for (let i = 0; i < hubs.length; i += batchSize) {
     const batch = hubs.slice(i, i + batchSize);
-    console.log(
-      `[coverage] Batch ${Math.floor(i / batchSize) + 1}: ${batch.map((h) => h.hubName).join(", ")}`
-    );
+    console.log(`[coverage] Batch ${Math.floor(i / batchSize) + 1}: ${batch.map((h) => h.hubName).join(", ")}`);
     const batchResults = await Promise.all(
       batch.map((h) => fetchHubSummary(token, h.hubId, h.hubName, currDate, todayDate))
     );
@@ -384,9 +356,6 @@ async function fetchInBatches(
   return results;
 }
 
-// ============================================================
-// GET HANDLER
-// ============================================================
 export async function GET(req: NextRequest) {
   console.log("=== HIT /api/hms/coverage ===");
   const session = await auth();
@@ -417,7 +386,6 @@ export async function GET(req: NextRequest) {
   const todayDate = getTodayDate();
   const currentHour = getCurrentWIBHour();
 
-  // Cek snapshot clean floor yang sudah locked
   const cleanFloorRows = await prisma.cleanFloorSnapshot.findMany({
     where: {
       facility: { in: userHubs.map((uh) => uh.hub.hmsHubId) },
@@ -439,7 +407,6 @@ export async function GET(req: NextRequest) {
     1500
   );
 
-  // Override clean_floor: pakai DB kalau ada, kalau nggak pakai live
   for (const r of results) {
     if (r.success) {
       const cf = cleanFloorMap.get(r.hubId);

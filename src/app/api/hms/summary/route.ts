@@ -20,9 +20,6 @@ type CacheEntry = { data: any; timestamp: number };
 const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 5 * 1000;
 
-// ============================================================
-// WAKTU — Operational Date: 00:00 WIB hari ini
-// ============================================================
 function toWIB(): Date {
   return new Date(Date.now() + 7 * 60 * 60 * 1000);
 }
@@ -36,7 +33,8 @@ function formatDateYMD(d: Date): string {
 
 function getMainCurrDate(): string {
   const d = toWIB();
-  return `${formatDateYMD(d)} 00:00:00`;
+  d.setUTCDate(d.getUTCDate() - 1);
+  return `${formatDateYMD(d)} 17:00:00`;
 }
 
 function getTodayDate(): string {
@@ -45,8 +43,10 @@ function getTodayDate(): string {
 
 function getCycleList(): string {
   const start = toWIB();
-  start.setUTCHours(0, 0, 0, 0);
+  start.setUTCDate(start.getUTCDate() - 1);
+  start.setUTCHours(17, 0, 0, 0);
   const end = toWIB();
+  end.setUTCHours(17, 0, 0, 0);
   const startMs = start.getTime() - 7 * 60 * 60 * 1000;
   const endMs = end.getTime() - 7 * 60 * 60 * 1000;
   return JSON.stringify([
@@ -72,9 +72,6 @@ function get8amWIBUnix(): number {
   return getTodayWIBUnix(8);
 }
 
-// ============================================================
-// HMS CALL
-// ============================================================
 async function callHMS(
   token: string,
   apiId: string,
@@ -296,13 +293,8 @@ async function resolveActiveHub(
 
 async function fetchDedicatedMerged(token: string, hubId: string) {
   const result = {
-    actual: 0,
-    totalPicked: 0,
-    totalDelivered: 0,
-    avgPickup: 0,
-    avgDelivered: 0,
-    achievementPct: 0,
-    drivers: [] as string[],
+    actual: 0, totalPicked: 0, totalDelivered: 0,
+    avgPickup: 0, avgDelivered: 0, achievementPct: 0, drivers: [] as string[],
   };
 
   const cycles = [
@@ -317,12 +309,10 @@ async function fetchDedicatedMerged(token: string, hubId: string) {
     try {
       const now = toWIB();
       const startUnix = Math.floor(
-        (Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cyc.startHour, cyc.startMin, 0) -
-          7 * 60 * 60 * 1000) / 1000
+        (Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cyc.startHour, cyc.startMin, 0) - 7 * 60 * 60 * 1000) / 1000
       );
       const endUnix = Math.floor(
-        (Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cyc.endHour, cyc.endMin, 0) -
-          7 * 60 * 60 * 1000) / 1000
+        (Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cyc.endHour, cyc.endMin, 0) - 7 * 60 * 60 * 1000) / 1000
       );
 
       const res = await callHMS(token, API_ID_DEDICATED, {
@@ -473,13 +463,8 @@ export async function GET(req: NextRequest) {
         fetchDedicatedMerged(user.hmsToken, HUB_ID).catch((e) => {
           console.warn("[dedicated] Gagal:", e.message);
           return {
-            actual: 0,
-            totalPicked: 0,
-            totalDelivered: 0,
-            avgPickup: 0,
-            avgDelivered: 0,
-            achievementPct: 0,
-            drivers: [],
+            actual: 0, totalPicked: 0, totalDelivered: 0,
+            avgPickup: 0, avgDelivered: 0, achievementPct: 0, drivers: [],
           };
         }),
         computeC1FromInboundScan(user.hmsToken, HUB_NAME).catch((e) => {
@@ -497,11 +482,7 @@ export async function GET(req: NextRequest) {
     const ops = opsRes ? parseCompact(opsRes.data.data, opsRes.data.fields) : null;
     const courier = courierRes ? parseCompact(courierRes.data.data, courierRes.data.fields) : null;
 
-    let codReadyToReturn = 0,
-      codJustArrived = 0,
-      codBacklog = 0,
-      codTotalVolume = 0,
-      codFd = 0;
+    let codReadyToReturn = 0, codJustArrived = 0, codBacklog = 0, codTotalVolume = 0, codFd = 0;
 
     if (codRes) {
       const codMain = parseCompact(codRes.data.data, codRes.data.fields);
@@ -510,10 +491,9 @@ export async function GET(req: NextRequest) {
         codJustArrived = codMain.just_arrived || 0;
         codBacklog = codMain.backlog || 0;
         codTotalVolume = codJustArrived + codBacklog;
-        codFd =
-          codTotalVolume > 0
-            ? parseFloat(((codReadyToReturn / codTotalVolume) * 100).toFixed(2))
-            : 0;
+        codFd = codTotalVolume > 0
+          ? parseFloat(((codReadyToReturn / codTotalVolume) * 100).toFixed(2))
+          : 0;
       }
     }
 
@@ -531,16 +511,13 @@ export async function GET(req: NextRequest) {
     const backlog = Number(main.backlog) || 0;
     const cleanFloorOngoing = Number(main.ongoing_delivery) || 0;
     const cleanFloorDelivered = Number(main.delivered) || 0;
-    // Clean Floor pakai FTD TOTAL (in_driver + returned) — numerator lengkap
     const cleanFloorFtd = Number(main.ftd) || 0;
     const cleanFloorOthers = Number(main.others) || 0;
     const cleanFloorTodayVolume = justArrived + backlog;
-    const cleanFloorNumerator =
-      cleanFloorOngoing + cleanFloorDelivered + cleanFloorFtd + cleanFloorOthers;
-    const cleanFloorValue =
-      cleanFloorTodayVolume > 0
-        ? (cleanFloorNumerator / cleanFloorTodayVolume) * 100
-        : 0;
+    const cleanFloorNumerator = cleanFloorOngoing + cleanFloorDelivered + cleanFloorFtd + cleanFloorOthers;
+    const cleanFloorValue = cleanFloorTodayVolume > 0
+      ? (cleanFloorNumerator / cleanFloorTodayVolume) * 100
+      : 0;
     const currentWibHour = new Date(Date.now() + 7 * 60 * 60 * 1000).getUTCHours();
     const lockedAt = `${todayDate}T01:00:00.000Z`;
     const snapshotKey = { facility: HUB_ID, date: todayDate };
@@ -567,24 +544,18 @@ export async function GET(req: NextRequest) {
       cleanFloor = {
         value: parseFloat(cleanFloorValue.toFixed(2)),
         breakdown: {
-          delivered: cleanFloorDelivered,
-          ongoing: cleanFloorOngoing,
-          ftd: cleanFloorFtd,
-          others: cleanFloorOthers,
+          delivered: cleanFloorDelivered, ongoing: cleanFloorOngoing,
+          ftd: cleanFloorFtd, others: cleanFloorOthers,
           pending: Number(main.pending_at_hub) || 0,
-          today_volume: cleanFloorTodayVolume,
-          numerator: cleanFloorNumerator,
+          today_volume: cleanFloorTodayVolume, numerator: cleanFloorNumerator,
         },
-        is_locked: false,
-        locked_at: lockedAt,
-        quality: "live" as const,
-        captured_at: new Date().toISOString(),
+        is_locked: false, locked_at: lockedAt,
+        quality: "live" as const, captured_at: new Date().toISOString(),
       };
     } else {
       const existing = await prisma.cleanFloorSnapshot.findUnique({
         where: { facility_date: snapshotKey },
       });
-
       if (existing) {
         cleanFloor = formatLockedSnapshot(existing);
       } else {
@@ -617,9 +588,9 @@ export async function GET(req: NextRequest) {
     const opsTarget = 1100;
     const opsAchieved = opsProductivity >= opsTarget;
 
-    // FTD untuk display = in_driver saja
     const ftdInDriver = Number(main.in_driver) || 0;
     const ftdTotal = Number(main.ftd) || 0;
+    const pendingAtHub = Number(main.pending_at_hub) || 0;
 
     const summary = {
       hub_id: main.hub_id,
@@ -627,18 +598,18 @@ export async function GET(req: NextRequest) {
       just_arrived: justArrived,
       backlog,
       today_volume: cleanFloorTodayVolume,
+      pending_at_hub: pendingAtHub,
       clean_floor: cleanFloor,
       fresh_c1: freshC1,
       fresh_c2: freshC2,
       fresh_total_computed: freshC1 + freshC2,
-      pending_at_hub: main.pending_at_hub || 0,
       ongoing_delivery: main.ongoing_delivery || 0,
       ongoing_delivery_just_arrived: Number(main.ongoing_delivery_just_arrived) || 0,
       ongoing_delivery_backlog: Number(main.ongoing_delivery_backlog) || 0,
       delivered: main.delivered || 0,
       delivered_percentage: parseFloat(main.delivered_percentage) || 0,
-      ftd: ftdInDriver,           // <-- FTD = in_driver only
-      ftd_total: ftdTotal,          // <-- FTD total untuk referensi
+      ftd: ftdInDriver,
+      ftd_total: ftdTotal,
       ready_to_return: main.ready_to_return || 0,
       others: main.others || 0,
       cod_ready_to_return: codReadyToReturn,

@@ -11,9 +11,6 @@ type CacheEntry = { data: any; timestamp: number };
 const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 30 * 1000;
 
-// ============================================================
-// WAKTU — Operational Date: 00:00 WIB hari ini
-// ============================================================
 function getWIBDate(): { date: string; hour: number; minute: number } {
   const now = new Date();
   const wibOffsetMs = 7 * 60 * 60 * 1000;
@@ -33,8 +30,8 @@ function getMainCurrDate(): string {
   const nowWIB = new Date(now.getTime() + wibOffsetMs);
   const y = nowWIB.getUTCFullYear();
   const m = nowWIB.getUTCMonth();
-  const d = nowWIB.getUTCDate();
-  return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")} 00:00:00`;
+  const d = nowWIB.getUTCDate() - 1;
+  return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")} 17:00:00`;
 }
 
 function getCycleStartUnix(): number {
@@ -43,8 +40,8 @@ function getCycleStartUnix(): number {
   const nowWIB = new Date(now.getTime() + wibOffsetMs);
   const y = nowWIB.getUTCFullYear();
   const m = nowWIB.getUTCMonth();
-  const d = nowWIB.getUTCDate();
-  const startMs = Date.UTC(y, m, d, 0, 0, 0) - wibOffsetMs;
+  const d = nowWIB.getUTCDate() - 1;
+  const startMs = Date.UTC(y, m, d, 17, 0, 0) - wibOffsetMs;
   return Math.floor(startMs / 1000);
 }
 
@@ -71,9 +68,6 @@ function normalizeHubName(name: string): string {
     .trim();
 }
 
-// ============================================================
-// HMS CALL
-// ============================================================
 async function callHMS(
   token: string,
   apiId: string,
@@ -327,16 +321,12 @@ async function getCleanFloor(
       return {
         value: parseFloat(existing.value.toFixed(2)),
         breakdown: {
-          delivered: existing.delivered,
-          ongoing: existing.ongoing,
-          ftd: existing.ftd,
-          others: existing.others,
-          pending: 0,
-          today_volume: existing.denominator,
+          delivered: existing.delivered, ongoing: existing.ongoing,
+          ftd: existing.ftd, others: existing.others,
+          pending: 0, today_volume: existing.denominator,
           numerator: existing.numerator,
         },
-        is_locked: true,
-        locked_at: lockedAt,
+        is_locked: true, locked_at: lockedAt,
         quality: "accurate" as const,
         captured_at: existing.capturedAt.toISOString(),
       };
@@ -349,8 +339,7 @@ async function getCleanFloor(
   const ongoing = toSafeNumber(mainAll.ongoing_delivery);
   const ftd = toSafeNumber(mainAll.ftd);
   const others = toSafeNumber(mainAll.others);
-  const todayVolume =
-    toSafeNumber(mainAll.just_arrived) + toSafeNumber(mainAll.backlog);
+  const todayVolume = toSafeNumber(mainAll.just_arrived) + toSafeNumber(mainAll.backlog);
   const pending = toSafeNumber(mainAll.pending_at_hub);
   const numerator = ongoing + delivered + ftd + others;
   const value = todayVolume > 0 ? (numerator / todayVolume) * 100 : 0;
@@ -359,39 +348,27 @@ async function getCleanFloor(
     return {
       value: parseFloat(value.toFixed(2)),
       breakdown: { delivered, ongoing, ftd, others, pending, today_volume: todayVolume, numerator },
-      is_locked: false,
-      locked_at: lockedAt,
-      quality: "live" as const,
-      captured_at: new Date().toISOString(),
+      is_locked: false, locked_at: lockedAt,
+      quality: "live" as const, captured_at: new Date().toISOString(),
     };
   }
 
   try {
     const created = await prisma.cleanFloorSnapshot.create({
       data: {
-        ...snapshotKey,
-        value,
-        numerator,
-        denominator: todayVolume,
-        delivered,
-        ongoing,
-        ftd,
-        others,
+        ...snapshotKey, value, numerator, denominator: todayVolume,
+        delivered, ongoing, ftd, others,
       },
     });
     return {
       value: parseFloat(created.value.toFixed(2)),
       breakdown: {
-        delivered: created.delivered,
-        ongoing: created.ongoing,
-        ftd: created.ftd,
-        others: created.others,
-        pending: 0,
-        today_volume: created.denominator,
+        delivered: created.delivered, ongoing: created.ongoing,
+        ftd: created.ftd, others: created.others,
+        pending: 0, today_volume: created.denominator,
         numerator: created.numerator,
       },
-      is_locked: true,
-      locked_at: lockedAt,
+      is_locked: true, locked_at: lockedAt,
       quality: "accurate" as const,
       captured_at: created.capturedAt.toISOString(),
     };
@@ -404,16 +381,12 @@ async function getCleanFloor(
         return {
           value: parseFloat(existing.value.toFixed(2)),
           breakdown: {
-            delivered: existing.delivered,
-            ongoing: existing.ongoing,
-            ftd: existing.ftd,
-            others: existing.others,
-            pending: 0,
-            today_volume: existing.denominator,
+            delivered: existing.delivered, ongoing: existing.ongoing,
+            ftd: existing.ftd, others: existing.others,
+            pending: 0, today_volume: existing.denominator,
             numerator: existing.numerator,
           },
-          is_locked: true,
-          locked_at: lockedAt,
+          is_locked: true, locked_at: lockedAt,
           quality: "accurate" as const,
           captured_at: existing.capturedAt.toISOString(),
         };
@@ -492,23 +465,19 @@ export async function GET(req: NextRequest) {
     const codTotal = justArrived + backlog;
     const fdPercentage = codTotal > 0 ? (readyToReturn / codTotal) * 100 : 0;
     codData = {
-      total: codTotal,
-      ready_to_return: readyToReturn,
+      total: codTotal, ready_to_return: readyToReturn,
       fd_percentage: parseFloat(fdPercentage.toFixed(2)),
     };
   }
 
   let urgentData = { total: 0, delivered: 0, failed: 0, delivered_percentage: 0 };
   if (mainUrgent) {
-    const urgentTotal =
-      toSafeNumber(mainUrgent.just_arrived) + toSafeNumber(mainUrgent.backlog);
+    const urgentTotal = toSafeNumber(mainUrgent.just_arrived) + toSafeNumber(mainUrgent.backlog);
     const urgentDelivered = toSafeNumber(mainUrgent.delivered);
     const urgentFailed = toSafeNumber(mainUrgent.ftd);
-    const deliveredPercentage =
-      urgentTotal > 0 ? (urgentDelivered / urgentTotal) * 100 : 0;
+    const deliveredPercentage = urgentTotal > 0 ? (urgentDelivered / urgentTotal) * 100 : 0;
     urgentData = {
-      total: urgentTotal,
-      delivered: urgentDelivered,
+      total: urgentTotal, delivered: urgentDelivered,
       failed: urgentFailed,
       delivered_percentage: parseFloat(deliveredPercentage.toFixed(2)),
     };
@@ -522,8 +491,7 @@ export async function GET(req: NextRequest) {
       success: true,
       meta: { cached: true, hub_id: HUB_ID, hub_name: HUB_NAME },
       subdistricts: cached.data.subdistricts,
-      cod: codData,
-      urgent: urgentData,
+      cod: codData, urgent: urgentData,
       clean_floor: cleanFloorData,
     });
   }
@@ -539,18 +507,14 @@ export async function GET(req: NextRequest) {
     const before12Ts = getTodayWIBUnix(12);
 
     const inboundResult = await fetchOperationalInboundByAwb(
-      user.hmsToken,
-      HUB_NAME,
-      fromTs,
-      toTs
+      user.hmsToken, HUB_NAME, fromTs, toTs
     );
     const operationalInboundByAwb = inboundResult.inboundByAwb;
     const debugFacilitiesAll = Array.from(inboundResult.debugFacilities).sort();
     const debugChunks = inboundResult.debugChunks;
 
     const allShipments = await fetchShipmentsForAwbs(
-      user.hmsToken,
-      Array.from(operationalInboundByAwb.keys())
+      user.hmsToken, Array.from(operationalInboundByAwb.keys())
     );
 
     const uniqueMap = new Map<string, any>();
@@ -566,16 +530,9 @@ export async function GET(req: NextRequest) {
     );
 
     type GroupData = {
-      subdistrict: string;
-      overall: number;
-      fresh: number;
-      backlog: number;
-      fresh_c1: number;
-      fresh_c2: number;
-      delivered: number;
-      delivering: number;
-      failed: number;
-      fresh_before_12: number;
+      subdistrict: string; overall: number; fresh: number; backlog: number;
+      fresh_c1: number; fresh_c2: number; delivered: number;
+      delivering: number; failed: number; fresh_before_12: number;
     };
     const bySubdistrict = new Map<string, GroupData>();
 
@@ -590,16 +547,9 @@ export async function GET(req: NextRequest) {
 
       if (!bySubdistrict.has(subdistrict)) {
         bySubdistrict.set(subdistrict, {
-          subdistrict,
-          overall: 0,
-          fresh: 0,
-          backlog: 0,
-          fresh_c1: 0,
-          fresh_c2: 0,
-          delivered: 0,
-          delivering: 0,
-          failed: 0,
-          fresh_before_12: 0,
+          subdistrict, overall: 0, fresh: 0, backlog: 0,
+          fresh_c1: 0, fresh_c2: 0, delivered: 0,
+          delivering: 0, failed: 0, fresh_before_12: 0,
         });
       }
       const group = bySubdistrict.get(subdistrict)!;
@@ -621,9 +571,7 @@ export async function GET(req: NextRequest) {
       if (status === "failed") group.failed++;
 
       if (isFreshC1) {
-        const deliveredAt = toUnixSeconds(
-          shipment.destination_details?.delivery_time
-        );
+        const deliveredAt = toUnixSeconds(shipment.destination_details?.delivery_time);
         if (deliveredAt >= todayStartTs && deliveredAt < before12Ts) {
           group.fresh_before_12++;
         }
@@ -635,9 +583,7 @@ export async function GET(req: NextRequest) {
         ...group,
         sd_before_12:
           group.fresh_c1 > 0
-            ? parseFloat(
-                ((group.fresh_before_12 / group.fresh_c1) * 100).toFixed(2)
-              )
+            ? parseFloat(((group.fresh_before_12 / group.fresh_c1) * 100).toFixed(2))
             : 0,
       }))
       .sort((a, b) => b.overall - a.overall);
@@ -649,8 +595,7 @@ export async function GET(req: NextRequest) {
       meta: {
         cached: false,
         fetched_at: new Date().toISOString(),
-        hub_id: HUB_ID,
-        hub_name: HUB_NAME,
+        hub_id: HUB_ID, hub_name: HUB_NAME,
         total_shipments: filtered.length,
         operational_awbs: operationalInboundByAwb.size,
         debug_lm_facilities_count: debugFacilitiesAll.length,
@@ -658,24 +603,13 @@ export async function GET(req: NextRequest) {
           /jatinegara|pulogadung/i.test(f)
         ),
         debug_chunks: debugChunks,
-        missing_tms_shipments: Math.max(
-          operationalInboundByAwb.size - filtered.length,
-          0
-        ),
+        missing_tms_shipments: Math.max(operationalInboundByAwb.size - filtered.length, 0),
         expected_today_volume: toSafeNumber(mainAll?.today_volume),
         coverage_percentage:
           toSafeNumber(mainAll?.today_volume) > 0
-            ? parseFloat(
-                (
-                  (filtered.length / toSafeNumber(mainAll.today_volume)) *
-                  100
-                ).toFixed(2)
-              )
+            ? parseFloat(((filtered.length / toSafeNumber(mainAll.today_volume)) * 100).toFixed(2))
             : 0,
-        fresh_c1_shipments: subdistricts.reduce(
-          (sum, row) => sum + row.fresh_c1,
-          0
-        ),
+        fresh_c1_shipments: subdistricts.reduce((sum, row) => sum + row.fresh_c1, 0),
       },
       subdistricts,
       cod: codData,
