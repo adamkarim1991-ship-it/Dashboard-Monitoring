@@ -142,10 +142,12 @@ export default function DashboardView({
   user,
   hubId,
   hubName,
+  showSubdistrict = true,
 }: {
   user: SessionUser;
   hubId?: string;
   hubName?: string;
+  showSubdistrict?: boolean;
 }) {
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
   const [subdistricts, setSubdistricts] = useState<SubdistrictRow[]>([]);
@@ -242,21 +244,23 @@ export default function DashboardView({
 
   useEffect(() => {
     fetchSummary();
-    fetchSubdistricts();
-  }, [fetchSummary, fetchSubdistricts]);
+    if (showSubdistrict) fetchSubdistricts();
+  }, [fetchSummary, fetchSubdistricts, showSubdistrict]);
 
   useEffect(() => {
     const t = setInterval(() => {
       fetchSummary();
     }, 60000);
-    const tSub = setInterval(() => {
-      fetchSubdistricts();
-    }, 5 * 60 * 1000);
+    const tSub = showSubdistrict
+      ? setInterval(() => {
+          fetchSubdistricts();
+        }, 5 * 60 * 1000)
+      : null;
     return () => {
       clearInterval(t);
-      clearInterval(tSub);
+      if (tSub) clearInterval(tSub);
     };
-  }, [fetchSummary, fetchSubdistricts]);
+  }, [fetchSummary, fetchSubdistricts, showSubdistrict]);
 
   const todayVolume = summary?.today_volume ?? 0;
   const justArrived = summary?.just_arrived ?? 0;
@@ -438,7 +442,7 @@ export default function DashboardView({
               size="sm"
               onClick={() => {
                 fetchSummary();
-                fetchSubdistricts();
+                if (showSubdistrict) fetchSubdistricts();
               }}
               disabled={loading || subLoading}
               className="bg-white/10 border-white/20 text-white hover:bg-white/20 hover:text-white"
@@ -865,6 +869,7 @@ export default function DashboardView({
         )}
 
         {/* TABLE SUB-DISTRICT */}
+        {showSubdistrict && (
         <div className="overflow-hidden rounded-lg border border-slate-700 bg-slate-900 shadow-sm">
           <div className="border-b border-slate-700 bg-slate-950 px-4 py-3">
             <h3 className="text-sm font-bold text-white">Sub-District Breakdown</h3>
@@ -952,6 +957,7 @@ export default function DashboardView({
             </table>
           </div>
         </div>
+        )}
 
         <p className="text-center text-[10px] text-gray-400 py-2">
           Live monitoring | Auto-refresh every 60s |{" "}

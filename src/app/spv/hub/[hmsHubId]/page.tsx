@@ -31,6 +31,7 @@ export default async function SpvHubDashboard({
       user={session.user as any}
       hubId={hmsHubId}
       hubName={membership.hub.name}
+      showSubdistrict={false}
     />
   );
 }
