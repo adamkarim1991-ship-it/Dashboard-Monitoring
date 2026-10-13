@@ -1,5 +1,6 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { getHubToken } from "@/lib/hms-token";
 import { NextRequest, NextResponse } from "next/server";
 
 // ============================================================
@@ -69,7 +70,7 @@ function getTodayWIBUnix(hour: number): number {
 }
 
 /**
- * Normalize nama hub: case-insensitive, hapus "GTL", "Hub", dan non-alphanumeric.
+ * Normalize nama hub: case-insensitive, hapus "GTL", "Hub", non-alphanumeric.
  */
 function normalizeHubName(name: string): string {
   return String(name || "")
@@ -261,7 +262,6 @@ async function fetchOperationalInboundByAwb(
   const debugChunks: Array<{ from: number; to: number; count: number }> = [];
   const normalizedHubName = normalizeHubName(hubName);
 
-  // Chunk per 3 jam untuk hindari HMS result cap
   const CHUNK_SECONDS = 3 * 60 * 60;
   const chunks: Array<{ from: number; to: number }> = [];
   for (let t = fromTs; t < toTs; t += CHUNK_SECONDS) {
@@ -496,15 +496,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
-    select: { hmsToken: true },
-  });
-
-  if (!user?.hmsToken) {
-    return NextResponse.json({ error: "No HMS token" }, { status: 403 });
-  }
-
   // Resolve hub dari query param
   const requestedHubId = req.nextUrl.searchParams.get("hubId");
   const activeHub = await resolveActiveHub(session.user.id, requestedHubId);
@@ -515,8 +506,29 @@ export async function GET(req: NextRequest) {
 
   const HUB_ID = activeHub.hmsHubId;
   const HUB_NAME = activeHub.name;
+  const HUB_INTERNAL_ID = activeHub.id;
 
-  console.log(`[subdistrict] hub = ${HUB_NAME} (${HUB_ID})`);
+  // Resolve HMS token (per-hub credential atau fallback)
+  let hubToken: string;
+  let tokenSource: string;
+  try {
+    const res = await getHubToken(HUB_INTERNAL_ID, session.user.id);
+    hubToken = res.token;
+    tokenSource = res.source;
+  } catch (e: any) {
+    return NextResponse.json(
+      {
+        error: "No HMS token for this hub",
+        detail: e.message,
+        hint: "Hub Lead perlu pairing token, atau login sebagai Manager yang punya akses.",
+      },
+      { status: 409 }
+    );
+  }
+
+  console.log(
+    `[subdistrict] hub = ${HUB_NAME} (${HUB_ID}) token=${tokenSource}`
+  );
 
   const currDate = getMainCurrDate();
 
@@ -526,19 +538,19 @@ export async function GET(req: NextRequest) {
   let mainUrgent: any = null;
   try {
     const [allRes, codRes, urgentRes] = await Promise.all([
-      callHMS(user.hmsToken, API_ID_MAIN, {
+      callHMS(hubToken, API_ID_MAIN, {
         hub_ids: JSON.stringify([HUB_ID]),
         curr_date: currDate,
         payment_types: PAYMENT_TYPES_ALL,
         service_types: SERVICE_TYPES,
       }),
-      callHMS(user.hmsToken, API_ID_MAIN, {
+      callHMS(hubToken, API_ID_MAIN, {
         hub_ids: JSON.stringify([HUB_ID]),
         curr_date: currDate,
         payment_types: PAYMENT_TYPES_COD,
         service_types: SERVICE_TYPES,
       }),
-      callHMS(user.hmsToken, API_ID_MAIN, {
+      callHMS(hubToken, API_ID_MAIN, {
         hub_ids: JSON.stringify([HUB_ID]),
         curr_date: currDate,
         payment_types: PAYMENT_TYPES_ALL,
@@ -602,7 +614,12 @@ export async function GET(req: NextRequest) {
     console.log("[subdistrict] Cache HIT", HUB_ID);
     return NextResponse.json({
       success: true,
-      meta: { cached: true, hub_id: HUB_ID, hub_name: HUB_NAME },
+      meta: {
+        cached: true,
+        hub_id: HUB_ID,
+        hub_name: HUB_NAME,
+        token_source: tokenSource,
+      },
       subdistricts: cached.data.subdistricts,
       cod: codData,
       urgent: urgentData,
@@ -621,7 +638,7 @@ export async function GET(req: NextRequest) {
     const before12Ts = getTodayWIBUnix(12);
 
     const inboundResult = await fetchOperationalInboundByAwb(
-      user.hmsToken,
+      hubToken,
       HUB_NAME,
       fromTs,
       toTs
@@ -631,7 +648,7 @@ export async function GET(req: NextRequest) {
     const debugChunks = inboundResult.debugChunks;
 
     const allShipments = await fetchShipmentsForAwbs(
-      user.hmsToken,
+      hubToken,
       Array.from(operationalInboundByAwb.keys())
     );
 
@@ -737,6 +754,7 @@ export async function GET(req: NextRequest) {
         fetched_at: new Date().toISOString(),
         hub_id: HUB_ID,
         hub_name: HUB_NAME,
+        token_source: tokenSource,
         total_shipments: filtered.length,
         operational_awbs: operationalInboundByAwb.size,
         debug_lm_facilities_count: debugFacilitiesAll.length,
