@@ -35,32 +35,38 @@ enum CredentialStatus {
 // =====================================================
 
 model User {
-  id                String    @id @default(cuid())
-  email             String    @unique
-  name              String
-  password          String
-  role              Role
-  createdAt         DateTime  @default(now())
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  password     String
+  createdAt    DateTime @default(now())
 
-  // Legacy fields (backward-compat, akan deprecated)
-  hmsToken          String?
-  leaderHmsToken    String?
-  hmsTokenUpdatedAt DateTime?
+  // Legacy fields — simpan sementara untuk backward compat
+  role                         Role?
+  hmsToken                     String?
+  leaderHmsToken               String?
+  hmsTokenUpdatedAt            DateTime?
 
-  hubs              UserHub[]
+  // Phase 3 — Auto-refresh token
+  hmsRefreshToken              String?
+  hmsTokenExpiresAt            DateTime?
+  hmsRefreshTokenUpdatedAt     DateTime?
+
+  hubs UserHub[]
 
   @@index([email])
 }
 
 // =====================================================
-// CLUSTER & HUB (TENANT)
+// CLUSTER & HUB
 // =====================================================
 
 model Cluster {
   id        String   @id @default(cuid())
   name      String   @unique
   createdAt DateTime @default(now())
-  hubs      Hub[]
+
+  hubs Hub[]
 }
 
 model Hub {
