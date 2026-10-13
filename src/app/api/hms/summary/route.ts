@@ -65,14 +65,6 @@ function getTodayWIBUnix(hour: number): number {
   );
 }
 
-function getCycleStartUnix(): number {
-  const d = toWIB();
-  const y = d.getUTCFullYear();
-  const m = d.getUTCMonth();
-  const day = d.getUTCDate() - 1;
-  return Math.floor((Date.UTC(y, m, day, 17, 0, 0) - 7 * 60 * 60 * 1000) / 1000);
-}
-
 function normalizeHubName(name: string): string {
   return String(name || "")
     .toLowerCase()
@@ -226,27 +218,27 @@ async function fetchShipmentsForAwbs(token: string, awbs: string[]) {
 }
 
 /**
- * Compute C1 (fresh cycle 1) via inbound scan.
- * Chunk window per 3 jam untuk hindari HMS result cap.
- * C1 = task masuk hub antara 00:00 - 08:00 WIB.
+ * Compute C1 (fresh cycle 1).
+ *
+ * Logic:
+ *   C1 = paket yang inbound scan di hub antara 00:00 - 08:00 WIB
+ *   C2 = paket yang inbound scan setelah 08:00 WIB (dihitung = justArrived - C1)
+ *
+ * Fetch strategy: chunk 3-jam HANYA di window 00:00-08:00 (3 chunk: 00-03, 03-06, 06-08)
+ * untuk hindari HMS result cap pada token yang aksesnya luas.
  */
 async function computeC1FromInboundScan(
   hmsToken: string,
   hubName: string
 ) {
-  // Full window sama seperti subdistrict: 17:00 kemarin → sekarang
-  const fromTs = getCycleStartUnix();
-  const toTs = Math.floor(Date.now() / 1000);
+  const c1StartTs = getTodayWIBUnix(0); // 00:00 hari ini
+  const c1EndTs = getTodayWIBUnix(8);   // 08:00 hari ini
 
-  // C1 window untuk filter: 00:00 - 08:00 WIB hari ini
-  const c1StartTs = getTodayWIBUnix(0);
-  const c1EndTs = getTodayWIBUnix(8);
-
-  // Chunk 3 jam
+  // Chunk 3 jam dalam window C1
   const CHUNK_SECONDS = 3 * 60 * 60;
   const chunks: Array<{ from: number; to: number }> = [];
-  for (let t = fromTs; t < toTs; t += CHUNK_SECONDS) {
-    chunks.push({ from: t, to: Math.min(t + CHUNK_SECONDS, toTs) });
+  for (let t = c1StartTs; t < c1EndTs; t += CHUNK_SECONDS) {
+    chunks.push({ from: t, to: Math.min(t + CHUNK_SECONDS, c1EndTs) });
   }
 
   const allTasks: any[] = [];
@@ -303,16 +295,10 @@ async function computeC1FromInboundScan(
       normalizeHubName(String(task.lm_facility || "")) === normalizedHubName
   );
 
-  // Filter C1 window: 00:00 - 08:00 WIB
-  const c1Tasks = hubTasks.filter((task) => {
-    const receivedAt = toUnixSeconds(task.received_at);
-    return receivedAt >= c1StartTs && receivedAt < c1EndTs;
-  });
-
   // Dedup by AWB
   const uniqueFreshC1Tasks = Array.from(
     new Map(
-      c1Tasks.map((task, index) => [
+      hubTasks.map((task, index) => [
         task.awb_number ||
           task.tracking_number ||
           task.id ||
@@ -330,6 +316,7 @@ async function computeC1FromInboundScan(
 
   const shipments = await fetchShipmentsForAwbs(hmsToken, freshC1Awbs);
 
+  // C1 delivered before 12:00 WIB
   const deliveredFromTs = getTodayWIBUnix(0);
   const deliveredBeforeTs = getTodayWIBUnix(12);
   const deliveredBefore12 = new Set(
