@@ -193,36 +193,6 @@ async function fetchDedicatedMerged(token: string, hubId: string) {
 }
 
 // ============================================================
-// FTD BASELINE — akumulasi per hari (reset jam 00:00)
-// ============================================================
-async function getOrCreateFtdBaseline(
-  hubId: string,
-  date: string,
-  currentFtd: number
-): Promise<number> {
-  try {
-    const existing = await prisma.hubDailyBaseline.findUnique({
-      where: { hubId_date: { hubId, date } },
-    });
-    if (existing) return existing.ftdBase;
-
-    const created = await prisma.hubDailyBaseline.create({
-      data: { hubId, date, ftdBase: currentFtd },
-    });
-    return created.ftdBase;
-  } catch (e: any) {
-    if (e.code === "P2002") {
-      const winner = await prisma.hubDailyBaseline.findUnique({
-        where: { hubId_date: { hubId, date } },
-      });
-      return winner?.ftdBase ?? currentFtd;
-    }
-    console.warn(`[ftd-baseline] Error for ${hubId}:`, e.message);
-    return currentFtd;
-  }
-}
-
-// ============================================================
 // LIVE CLEAN FLOOR
 // Formula: (ongoing + delivered + ftd_total + others) / (just_arrived + backlog) × 100
 // ============================================================
@@ -302,11 +272,9 @@ async function fetchHubSummary(
     const backlog = Number(main.backlog) || 0;
     const delivered = Number(main.delivered) || 0;
     const ongoing = Number(main.ongoing_delivery) || 0;
-    const ftdNow = Number(main.ftd) || 0;
-
-    // FTD akumulasi harian
-    const ftdBaseline = await getOrCreateFtdBaseline(hubId, todayDate, ftdNow);
-    const ftdHariIni = Math.max(ftdNow - ftdBaseline, 0);
+    // FTD = in_driver saja (yang masih di tangan kurir)
+    const ftdInDriver = Number(main.in_driver) || 0;
+    const ftdTotal = Number(main.ftd) || 0;
 
     const others = Number(main.others) || 0;
     const todayVolume = justArrived + backlog;
@@ -363,9 +331,8 @@ async function fetchHubSummary(
       today_volume: todayVolume,
       delivered,
       ongoing_delivery: ongoing,
-      ftd: ftdHariIni,
-      ftd_now: ftdNow,
-      ftd_baseline: ftdBaseline,
+      ftd: ftdInDriver,        // <-- FTD = in_driver only
+      ftd_total: ftdTotal,      // <-- FTD total (in_driver + returned) untuk referensi
       others,
       delivered_percentage: parseFloat(deliveredPct.toFixed(2)),
       fresh_success: parseFloat(freshSuccess.toFixed(2)),

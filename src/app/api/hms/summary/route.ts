@@ -531,6 +531,7 @@ export async function GET(req: NextRequest) {
     const backlog = Number(main.backlog) || 0;
     const cleanFloorOngoing = Number(main.ongoing_delivery) || 0;
     const cleanFloorDelivered = Number(main.delivered) || 0;
+    // Clean Floor pakai FTD TOTAL (in_driver + returned) — numerator lengkap
     const cleanFloorFtd = Number(main.ftd) || 0;
     const cleanFloorOthers = Number(main.others) || 0;
     const cleanFloorTodayVolume = justArrived + backlog;
@@ -616,6 +617,10 @@ export async function GET(req: NextRequest) {
     const opsTarget = 1100;
     const opsAchieved = opsProductivity >= opsTarget;
 
+    // FTD untuk display = in_driver saja
+    const ftdInDriver = Number(main.in_driver) || 0;
+    const ftdTotal = Number(main.ftd) || 0;
+
     const summary = {
       hub_id: main.hub_id,
       hub_name: main.hub_name,
@@ -632,7 +637,8 @@ export async function GET(req: NextRequest) {
       ongoing_delivery_backlog: Number(main.ongoing_delivery_backlog) || 0,
       delivered: main.delivered || 0,
       delivered_percentage: parseFloat(main.delivered_percentage) || 0,
-      ftd: main.ftd || 0,
+      ftd: ftdInDriver,           // <-- FTD = in_driver only
+      ftd_total: ftdTotal,          // <-- FTD total untuk referensi
       ready_to_return: main.ready_to_return || 0,
       others: main.others || 0,
       cod_ready_to_return: codReadyToReturn,
