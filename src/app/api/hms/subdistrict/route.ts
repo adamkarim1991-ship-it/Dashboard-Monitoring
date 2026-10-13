@@ -69,11 +69,7 @@ function getTodayWIBUnix(hour: number): number {
 }
 
 /**
- * Normalize nama hub: case-insensitive, hapus "GTL", "Hub", dan karakter non-alphanumeric.
- * Contoh:
- *   "GTL Pulogadung Hub" -> "pulogadung"
- *   "Pulogadung"         -> "pulogadung"
- *   "GTL PULOGADUNG"     -> "pulogadung"
+ * Normalize nama hub: case-insensitive, hapus "GTL", "Hub", dan non-alphanumeric.
  */
 function normalizeHubName(name: string): string {
   return String(name || "")
@@ -255,55 +251,86 @@ async function fetchOperationalInboundByAwb(
   hubName: string,
   fromTs: number,
   toTs: number
-): Promise<{ inboundByAwb: Map<string, number>; debugFacilities: Set<string> }> {
-  const firstPage = await fetchInboundTasksPage(token, 1, fromTs, toTs);
-  const totalRecords = Number(firstPage?.data?.pagination?.total) || 0;
-  const totalPages = Math.ceil(totalRecords / 100);
-  let allTasks: any[] = firstPage?.data?.tasks || [];
+): Promise<{
+  inboundByAwb: Map<string, number>;
+  debugFacilities: Set<string>;
+  debugChunks: Array<{ from: number; to: number; count: number }>;
+}> {
+  const inboundByAwb = new Map<string, number>();
+  const debugFacilities = new Set<string>();
+  const debugChunks: Array<{ from: number; to: number; count: number }> = [];
+  const normalizedHubName = normalizeHubName(hubName);
 
-  if (totalPages > 1) {
-    const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
-    for (let i = 0; i < pages.length; i += 5) {
-      const results = await Promise.all(
-        pages
-          .slice(i, i + 5)
-          .map((page) => fetchInboundTasksPage(token, page, fromTs, toTs))
+  // Chunk per 3 jam untuk hindari HMS result cap
+  const CHUNK_SECONDS = 3 * 60 * 60;
+  const chunks: Array<{ from: number; to: number }> = [];
+  for (let t = fromTs; t < toTs; t += CHUNK_SECONDS) {
+    chunks.push({ from: t, to: Math.min(t + CHUNK_SECONDS, toTs) });
+  }
+
+  for (const chunk of chunks) {
+    let firstPage: any = null;
+    try {
+      firstPage = await fetchInboundTasksPage(token, 1, chunk.from, chunk.to);
+    } catch (e: any) {
+      console.warn(
+        `[subdistrict] chunk ${chunk.from}-${chunk.to} failed:`,
+        e.message
       );
-      for (const result of results) {
-        allTasks = allTasks.concat(result?.data?.tasks || []);
+      continue;
+    }
+
+    const totalRecords = Number(firstPage?.data?.pagination?.total) || 0;
+    const totalPages = Math.ceil(totalRecords / 100);
+    let chunkTasks: any[] = firstPage?.data?.tasks || [];
+
+    if (totalPages > 1) {
+      const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
+      for (let i = 0; i < pages.length; i += 5) {
+        const results = await Promise.all(
+          pages
+            .slice(i, i + 5)
+            .map((page) =>
+              fetchInboundTasksPage(token, page, chunk.from, chunk.to).catch(
+                () => null
+              )
+            )
+        );
+        for (const result of results) {
+          if (result)
+            chunkTasks = chunkTasks.concat(result?.data?.tasks || []);
+        }
       }
+    }
+
+    debugChunks.push({
+      from: chunk.from,
+      to: chunk.to,
+      count: chunkTasks.length,
+    });
+
+    for (const task of chunkTasks) {
+      const taskFacility = String(task.lm_facility || "");
+      if (taskFacility) debugFacilities.add(taskFacility);
+
+      if (normalizeHubName(taskFacility) !== normalizedHubName) continue;
+      if (task.delivery_type && task.delivery_type !== "Forward") continue;
+
+      const awb = String(task.awb_number || task.tracking_number || "").trim();
+      const receivedAt = toUnixSeconds(task.received_at);
+      if (!awb || !receivedAt) continue;
+
+      const existing = inboundByAwb.get(awb);
+      if (!existing || receivedAt < existing) inboundByAwb.set(awb, receivedAt);
     }
   }
 
-  const inboundByAwb = new Map<string, number>();
-  const debugFacilities = new Set<string>();
-  const normalizedHubName = normalizeHubName(hubName);
-
-  for (const task of allTasks) {
-    const taskFacility = String(task.lm_facility || "");
-    if (taskFacility) debugFacilities.add(taskFacility);
-
-    if (normalizeHubName(taskFacility) !== normalizedHubName) continue;
-    if (task.delivery_type && task.delivery_type !== "Forward") continue;
-
-    const awb = String(task.awb_number || task.tracking_number || "").trim();
-    const receivedAt = toUnixSeconds(task.received_at);
-    if (!awb || !receivedAt) continue;
-
-    const existing = inboundByAwb.get(awb);
-    if (!existing || receivedAt < existing) inboundByAwb.set(awb, receivedAt);
-  }
-
-  return { inboundByAwb, debugFacilities };
+  return { inboundByAwb, debugFacilities, debugChunks };
 }
 
-async function fetchShipmentsForAwbs(
-  token: string,
-  awbs: string[]
-) {
-  const chunks = Array.from(
-    { length: Math.ceil(awbs.length / 50) },
-    (_, i) => awbs.slice(i * 50, i * 50 + 50)
+async function fetchShipmentsForAwbs(token: string, awbs: string[]) {
+  const chunks = Array.from({ length: Math.ceil(awbs.length / 50) }, (_, i) =>
+    awbs.slice(i * 50, i * 50 + 50)
   );
   const shipments: any[] = [];
 
@@ -336,8 +363,6 @@ async function fetchShipmentsForAwbs(
 
 // ============================================================
 // CLEAN FLOOR
-// Formula: (Ongoing Delivery + Delivered + FTD + Other Statuses) / (Just Arrived + Backlog) x 100
-// Lock: first complete snapshot at or after 08:00 WIB
 // ============================================================
 async function getCleanFloor(
   mainAll: any,
@@ -531,15 +556,14 @@ export async function GET(req: NextRequest) {
   // Clean Floor
   const cleanFloorData = await getCleanFloor(mainAll, getWIBDate(), HUB_ID);
 
-  // COD FD = COD Ready to Return / total COD shipments x 100.
+  // COD FD
   let codData = { total: 0, ready_to_return: 0, fd_percentage: 0 };
   if (mainCod) {
     const readyToReturn = toSafeNumber(mainCod.ready_to_return);
     const justArrived = toSafeNumber(mainCod.just_arrived);
     const backlog = toSafeNumber(mainCod.backlog);
     const codTotal = justArrived + backlog;
-    const fdPercentage =
-      codTotal > 0 ? (readyToReturn / codTotal) * 100 : 0;
+    const fdPercentage = codTotal > 0 ? (readyToReturn / codTotal) * 100 : 0;
 
     codData = {
       total: codTotal,
@@ -548,7 +572,7 @@ export async function GET(req: NextRequest) {
     };
   }
 
-  // Delivered Urgent mirrors OPC with Urgent = Yes.
+  // Urgent
   let urgentData = {
     total: 0,
     delivered: 0,
@@ -603,7 +627,8 @@ export async function GET(req: NextRequest) {
       toTs
     );
     const operationalInboundByAwb = inboundResult.inboundByAwb;
-    const debugFacilities = Array.from(inboundResult.debugFacilities).sort();
+    const debugFacilitiesAll = Array.from(inboundResult.debugFacilities).sort();
+    const debugChunks = inboundResult.debugChunks;
 
     const allShipments = await fetchShipmentsForAwbs(
       user.hmsToken,
@@ -714,7 +739,11 @@ export async function GET(req: NextRequest) {
         hub_name: HUB_NAME,
         total_shipments: filtered.length,
         operational_awbs: operationalInboundByAwb.size,
-        debug_lm_facilities: debugFacilities.slice(0, 30),
+        debug_lm_facilities_count: debugFacilitiesAll.length,
+        debug_lm_facilities_jatinegara_like: debugFacilitiesAll.filter((f) =>
+          /jatinegara|pulogadung/i.test(f)
+        ),
+        debug_chunks: debugChunks,
         missing_tms_shipments: Math.max(
           operationalInboundByAwb.size - filtered.length,
           0
