@@ -20,7 +20,7 @@ const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 60 * 1000;
 
 // ============================================================
-// HELPER WAKTU
+// HELPER WAKTU — Operational Date: 00:00 WIB hari ini
 // ============================================================
 function toWIB(): Date {
   return new Date(Date.now() + 7 * 60 * 60 * 1000);
@@ -35,8 +35,7 @@ function formatDateYMD(d: Date): string {
 
 function getMainCurrDate(): string {
   const d = toWIB();
-  d.setUTCDate(d.getUTCDate() - 1);
-  return `${formatDateYMD(d)} 17:00:00`;
+  return `${formatDateYMD(d)} 00:00:00`;
 }
 
 function getTodayDate(): string {
@@ -201,7 +200,6 @@ async function fetchHubSummary(
   todayDate: string
 ) {
   try {
-    // Parallel: ALL + COD + URGENT + OPS
     const [mainRes, codRes, urgentRes, opsRes] = await Promise.all([
       callHMS(token, API_ID_MAIN, {
         hub_ids: JSON.stringify([hubId]),
@@ -234,7 +232,6 @@ async function fetchHubSummary(
       return { hubId, hubName, success: false, error: "Empty response" };
     }
 
-    // Dedicated (3 cycle) — sequential karena banyak call
     let dedicated = {
       actual: 0,
       totalPicked: 0,
@@ -250,7 +247,6 @@ async function fetchHubSummary(
       console.warn(`[coverage] Dedicated failed for ${hubName}:`, e.message);
     }
 
-    // Main metrics
     const justArrived = Number(main.just_arrived) || 0;
     const backlog = Number(main.backlog) || 0;
     const delivered = Number(main.delivered) || 0;
@@ -265,7 +261,6 @@ async function fetchHubSummary(
         ? ((Number(main.delivered_just_arrived) || 0) / justArrived) * 100
         : 0;
 
-    // COD FD
     let codFd = 0;
     let codTotal = 0;
     if (codRes) {
@@ -279,7 +274,6 @@ async function fetchHubSummary(
       }
     }
 
-    // Urgent %
     let urgentPct = 0;
     let urgentTotal = 0;
     let urgentDelivered = 0;
@@ -292,7 +286,6 @@ async function fetchHubSummary(
       }
     }
 
-    // OPS productivity (Oncall)
     let opsProductivity = 0;
     let opsAchieved = false;
     if (opsRes) {
@@ -316,7 +309,7 @@ async function fetchHubSummary(
       others,
       delivered_percentage: parseFloat(deliveredPct.toFixed(2)),
       fresh_success: parseFloat(freshSuccess.toFixed(2)),
-      sd_before_12: 0, // TODO: compute later
+      sd_before_12: 0,
       cod_fd: parseFloat(codFd.toFixed(2)),
       cod_total: codTotal,
       urgent_pct: parseFloat(urgentPct.toFixed(2)),
@@ -350,7 +343,9 @@ async function fetchInBatches(
   const results: any[] = [];
   for (let i = 0; i < hubs.length; i += batchSize) {
     const batch = hubs.slice(i, i + batchSize);
-    console.log(`[coverage] Batch ${Math.floor(i / batchSize) + 1}: ${batch.map((h) => h.hubName).join(", ")}`);
+    console.log(
+      `[coverage] Batch ${Math.floor(i / batchSize) + 1}: ${batch.map((h) => h.hubName).join(", ")}`
+    );
     const batchResults = await Promise.all(
       batch.map((h) => fetchHubSummary(token, h.hubId, h.hubName, currDate, todayDate))
     );
@@ -394,7 +389,6 @@ export async function GET(req: NextRequest) {
   const currDate = getMainCurrDate();
   const todayDate = getTodayDate();
 
-  // Fetch clean floor snapshots
   const cleanFloorRows = await prisma.cleanFloorSnapshot.findMany({
     where: {
       facility: { in: userHubs.map((uh) => uh.hub.hmsHubId) },

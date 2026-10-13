@@ -2,23 +2,17 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
-// ============================================================
-// KONFIG
-// ============================================================
 const API_ID_MAIN = "7564027893345453074";
 const PAYMENT_TYPES_ALL = '["cashless","cod"]';
 const PAYMENT_TYPES_COD = '["cod"]';
 const SERVICE_TYPES = '["INS","SDS","REG","NDD","OTHERS"]';
 
-// ============================================================
-// CACHE 30 detik (per-hub)
-// ============================================================
 type CacheEntry = { data: any; timestamp: number };
 const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 30 * 1000;
 
 // ============================================================
-// HELPER
+// WAKTU — Operational Date: 00:00 WIB hari ini
 // ============================================================
 function getWIBDate(): { date: string; hour: number; minute: number } {
   const now = new Date();
@@ -39,8 +33,8 @@ function getMainCurrDate(): string {
   const nowWIB = new Date(now.getTime() + wibOffsetMs);
   const y = nowWIB.getUTCFullYear();
   const m = nowWIB.getUTCMonth();
-  const d = nowWIB.getUTCDate() - 1;
-  return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")} 17:00:00`;
+  const d = nowWIB.getUTCDate();
+  return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")} 00:00:00`;
 }
 
 function getCycleStartUnix(): number {
@@ -49,8 +43,8 @@ function getCycleStartUnix(): number {
   const nowWIB = new Date(now.getTime() + wibOffsetMs);
   const y = nowWIB.getUTCFullYear();
   const m = nowWIB.getUTCMonth();
-  const d = nowWIB.getUTCDate() - 1;
-  const startMs = Date.UTC(y, m, d, 17, 0, 0) - wibOffsetMs;
+  const d = nowWIB.getUTCDate();
+  const startMs = Date.UTC(y, m, d, 0, 0, 0) - wibOffsetMs;
   return Math.floor(startMs / 1000);
 }
 
@@ -77,6 +71,9 @@ function normalizeHubName(name: string): string {
     .trim();
 }
 
+// ============================================================
+// HMS CALL
+// ============================================================
 async function callHMS(
   token: string,
   apiId: string,
@@ -93,8 +90,7 @@ async function callHMS(
       "x-location": "Asia/Jakarta",
       "x-request-source": "web",
       Origin: "https://gtl-id.tokgistic.com",
-      Referer:
-        "https://gtl-id.tokgistic.com/tms/operation-performance-central",
+      Referer: "https://gtl-id.tokgistic.com/tms/operation-performance-central",
     },
     body: JSON.stringify({ api_id: apiId, params }),
     cache: "no-store",
@@ -161,16 +157,13 @@ async function resolveActiveHub(
     where: { userId },
     include: { hub: true },
   });
-
   if (userHubs.length === 0) return null;
-
   if (requestedHmsHubId) {
     const match = userHubs.find(
       (uh) => uh.hub.hmsHubId === requestedHmsHubId
     );
     if (match) return match.hub;
   }
-
   return userHubs[0].hub;
 }
 
@@ -199,7 +192,6 @@ async function fetchShipmentsPage(
     },
     cache: "no-store",
   });
-
   if (!res.ok) throw new Error(`Page ${page}: ${res.status}`);
   return res.json();
 }
@@ -229,7 +221,6 @@ async function fetchInboundTasksPage(
       cache: "no-store",
     }
   );
-
   if (!res.ok) throw new Error(`HMS task page ${page}: ${res.status}`);
   const json = await res.json();
   if (json.code !== 200) {
@@ -243,11 +234,7 @@ async function fetchOperationalInboundByAwb(
   hubName: string,
   fromTs: number,
   toTs: number
-): Promise<{
-  inboundByAwb: Map<string, number>;
-  debugFacilities: Set<string>;
-  debugChunks: Array<{ from: number; to: number; count: number }>;
-}> {
+) {
   const inboundByAwb = new Map<string, number>();
   const debugFacilities = new Set<string>();
   const debugChunks: Array<{ from: number; to: number; count: number }> = [];
@@ -279,14 +266,11 @@ async function fetchOperationalInboundByAwb(
   for (const task of allTasks) {
     const taskFacility = String(task.lm_facility || "");
     if (taskFacility) debugFacilities.add(taskFacility);
-
     if (normalizeHubName(taskFacility) !== normalizedHubName) continue;
     if (task.delivery_type && task.delivery_type !== "Forward") continue;
-
     const awb = String(task.awb_number || task.tracking_number || "").trim();
     const receivedAt = toUnixSeconds(task.received_at);
     if (!awb || !receivedAt) continue;
-
     const existing = inboundByAwb.get(awb);
     if (!existing || receivedAt < existing) inboundByAwb.set(awb, receivedAt);
   }
@@ -327,9 +311,6 @@ async function fetchShipmentsForAwbs(token: string, awbs: string[]) {
   return shipments;
 }
 
-// ============================================================
-// CLEAN FLOOR
-// ============================================================
 async function getCleanFloor(
   mainAll: any,
   wib: { date: string; hour: number; minute: number },
@@ -377,15 +358,7 @@ async function getCleanFloor(
   if (wib.hour < 8) {
     return {
       value: parseFloat(value.toFixed(2)),
-      breakdown: {
-        delivered,
-        ongoing,
-        ftd,
-        others,
-        pending,
-        today_volume: todayVolume,
-        numerator,
-      },
+      breakdown: { delivered, ongoing, ftd, others, pending, today_volume: todayVolume, numerator },
       is_locked: false,
       locked_at: lockedAt,
       quality: "live" as const,
@@ -450,14 +423,9 @@ async function getCleanFloor(
   }
 }
 
-// ============================================================
-// MAIN
-// ============================================================
 export async function GET(req: NextRequest) {
   console.log("=== HIT /api/hms/subdistrict ===");
-
   const session = await auth();
-
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -466,14 +434,12 @@ export async function GET(req: NextRequest) {
     where: { id: session.user.id },
     select: { hmsToken: true },
   });
-
   if (!user?.hmsToken) {
     return NextResponse.json({ error: "No HMS token" }, { status: 403 });
   }
 
   const requestedHubId = req.nextUrl.searchParams.get("hubId");
   const activeHub = await resolveActiveHub(session.user.id, requestedHubId);
-
   if (!activeHub) {
     return NextResponse.json({ error: "No hub access" }, { status: 403 });
   }
@@ -482,7 +448,6 @@ export async function GET(req: NextRequest) {
   const HUB_NAME = activeHub.name;
 
   console.log(`[subdistrict] hub = ${HUB_NAME} (${HUB_ID})`);
-
   const currDate = getMainCurrDate();
 
   let mainAll: any = null;
@@ -526,7 +491,6 @@ export async function GET(req: NextRequest) {
     const backlog = toSafeNumber(mainCod.backlog);
     const codTotal = justArrived + backlog;
     const fdPercentage = codTotal > 0 ? (readyToReturn / codTotal) * 100 : 0;
-
     codData = {
       total: codTotal,
       ready_to_return: readyToReturn,
@@ -534,12 +498,7 @@ export async function GET(req: NextRequest) {
     };
   }
 
-  let urgentData = {
-    total: 0,
-    delivered: 0,
-    failed: 0,
-    delivered_percentage: 0,
-  };
+  let urgentData = { total: 0, delivered: 0, failed: 0, delivered_percentage: 0 };
   if (mainUrgent) {
     const urgentTotal =
       toSafeNumber(mainUrgent.just_arrived) + toSafeNumber(mainUrgent.backlog);
@@ -547,7 +506,6 @@ export async function GET(req: NextRequest) {
     const urgentFailed = toSafeNumber(mainUrgent.ftd);
     const deliveredPercentage =
       urgentTotal > 0 ? (urgentDelivered / urgentTotal) * 100 : 0;
-
     urgentData = {
       total: urgentTotal,
       delivered: urgentDelivered,
@@ -604,8 +562,7 @@ export async function GET(req: NextRequest) {
     const normalizedHubName = normalizeHubName(HUB_NAME);
     const filtered = Array.from(uniqueMap.values()).filter(
       (shipment) =>
-        normalizeHubName(String(shipment.actual_hub || "")) ===
-        normalizedHubName
+        normalizeHubName(String(shipment.actual_hub || "")) === normalizedHubName
     );
 
     type GroupData = {
@@ -685,10 +642,7 @@ export async function GET(req: NextRequest) {
       }))
       .sort((a, b) => b.overall - a.overall);
 
-    cache.set(HUB_ID, {
-      data: { subdistricts },
-      timestamp: Date.now(),
-    });
+    cache.set(HUB_ID, { data: { subdistricts }, timestamp: Date.now() });
 
     return NextResponse.json({
       success: true,

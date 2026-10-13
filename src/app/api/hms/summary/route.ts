@@ -20,6 +20,9 @@ type CacheEntry = { data: any; timestamp: number };
 const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 5 * 1000;
 
+// ============================================================
+// WAKTU — Operational Date: 00:00 WIB hari ini
+// ============================================================
 function toWIB(): Date {
   return new Date(Date.now() + 7 * 60 * 60 * 1000);
 }
@@ -33,8 +36,7 @@ function formatDateYMD(d: Date): string {
 
 function getMainCurrDate(): string {
   const d = toWIB();
-  d.setUTCDate(d.getUTCDate() - 1);
-  return `${formatDateYMD(d)} 17:00:00`;
+  return `${formatDateYMD(d)} 00:00:00`;
 }
 
 function getTodayDate(): string {
@@ -43,10 +45,8 @@ function getTodayDate(): string {
 
 function getCycleList(): string {
   const start = toWIB();
-  start.setUTCDate(start.getUTCDate() - 1);
-  start.setUTCHours(17, 0, 0, 0);
+  start.setUTCHours(0, 0, 0, 0);
   const end = toWIB();
-  end.setUTCHours(17, 0, 0, 0);
   const startMs = start.getTime() - 7 * 60 * 60 * 1000;
   const endMs = end.getTime() - 7 * 60 * 60 * 1000;
   return JSON.stringify([
@@ -72,6 +72,9 @@ function get8amWIBUnix(): number {
   return getTodayWIBUnix(8);
 }
 
+// ============================================================
+// HMS CALL
+// ============================================================
 async function callHMS(
   token: string,
   apiId: string,
@@ -88,8 +91,7 @@ async function callHMS(
       "x-location": "Asia/Jakarta",
       "x-request-source": "web",
       Origin: "https://gtl-id.tokgistic.com",
-      Referer:
-        "https://gtl-id.tokgistic.com/tms/operation-performance-central",
+      Referer: "https://gtl-id.tokgistic.com/tms/operation-performance-central",
     },
     body: JSON.stringify({ api_id: apiId, params }),
     cache: "no-store",
@@ -215,10 +217,7 @@ async function fetchShipmentsForAwbs(token: string, awbs: string[]) {
   return shipments;
 }
 
-async function computeC1FromInboundScan(
-  hmsToken: string,
-  hubName: string
-) {
+async function computeC1FromInboundScan(hmsToken: string, hubName: string) {
   const fromTs = get12amWIBUnix();
   const toTs = get8amWIBUnix();
   const firstPage = await fetchInboundTasksPage(hmsToken, 1, fromTs, toTs);
@@ -227,10 +226,7 @@ async function computeC1FromInboundScan(
   let allTasks: any[] = firstPage?.data?.tasks || [];
 
   if (totalPages > 1) {
-    const pages = Array.from(
-      { length: totalPages - 1 },
-      (_, i) => i + 2
-    );
+    const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
     for (let i = 0; i < pages.length; i += 5) {
       const results = await Promise.all(
         pages
@@ -288,31 +284,17 @@ async function resolveActiveHub(
     where: { userId },
     include: { hub: true },
   });
-
   if (userHubs.length === 0) return null;
-
   if (requestedHmsHubId) {
     const match = userHubs.find(
       (uh) => uh.hub.hmsHubId === requestedHmsHubId
     );
     if (match) return match.hub;
   }
-
   return userHubs[0].hub;
 }
 
-async function fetchDedicatedMerged(
-  token: string,
-  hubId: string
-): Promise<{
-  actual: number;
-  totalPicked: number;
-  totalDelivered: number;
-  avgPickup: number;
-  avgDelivered: number;
-  achievementPct: number;
-  drivers: string[];
-}> {
+async function fetchDedicatedMerged(token: string, hubId: string) {
   const result = {
     actual: 0,
     totalPicked: 0,
@@ -335,28 +317,12 @@ async function fetchDedicatedMerged(
     try {
       const now = toWIB();
       const startUnix = Math.floor(
-        (Date.UTC(
-          now.getUTCFullYear(),
-          now.getUTCMonth(),
-          now.getUTCDate(),
-          cyc.startHour,
-          cyc.startMin,
-          0
-        ) -
-          7 * 60 * 60 * 1000) /
-          1000
+        (Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cyc.startHour, cyc.startMin, 0) -
+          7 * 60 * 60 * 1000) / 1000
       );
       const endUnix = Math.floor(
-        (Date.UTC(
-          now.getUTCFullYear(),
-          now.getUTCMonth(),
-          now.getUTCDate(),
-          cyc.endHour,
-          cyc.endMin,
-          0
-        ) -
-          7 * 60 * 60 * 1000) /
-          1000
+        (Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cyc.endHour, cyc.endMin, 0) -
+          7 * 60 * 60 * 1000) / 1000
       );
 
       const res = await callHMS(token, API_ID_DEDICATED, {
@@ -369,26 +335,17 @@ async function fetchDedicatedMerged(
       });
 
       if (!res?.data?.data || !res?.data?.fields) continue;
-
       const rows = JSON.parse(res.data.data);
       const fields: { name: string }[] = res.data.fields;
-      const pickedIdx = fields.findIndex(
-        (f: any) => f.name === "total_picked"
-      );
-      const deliveredIdx = fields.findIndex(
-        (f: any) => f.name === "total_delivered"
-      );
-      const driverIdx = fields.findIndex(
-        (f: any) => f.name === "driver_name"
-      );
+      const pickedIdx = fields.findIndex((f: any) => f.name === "total_picked");
+      const deliveredIdx = fields.findIndex((f: any) => f.name === "total_delivered");
+      const driverIdx = fields.findIndex((f: any) => f.name === "driver_name");
 
       for (const row of rows) {
-        const driverName =
-          driverIdx >= 0 ? String(row[driverIdx] || "").trim() : "";
+        const driverName = driverIdx >= 0 ? String(row[driverIdx] || "").trim() : "";
         if (!driverName) continue;
         const picked = Number(row[pickedIdx]) || 0;
         const delivered = Number(row[deliveredIdx]) || 0;
-
         const existing = driverMap.get(driverName);
         if (existing) {
           existing.picked += picked;
@@ -405,7 +362,6 @@ async function fetchDedicatedMerged(
   let totalPicked = 0;
   let totalDelivered = 0;
   const drivers: string[] = [];
-
   for (const [driverName, data] of driverMap.entries()) {
     totalPicked += data.picked;
     totalDelivered += data.delivered;
@@ -415,18 +371,11 @@ async function fetchDedicatedMerged(
   result.actual = driverMap.size;
   result.totalPicked = totalPicked;
   result.totalDelivered = totalDelivered;
-  result.avgPickup =
-    driverMap.size > 0 ? Math.round(totalPicked / driverMap.size) : 0;
-  result.avgDelivered =
-    driverMap.size > 0 ? Math.round(totalDelivered / driverMap.size) : 0;
+  result.avgPickup = driverMap.size > 0 ? Math.round(totalPicked / driverMap.size) : 0;
+  result.avgDelivered = driverMap.size > 0 ? Math.round(totalDelivered / driverMap.size) : 0;
   result.achievementPct =
     driverMap.size > 0
-      ? parseFloat(
-          (
-            (totalDelivered / (driverMap.size * DEDICATED_TARGET)) *
-            100
-          ).toFixed(2)
-        )
+      ? parseFloat(((totalDelivered / (driverMap.size * DEDICATED_TARGET)) * 100).toFixed(2))
       : 0;
   result.drivers = drivers;
 
@@ -435,7 +384,6 @@ async function fetchDedicatedMerged(
 
 export async function GET(req: NextRequest) {
   console.log("=== HIT /api/hms/summary ===");
-
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -445,7 +393,6 @@ export async function GET(req: NextRequest) {
     where: { id: session.user.id },
     select: { hmsToken: true },
   });
-
   if (!user?.hmsToken) {
     return NextResponse.json(
       { error: "No HMS token", message: "Buka HMS dulu." },
@@ -454,11 +401,7 @@ export async function GET(req: NextRequest) {
   }
 
   const requestedHubId = req.nextUrl.searchParams.get("hubId");
-  const activeHub = await resolveActiveHub(
-    session.user.id,
-    requestedHubId
-  );
-
+  const activeHub = await resolveActiveHub(session.user.id, requestedHubId);
   if (!activeHub) {
     return NextResponse.json({ error: "No hub access" }, { status: 403 });
   }
@@ -472,10 +415,7 @@ export async function GET(req: NextRequest) {
   if (cached && now - cached.timestamp < CACHE_TTL_MS) {
     return NextResponse.json({
       success: true,
-      meta: {
-        cached: true,
-        cache_age_seconds: Math.floor((now - cached.timestamp) / 1000),
-      },
+      meta: { cached: true, cache_age_seconds: Math.floor((now - cached.timestamp) / 1000) },
       summary: cached.data,
     });
   }
@@ -487,91 +427,75 @@ export async function GET(req: NextRequest) {
     const todayDate = getTodayDate();
     const cycleList = getCycleList();
 
-    const [
-      mainRes,
-      codRes,
-      cycleRes,
-      opsRes,
-      courierRes,
-      dedicatedMerged,
-      c1Result,
-    ] = await Promise.all([
-      callHMS(user.hmsToken, API_ID_MAIN, {
-        hub_ids: JSON.stringify([HUB_ID]),
-        curr_date: currDate,
-        payment_types: PAYMENT_TYPES,
-        service_types: SERVICE_TYPES,
-      }),
-      callHMS(user.hmsToken, API_ID_MAIN, {
-        hub_ids: JSON.stringify([HUB_ID]),
-        curr_date: currDate,
-        payment_types: PAYMENT_TYPES_COD,
-        service_types: SERVICE_TYPES,
-      }).catch((e) => {
-        console.warn("[cod] Gagal:", e.message);
-        return null;
-      }),
-      callHMS(user.hmsToken, API_ID_CYCLE1, {
-        hub_id: HUB_ID,
-        driver_name: "",
-        job_roles: JOB_ROLES_CYCLE,
-        cycle_list: cycleList,
-      }).catch((e) => {
-        console.warn("[cycle1] Gagal:", e.message);
-        return null;
-      }),
-      callHMS(user.hmsToken, API_ID_OPS, {
-        hub_ids: JSON.stringify([HUB_ID]),
-        curr_date_start: currDate,
-        date: todayDate,
-      }).catch((e) => {
-        console.warn("[ops] Gagal:", e.message);
-        return null;
-      }),
-      callHMS(user.hmsToken, API_ID_COURIER, {
-        hub_ids: JSON.stringify([HUB_ID]),
-        curr_date_start: currDate,
-        date: todayDate,
-        job_roles: JOB_ROLES_CYCLE,
-      }).catch((e) => {
-        console.warn("[courier] Gagal:", e.message);
-        return null;
-      }),
-      fetchDedicatedMerged(user.hmsToken, HUB_ID).catch((e) => {
-        console.warn("[dedicated] Gagal:", e.message);
-        return {
-          actual: 0,
-          totalPicked: 0,
-          totalDelivered: 0,
-          avgPickup: 0,
-          avgDelivered: 0,
-          achievementPct: 0,
-          drivers: [],
-        };
-      }),
-      computeC1FromInboundScan(user.hmsToken, HUB_NAME).catch((e) => {
-        console.warn("[c1c2] Gagal:", e.message);
-        return { c1: 0, deliveredBefore12: 0 };
-      }),
-    ]);
+    const [mainRes, codRes, cycleRes, opsRes, courierRes, dedicatedMerged, c1Result] =
+      await Promise.all([
+        callHMS(user.hmsToken, API_ID_MAIN, {
+          hub_ids: JSON.stringify([HUB_ID]),
+          curr_date: currDate,
+          payment_types: PAYMENT_TYPES,
+          service_types: SERVICE_TYPES,
+        }),
+        callHMS(user.hmsToken, API_ID_MAIN, {
+          hub_ids: JSON.stringify([HUB_ID]),
+          curr_date: currDate,
+          payment_types: PAYMENT_TYPES_COD,
+          service_types: SERVICE_TYPES,
+        }).catch((e) => {
+          console.warn("[cod] Gagal:", e.message);
+          return null;
+        }),
+        callHMS(user.hmsToken, API_ID_CYCLE1, {
+          hub_id: HUB_ID,
+          driver_name: "",
+          job_roles: JOB_ROLES_CYCLE,
+          cycle_list: cycleList,
+        }).catch((e) => {
+          console.warn("[cycle1] Gagal:", e.message);
+          return null;
+        }),
+        callHMS(user.hmsToken, API_ID_OPS, {
+          hub_ids: JSON.stringify([HUB_ID]),
+          curr_date_start: currDate,
+          date: todayDate,
+        }).catch((e) => {
+          console.warn("[ops] Gagal:", e.message);
+          return null;
+        }),
+        callHMS(user.hmsToken, API_ID_COURIER, {
+          hub_ids: JSON.stringify([HUB_ID]),
+          curr_date_start: currDate,
+          date: todayDate,
+          job_roles: JOB_ROLES_CYCLE,
+        }).catch((e) => {
+          console.warn("[courier] Gagal:", e.message);
+          return null;
+        }),
+        fetchDedicatedMerged(user.hmsToken, HUB_ID).catch((e) => {
+          console.warn("[dedicated] Gagal:", e.message);
+          return {
+            actual: 0,
+            totalPicked: 0,
+            totalDelivered: 0,
+            avgPickup: 0,
+            avgDelivered: 0,
+            achievementPct: 0,
+            drivers: [],
+          };
+        }),
+        computeC1FromInboundScan(user.hmsToken, HUB_NAME).catch((e) => {
+          console.warn("[c1c2] Gagal:", e.message);
+          return { c1: 0, deliveredBefore12: 0 };
+        }),
+      ]);
 
     if (!mainRes) {
-      return NextResponse.json(
-        { error: "HMS MAIN failed" },
-        { status: 502 }
-      );
+      return NextResponse.json({ error: "HMS MAIN failed" }, { status: 502 });
     }
 
     const main = parseCompact(mainRes.data.data, mainRes.data.fields)!;
-    const cycle = cycleRes
-      ? parseCompact(cycleRes.data.data, cycleRes.data.fields)
-      : null;
-    const ops = opsRes
-      ? parseCompact(opsRes.data.data, opsRes.data.fields)
-      : null;
-    const courier = courierRes
-      ? parseCompact(courierRes.data.data, courierRes.data.fields)
-      : null;
+    const cycle = cycleRes ? parseCompact(cycleRes.data.data, cycleRes.data.fields) : null;
+    const ops = opsRes ? parseCompact(opsRes.data.data, opsRes.data.fields) : null;
+    const courier = courierRes ? parseCompact(courierRes.data.data, courierRes.data.fields) : null;
 
     let codReadyToReturn = 0,
       codJustArrived = 0,
@@ -588,9 +512,7 @@ export async function GET(req: NextRequest) {
         codTotalVolume = codJustArrived + codBacklog;
         codFd =
           codTotalVolume > 0
-            ? parseFloat(
-                ((codReadyToReturn / codTotalVolume) * 100).toFixed(2)
-              )
+            ? parseFloat(((codReadyToReturn / codTotalVolume) * 100).toFixed(2))
             : 0;
       }
     }
@@ -599,17 +521,11 @@ export async function GET(req: NextRequest) {
     const justArrived = Number(main.just_arrived) || 0;
     const freshC1 = Math.min(c1Result.c1, justArrived);
     const freshC2 = Math.max(justArrived - freshC1, 0);
-    const deliveredBefore12 = Math.min(
-      c1Result.deliveredBefore12,
-      freshC1
-    );
-    const sdBefore12 =
-      freshC1 > 0 ? (deliveredBefore12 / freshC1) * 100 : 0;
+    const deliveredBefore12 = Math.min(c1Result.deliveredBefore12, freshC1);
+    const sdBefore12 = freshC1 > 0 ? (deliveredBefore12 / freshC1) * 100 : 0;
     const freshSuccess =
       justArrived > 0
-        ? parseFloat(
-            ((deliveredJustArrived / justArrived) * 100).toFixed(2)
-          )
+        ? parseFloat(((deliveredJustArrived / justArrived) * 100).toFixed(2))
         : 0;
 
     const backlog = Number(main.backlog) || 0;
@@ -619,17 +535,12 @@ export async function GET(req: NextRequest) {
     const cleanFloorOthers = Number(main.others) || 0;
     const cleanFloorTodayVolume = justArrived + backlog;
     const cleanFloorNumerator =
-      cleanFloorOngoing +
-      cleanFloorDelivered +
-      cleanFloorFtd +
-      cleanFloorOthers;
+      cleanFloorOngoing + cleanFloorDelivered + cleanFloorFtd + cleanFloorOthers;
     const cleanFloorValue =
       cleanFloorTodayVolume > 0
         ? (cleanFloorNumerator / cleanFloorTodayVolume) * 100
         : 0;
-    const currentWibHour = new Date(
-      Date.now() + 7 * 60 * 60 * 1000
-    ).getUTCHours();
+    const currentWibHour = new Date(Date.now() + 7 * 60 * 60 * 1000).getUTCHours();
     const lockedAt = `${todayDate}T01:00:00.000Z`;
     const snapshotKey = { facility: HUB_ID, date: todayDate };
 
@@ -717,10 +628,8 @@ export async function GET(req: NextRequest) {
       fresh_total_computed: freshC1 + freshC2,
       pending_at_hub: main.pending_at_hub || 0,
       ongoing_delivery: main.ongoing_delivery || 0,
-      ongoing_delivery_just_arrived:
-        Number(main.ongoing_delivery_just_arrived) || 0,
-      ongoing_delivery_backlog:
-        Number(main.ongoing_delivery_backlog) || 0,
+      ongoing_delivery_just_arrived: Number(main.ongoing_delivery_just_arrived) || 0,
+      ongoing_delivery_backlog: Number(main.ongoing_delivery_backlog) || 0,
       delivered: main.delivered || 0,
       delivered_percentage: parseFloat(main.delivered_percentage) || 0,
       ftd: main.ftd || 0,
@@ -739,12 +648,10 @@ export async function GET(req: NextRequest) {
       sd_before_12: parseFloat(sdBefore12.toFixed(2)),
       courier_assigned: courier?.assigned || 0,
       courier_check_in: courier?.check_in || 0,
-      courier_check_in_percent:
-        parseFloat(courier?.check_in_percent) || 0,
+      courier_check_in_percent: parseFloat(courier?.check_in_percent) || 0,
       courier_out_drivers: courier?.out_drivers || 0,
       courier_out_percent: parseFloat(courier?.out_percent) || 0,
-      courier_avg_productivity:
-        parseFloat(courier?.avg_productivity) || 0,
+      courier_avg_productivity: parseFloat(courier?.avg_productivity) || 0,
       dedicated_actual: dedicatedMerged.actual,
       dedicated_total_picked: dedicatedMerged.totalPicked,
       dedicated_total_delivered: dedicatedMerged.totalDelivered,
