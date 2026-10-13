@@ -1,6 +1,5 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { getHubToken } from "@/lib/hms-token";
 import { NextRequest, NextResponse } from "next/server";
 
 // ============================================================
@@ -69,9 +68,6 @@ function getTodayWIBUnix(hour: number): number {
   return Math.floor(timestampMs / 1000);
 }
 
-/**
- * Normalize nama hub: case-insensitive, hapus "GTL", "Hub", non-alphanumeric.
- */
 function normalizeHubName(name: string): string {
   return String(name || "")
     .toLowerCase()
@@ -157,11 +153,6 @@ function getShipmentStatus(status: unknown) {
   return null;
 }
 
-/**
- * Resolve hub dari request. Prioritas:
- * 1. ?hubId=X kalau user punya akses
- * 2. Fallback ke hub pertama user
- */
 async function resolveActiveHub(
   userId: string,
   requestedHmsHubId: string | null
@@ -262,67 +253,42 @@ async function fetchOperationalInboundByAwb(
   const debugChunks: Array<{ from: number; to: number; count: number }> = [];
   const normalizedHubName = normalizeHubName(hubName);
 
-  const CHUNK_SECONDS = 3 * 60 * 60;
-  const chunks: Array<{ from: number; to: number }> = [];
-  for (let t = fromTs; t < toTs; t += CHUNK_SECONDS) {
-    chunks.push({ from: t, to: Math.min(t + CHUNK_SECONDS, toTs) });
-  }
+  const firstPage = await fetchInboundTasksPage(token, 1, fromTs, toTs);
+  const totalRecords = Number(firstPage?.data?.pagination?.total) || 0;
+  const totalPages = Math.ceil(totalRecords / 100);
+  let allTasks: any[] = firstPage?.data?.tasks || [];
 
-  for (const chunk of chunks) {
-    let firstPage: any = null;
-    try {
-      firstPage = await fetchInboundTasksPage(token, 1, chunk.from, chunk.to);
-    } catch (e: any) {
-      console.warn(
-        `[subdistrict] chunk ${chunk.from}-${chunk.to} failed:`,
-        e.message
+  if (totalPages > 1) {
+    const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
+    for (let i = 0; i < pages.length; i += 5) {
+      const results = await Promise.all(
+        pages
+          .slice(i, i + 5)
+          .map((page) =>
+            fetchInboundTasksPage(token, page, fromTs, toTs).catch(() => null)
+          )
       );
-      continue;
-    }
-
-    const totalRecords = Number(firstPage?.data?.pagination?.total) || 0;
-    const totalPages = Math.ceil(totalRecords / 100);
-    let chunkTasks: any[] = firstPage?.data?.tasks || [];
-
-    if (totalPages > 1) {
-      const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
-      for (let i = 0; i < pages.length; i += 5) {
-        const results = await Promise.all(
-          pages
-            .slice(i, i + 5)
-            .map((page) =>
-              fetchInboundTasksPage(token, page, chunk.from, chunk.to).catch(
-                () => null
-              )
-            )
-        );
-        for (const result of results) {
-          if (result)
-            chunkTasks = chunkTasks.concat(result?.data?.tasks || []);
-        }
+      for (const result of results) {
+        if (result) allTasks = allTasks.concat(result?.data?.tasks || []);
       }
     }
+  }
 
-    debugChunks.push({
-      from: chunk.from,
-      to: chunk.to,
-      count: chunkTasks.length,
-    });
+  debugChunks.push({ from: fromTs, to: toTs, count: allTasks.length });
 
-    for (const task of chunkTasks) {
-      const taskFacility = String(task.lm_facility || "");
-      if (taskFacility) debugFacilities.add(taskFacility);
+  for (const task of allTasks) {
+    const taskFacility = String(task.lm_facility || "");
+    if (taskFacility) debugFacilities.add(taskFacility);
 
-      if (normalizeHubName(taskFacility) !== normalizedHubName) continue;
-      if (task.delivery_type && task.delivery_type !== "Forward") continue;
+    if (normalizeHubName(taskFacility) !== normalizedHubName) continue;
+    if (task.delivery_type && task.delivery_type !== "Forward") continue;
 
-      const awb = String(task.awb_number || task.tracking_number || "").trim();
-      const receivedAt = toUnixSeconds(task.received_at);
-      if (!awb || !receivedAt) continue;
+    const awb = String(task.awb_number || task.tracking_number || "").trim();
+    const receivedAt = toUnixSeconds(task.received_at);
+    if (!awb || !receivedAt) continue;
 
-      const existing = inboundByAwb.get(awb);
-      if (!existing || receivedAt < existing) inboundByAwb.set(awb, receivedAt);
-    }
+    const existing = inboundByAwb.get(awb);
+    if (!existing || receivedAt < existing) inboundByAwb.set(awb, receivedAt);
   }
 
   return { inboundByAwb, debugFacilities, debugChunks };
@@ -496,7 +462,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Resolve hub dari query param
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { hmsToken: true },
+  });
+
+  if (!user?.hmsToken) {
+    return NextResponse.json({ error: "No HMS token" }, { status: 403 });
+  }
+
   const requestedHubId = req.nextUrl.searchParams.get("hubId");
   const activeHub = await resolveActiveHub(session.user.id, requestedHubId);
 
@@ -506,51 +480,29 @@ export async function GET(req: NextRequest) {
 
   const HUB_ID = activeHub.hmsHubId;
   const HUB_NAME = activeHub.name;
-  const HUB_INTERNAL_ID = activeHub.id;
 
-  // Resolve HMS token (per-hub credential atau fallback)
-  let hubToken: string;
-  let tokenSource: string;
-  try {
-    const res = await getHubToken(HUB_INTERNAL_ID, session.user.id);
-    hubToken = res.token;
-    tokenSource = res.source;
-  } catch (e: any) {
-    return NextResponse.json(
-      {
-        error: "No HMS token for this hub",
-        detail: e.message,
-        hint: "Hub Lead perlu pairing token, atau login sebagai Manager yang punya akses.",
-      },
-      { status: 409 }
-    );
-  }
-
-  console.log(
-    `[subdistrict] hub = ${HUB_NAME} (${HUB_ID}) token=${tokenSource}`
-  );
+  console.log(`[subdistrict] hub = ${HUB_NAME} (${HUB_ID})`);
 
   const currDate = getMainCurrDate();
 
-  // Fetch MAIN ALL + MAIN COD + MAIN URGENT
   let mainAll: any = null;
   let mainCod: any = null;
   let mainUrgent: any = null;
   try {
     const [allRes, codRes, urgentRes] = await Promise.all([
-      callHMS(hubToken, API_ID_MAIN, {
+      callHMS(user.hmsToken, API_ID_MAIN, {
         hub_ids: JSON.stringify([HUB_ID]),
         curr_date: currDate,
         payment_types: PAYMENT_TYPES_ALL,
         service_types: SERVICE_TYPES,
       }),
-      callHMS(hubToken, API_ID_MAIN, {
+      callHMS(user.hmsToken, API_ID_MAIN, {
         hub_ids: JSON.stringify([HUB_ID]),
         curr_date: currDate,
         payment_types: PAYMENT_TYPES_COD,
         service_types: SERVICE_TYPES,
       }),
-      callHMS(hubToken, API_ID_MAIN, {
+      callHMS(user.hmsToken, API_ID_MAIN, {
         hub_ids: JSON.stringify([HUB_ID]),
         curr_date: currDate,
         payment_types: PAYMENT_TYPES_ALL,
@@ -565,10 +517,8 @@ export async function GET(req: NextRequest) {
     console.warn("[subdistrict] Gagal fetch MAIN:", e.message);
   }
 
-  // Clean Floor
   const cleanFloorData = await getCleanFloor(mainAll, getWIBDate(), HUB_ID);
 
-  // COD FD
   let codData = { total: 0, ready_to_return: 0, fd_percentage: 0 };
   if (mainCod) {
     const readyToReturn = toSafeNumber(mainCod.ready_to_return);
@@ -584,7 +534,6 @@ export async function GET(req: NextRequest) {
     };
   }
 
-  // Urgent
   let urgentData = {
     total: 0,
     delivered: 0,
@@ -607,19 +556,13 @@ export async function GET(req: NextRequest) {
     };
   }
 
-  // Cache per-hub
   const now = Date.now();
   const cached = cache.get(HUB_ID);
   if (cached && now - cached.timestamp < CACHE_TTL_MS) {
     console.log("[subdistrict] Cache HIT", HUB_ID);
     return NextResponse.json({
       success: true,
-      meta: {
-        cached: true,
-        hub_id: HUB_ID,
-        hub_name: HUB_NAME,
-        token_source: tokenSource,
-      },
+      meta: { cached: true, hub_id: HUB_ID, hub_name: HUB_NAME },
       subdistricts: cached.data.subdistricts,
       cod: codData,
       urgent: urgentData,
@@ -638,7 +581,7 @@ export async function GET(req: NextRequest) {
     const before12Ts = getTodayWIBUnix(12);
 
     const inboundResult = await fetchOperationalInboundByAwb(
-      hubToken,
+      user.hmsToken,
       HUB_NAME,
       fromTs,
       toTs
@@ -648,7 +591,7 @@ export async function GET(req: NextRequest) {
     const debugChunks = inboundResult.debugChunks;
 
     const allShipments = await fetchShipmentsForAwbs(
-      hubToken,
+      user.hmsToken,
       Array.from(operationalInboundByAwb.keys())
     );
 
@@ -754,7 +697,6 @@ export async function GET(req: NextRequest) {
         fetched_at: new Date().toISOString(),
         hub_id: HUB_ID,
         hub_name: HUB_NAME,
-        token_source: tokenSource,
         total_shipments: filtered.length,
         operational_awbs: operationalInboundByAwb.size,
         debug_lm_facilities_count: debugFacilitiesAll.length,
