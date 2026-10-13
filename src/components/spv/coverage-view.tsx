@@ -387,6 +387,30 @@ function HubCard({ hub }: { hub: HubSummary }) {
   const statusText = isGood ? "text-green-600" : isMid ? "text-amber-600" : "text-red-600";
 
   const hasCleanFloor = hub.clean_floor !== null && hub.clean_floor !== undefined;
+  const cf = hub.clean_floor ?? 0;
+
+  // Clean Floor color coding:
+  // ≥ 99%   → hijau (target tercapai)
+  // 97-98.99% → oren
+  // < 97%   → merah
+  let cfColor = "text-gray-400";
+  let cfBg = "bg-gray-50";
+  let cfLabel = "N/A";
+  if (hasCleanFloor) {
+    if (cf >= 99) {
+      cfColor = "text-green-700";
+      cfBg = "bg-green-50";
+      cfLabel = "TARGET";
+    } else if (cf >= 97) {
+      cfColor = "text-amber-700";
+      cfBg = "bg-amber-50";
+      cfLabel = "WARNING";
+    } else {
+      cfColor = "text-red-700";
+      cfBg = "bg-red-50";
+      cfLabel = "BAHAYA";
+    }
+  }
 
   return (
     <Link
@@ -434,15 +458,23 @@ function HubCard({ hub }: { hub: HubSummary }) {
           <p className="text-gray-400 text-[10px]">COD FD</p>
           <p className="font-bold text-purple-600">{(hub.cod_fd || 0).toFixed(2)}%</p>
         </div>
-        <div>
+
+        {/* Clean Floor dengan color coding */}
+        <div className={`rounded px-2 py-1 -mx-2 -my-1 ${cfBg}`}>
           <div className="flex items-center gap-1">
-            <p className="text-gray-400 text-[10px]">Clean Floor</p>
-            {hasCleanFloor && <Lock className="w-2.5 h-2.5 text-amber-600" />}
+            <p className="text-gray-500 text-[10px]">Clean Floor</p>
+            {hasCleanFloor && (
+              <Lock className={`w-2.5 h-2.5 ${cfColor}`} />
+            )}
           </div>
-          <p className="font-bold text-amber-600">
-            {hasCleanFloor ? `${hub.clean_floor!.toFixed(2)}%` : "N/A"}
+          <p className={`font-bold ${cfColor}`}>
+            {hasCleanFloor ? `${cf.toFixed(2)}%` : "N/A"}
           </p>
-          <p className="text-[8px] text-gray-300 leading-tight">lock 08:00</p>
+          {hasCleanFloor && (
+            <p className={`text-[8px] font-semibold leading-tight ${cfColor}`}>
+              {cfLabel} · lock 08:00
+            </p>
+          )}
         </div>
       </div>
 
