@@ -33,17 +33,25 @@ type HubSummary = {
   hubName: string;
   success: boolean;
   error?: string;
-  just_arrived?: number;
-  backlog?: number;
   today_volume?: number;
   delivered?: number;
   ongoing_delivery?: number;
   ftd?: number;
-  others?: number;
   delivered_percentage?: number;
   fresh_success?: number;
   sd_before_12?: number;
   cod_fd?: number;
+  cod_total?: number;
+  urgent_pct?: number;
+  urgent_total?: number;
+  urgent_delivered?: number;
+  dedicated_avg_delivered?: number;
+  dedicated_total_delivered?: number;
+  dedicated_achievement_pct?: number;
+  dedicated_actual?: number;
+  dedicated_drivers?: string[];
+  ops_productivity?: number;
+  ops_achieved?: boolean;
   clean_floor?: number | null;
 };
 
@@ -54,7 +62,6 @@ type CoverageResponse = {
     success_count: number;
     fail_count: number;
     fetched_at: string;
-    clean_floor_locked_count?: number;
   };
   aggregated: {
     total_volume: number;
@@ -101,7 +108,7 @@ export default function CoverageView({ user }: { user: SessionUser }) {
   }, [fetchCoverage]);
 
   useEffect(() => {
-    const t = setInterval(() => fetchCoverage(), 60000);
+    const t = setInterval(() => fetchCoverage(), 120000); // 2 menit
     return () => clearInterval(t);
   }, [fetchCoverage]);
 
@@ -198,7 +205,7 @@ export default function CoverageView({ user }: { user: SessionUser }) {
           </span>
           <span className="flex items-center gap-1 text-green-700">
             <CheckCircle2 className="w-3.5 h-3.5" />
-            Auto-refresh 60s
+            Auto-refresh 2m
           </span>
         </div>
       </div>
@@ -207,32 +214,11 @@ export default function CoverageView({ user }: { user: SessionUser }) {
         {/* AGGREGATED SUMMARY */}
         {data && (
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-            <SummaryCard
-              label="TOTAL VOLUME"
-              value={data.aggregated.total_volume}
-              accent="blue"
-            />
-            <SummaryCard
-              label="TOTAL DELIVERED"
-              value={data.aggregated.total_delivered}
-              accent="green"
-            />
-            <SummaryCard
-              label="ONGOING"
-              value={data.aggregated.total_ongoing}
-              accent="purple"
-            />
-            <SummaryCard
-              label="FTD"
-              value={data.aggregated.total_ftd}
-              accent="red"
-            />
-            <SummaryCard
-              label="AVG SUCCESS"
-              value={data.aggregated.avg_success}
-              suffix="%"
-              accent="teal"
-            />
+            <SummaryCard label="TOTAL VOLUME" value={data.aggregated.total_volume} accent="blue" />
+            <SummaryCard label="TOTAL DELIVERED" value={data.aggregated.total_delivered} accent="green" />
+            <SummaryCard label="ONGOING" value={data.aggregated.total_ongoing} accent="purple" />
+            <SummaryCard label="FTD" value={data.aggregated.total_ftd} accent="red" />
+            <SummaryCard label="AVG SUCCESS" value={data.aggregated.avg_success} suffix="%" accent="teal" />
           </div>
         )}
 
@@ -388,20 +374,11 @@ function HubCard({ hub }: { hub: HubSummary }) {
 
   const hasCleanFloor = hub.clean_floor !== null && hub.clean_floor !== undefined;
   const cf = hub.clean_floor ?? 0;
-
-  // Clean Floor color coding:
-  // ≥ 99%    → hijau
-  // 97-98.99% → oren
-  // < 97%    → merah
   let cfColor = "text-gray-400";
   if (hasCleanFloor) {
-    if (cf >= 99) {
-      cfColor = "text-green-600";
-    } else if (cf >= 97) {
-      cfColor = "text-amber-600";
-    } else {
-      cfColor = "text-red-600";
-    }
+    if (cf >= 99) cfColor = "text-green-600";
+    else if (cf >= 97) cfColor = "text-amber-600";
+    else cfColor = "text-red-600";
   }
 
   return (
@@ -451,6 +428,21 @@ function HubCard({ hub }: { hub: HubSummary }) {
           <p className="font-bold text-purple-600">{(hub.cod_fd || 0).toFixed(2)}%</p>
         </div>
         <div>
+          <p className="text-gray-400 text-[10px]">Urgent %</p>
+          <p className="font-bold text-rose-600">{(hub.urgent_pct || 0).toFixed(2)}%</p>
+        </div>
+        <div>
+          <p className="text-gray-400 text-[10px]">Dedicated Avg Del</p>
+          <p className="font-bold text-amber-600">{hub.dedicated_avg_delivered || 0}</p>
+        </div>
+        <div>
+          <p className="text-gray-400 text-[10px]">Oncall Prod</p>
+          <p className="font-bold text-teal-600">
+            {(hub.ops_productivity || 0).toFixed(0)}
+            {hub.ops_achieved ? " ✓" : ""}
+          </p>
+        </div>
+        <div className="col-span-2">
           <div className="flex items-center gap-1">
             <p className="text-gray-400 text-[10px]">Clean Floor</p>
             {hasCleanFloor && <Lock className="w-2.5 h-2.5 text-gray-400" />}
