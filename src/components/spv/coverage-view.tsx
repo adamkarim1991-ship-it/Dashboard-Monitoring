@@ -37,8 +37,7 @@ type HubSummary = {
   delivered?: number;
   ongoing_delivery?: number;
   ftd?: number;
-  ftd_now?: number;
-  ftd_baseline?: number;
+  ftd_total?: number;
   delivered_percentage?: number;
   fresh_success?: number;
   sd_before_12?: number;
@@ -220,7 +219,7 @@ export default function CoverageView({ user }: { user: SessionUser }) {
             <SummaryCard label="TOTAL VOLUME" value={data.aggregated.total_volume} accent="blue" />
             <SummaryCard label="TOTAL DELIVERED" value={data.aggregated.total_delivered} accent="green" />
             <SummaryCard label="ONGOING" value={data.aggregated.total_ongoing} accent="purple" />
-            <SummaryCard label="FTD HARI INI" value={data.aggregated.total_ftd} accent="red" />
+            <SummaryCard label="FTD" value={data.aggregated.total_ftd} accent="red" />
             <SummaryCard label="AVG SUCCESS" value={data.aggregated.avg_success} suffix="%" accent="teal" />
           </div>
         )}
@@ -264,7 +263,7 @@ export default function CoverageView({ user }: { user: SessionUser }) {
                   </th>
                   <th className="px-4 py-2 text-right font-semibold">Delivered</th>
                   <th className="px-4 py-2 text-right font-semibold">Ongoing</th>
-                  <th className="px-4 py-2 text-right font-semibold">FTD Hari Ini</th>
+                  <th className="px-4 py-2 text-right font-semibold">FTD</th>
                   <th
                     className="px-4 py-2 text-right font-semibold cursor-pointer hover:bg-gray-100"
                     onClick={() => toggleSort("success")}
@@ -413,7 +412,7 @@ function HubCard({ hub }: { hub: HubSummary }) {
           <p className="font-bold text-gray-800">{(hub.ongoing_delivery || 0).toLocaleString("id-ID")}</p>
         </div>
         <div>
-          <p className="text-gray-400 text-[10px]">FTD Hari Ini</p>
+          <p className="text-gray-400 text-[10px]">FTD</p>
           <p className="font-bold text-red-600">{(hub.ftd || 0).toLocaleString("id-ID")}</p>
         </div>
         <div>
