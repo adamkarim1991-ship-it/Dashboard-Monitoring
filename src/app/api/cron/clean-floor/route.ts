@@ -1,38 +1,40 @@
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
-// ============================================================
-// CRON: Capture Clean Floor snapshot at 08:00 WIB
-// Auth: Bearer CRON_SECRET
-// Idempotent: skip kalau snapshot hari ini sudah ada
-// ============================================================
-
-const HUB_ID_JATINEGARA = "460450593288";
 const API_ID_MAIN = "7564027893345453074";
-const PAYMENT_TYPES_ALL = '["cashless","cod"]';
+const PAYMENT_TYPES = '["cashless","cod"]';
 const SERVICE_TYPES = '["INS","SDS","REG","NDD","OTHERS"]';
 
-function getWIBDate(): { date: string; hour: number } {
-  const nowWIB = new Date(Date.now() + 7 * 60 * 60 * 1000);
-  const y = nowWIB.getUTCFullYear();
-  const m = nowWIB.getUTCMonth();
-  const d = nowWIB.getUTCDate();
-  const h = nowWIB.getUTCHours();
-  return {
-    date: `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`,
-    hour: h,
-  };
+function toWIB(): Date {
+  return new Date(Date.now() + 7 * 60 * 60 * 1000);
+}
+
+function formatDateYMD(d: Date): string {
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();
+  const day = d.getUTCDate();
+  return `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
 function getMainCurrDate(): string {
-  const nowWIB = new Date(Date.now() + 7 * 60 * 60 * 1000);
-  const y = nowWIB.getUTCFullYear();
-  const m = nowWIB.getUTCMonth();
-  const d = nowWIB.getUTCDate() - 1;
-  return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")} 17:00:00`;
+  const d = toWIB();
+  d.setUTCDate(d.getUTCDate() - 1);
+  return `${formatDateYMD(d)} 17:00:00`;
 }
 
-async function callHMS(token: string, apiId: string, params: Record<string, any>) {
+function getTodayDate(): string {
+  return formatDateYMD(toWIB());
+}
+
+function toSafeNumber(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+async function callHMS(
+  token: string,
+  params: Record<string, any>
+) {
   const url = `${process.env.HMS_BASE_URL}/dc/v1/oneservice`;
   const res = await fetch(url, {
     method: "POST",
@@ -40,18 +42,17 @@ async function callHMS(token: string, apiId: string, params: Record<string, any>
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
       Accept: "*/*",
-      "Accept-Language": "en-US,en;q=0.9",
       "x-location": "Asia/Jakarta",
       "x-request-source": "web",
       Origin: "https://gtl-id.tokgistic.com",
       Referer: "https://gtl-id.tokgistic.com/tms/operation-performance-central",
     },
-    body: JSON.stringify({ api_id: apiId, params }),
+    body: JSON.stringify({ api_id: API_ID_MAIN, params }),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`HMS ${res.status}`);
+  if (!res.ok) throw new Error(`HMS HTTP ${res.status}`);
   const json = await res.json();
-  if (json.code !== 200) throw new Error(`HMS error: ${json.msg}`);
+  if (json.code !== 200) throw new Error(`HMS code ${json.code}`);
   return json;
 }
 
@@ -60,121 +61,209 @@ function parseCompact(dataStr: string, fields: { name: string }[]) {
   if (rows.length === 0) return null;
   const obj: Record<string, any> = {};
   const row = rows[0];
-  fields.forEach((f, i) => { obj[f.name] = row[i]; });
+  fields.forEach((f, i) => {
+    obj[f.name] = row[i];
+  });
   return obj;
 }
 
-function toSafeNumber(value: unknown): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+/**
+ * Cari "super token" — token HMS yang punya akses luas.
+ * Priority:
+ * 1. User dengan role MANAGER + hmsToken (biasanya manager global)
+ * 2. User dengan role HUB_LEAD + hmsToken
+ * 3. User manapun yang punya hmsToken
+ */
+async function getSuperToken(): Promise<string | null> {
+  const manager = await prisma.user.findFirst({
+    where: { role: "MANAGER", hmsToken: { not: null } },
+    orderBy: { createdAt: "asc" },
+    select: { hmsToken: true },
+  });
+  if (manager?.hmsToken) return manager.hmsToken;
+
+  const leader = await prisma.user.findFirst({
+    where: { role: "HUB_LEAD", hmsToken: { not: null } },
+    orderBy: { createdAt: "asc" },
+    select: { hmsToken: true },
+  });
+  if (leader?.hmsToken) return leader.hmsToken;
+
+  const anyUser = await prisma.user.findFirst({
+    where: { hmsToken: { not: null } },
+    orderBy: { createdAt: "asc" },
+    select: { hmsToken: true },
+  });
+  return anyUser?.hmsToken || null;
+}
+
+export async function GET(req: NextRequest) {
+  return handler(req);
 }
 
 export async function POST(req: NextRequest) {
-  // 1. Auth
-  const auth = req.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  return handler(req);
+}
 
-  const wib = getWIBDate();
-  console.log(`[cron/clean-floor] Triggered at WIB ${wib.date} ${wib.hour}:xx`);
+async function handler(req: NextRequest) {
+  console.log("=== HIT /api/cron/clean-floor ===");
 
-  // 2. Safety: hanya jalan antara jam 8-9 WIB
-  if (wib.hour < 8 || wib.hour > 9) {
-    return NextResponse.json({
-      skipped: true,
-      reason: `WIB hour ${wib.hour} di luar window 8-9`,
-      wib,
-    });
-  }
+  // Auth
+  const authHeader = req.headers.get("authorization");
+  const secret = process.env.CRON_SECRET;
 
-  // 3. Cek idempotency
-  const snapshotKey = { facility: HUB_ID_JATINEGARA, date: wib.date };
-  const existing = await prisma.cleanFloorSnapshot.findUnique({
-    where: { facility_date: snapshotKey },
-  });
-  if (existing) {
-    return NextResponse.json({
-      skipped: true,
-      reason: "Snapshot hari ini sudah ada",
-      captured_at: existing.capturedAt.toISOString(),
-    });
-  }
-
-  // 4. Ambil HMS token dari user MANAGER pertama yang punya token
-  const manager = await prisma.user.findFirst({
-    where: { role: "MANAGER", hmsToken: { not: null } },
-    select: { hmsToken: true, email: true },
-  });
-  if (!manager?.hmsToken) {
+  if (!secret) {
+    console.error("[cron] CRON_SECRET not set");
     return NextResponse.json(
-      { error: "No HMS token available. Pastikan ada user MANAGER dengan token." },
-      { status: 403 }
+      { error: "Server not configured" },
+      { status: 500 }
     );
   }
 
-  // 5. Call HMS MAIN
-  try {
-    const mainRes = await callHMS(manager.hmsToken, API_ID_MAIN, {
-      hub_ids: JSON.stringify([HUB_ID_JATINEGARA]),
-      curr_date: getMainCurrDate(),
-      payment_types: PAYMENT_TYPES_ALL,
-      service_types: SERVICE_TYPES,
-    });
-    const mainAll = parseCompact(mainRes.data.data, mainRes.data.fields);
-    if (!mainAll) throw new Error("Empty HMS response");
+  const providedToken =
+    authHeader?.replace(/^Bearer\s+/i, "") ||
+    req.nextUrl.searchParams.get("secret");
 
-    const delivered = toSafeNumber(mainAll.delivered);
-    const ongoing = toSafeNumber(mainAll.ongoing_delivery);
-    const ftd = toSafeNumber(mainAll.ftd);
-    const others = toSafeNumber(mainAll.others);
-    const justArrived = toSafeNumber(mainAll.just_arrived);
-    const backlog = toSafeNumber(mainAll.backlog);
-    const denominator = justArrived + backlog;
-    const numerator = ongoing + delivered + ftd + others;
-    const value = denominator > 0 ? (numerator / denominator) * 100 : 0;
+  if (providedToken !== secret) {
+    console.warn("[cron] Unauthorized — bad secret");
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
-    // 6. Create snapshot (idempotent via unique constraint)
+  // Get super token
+  const token = await getSuperToken();
+  if (!token) {
+    return NextResponse.json(
+      { error: "No HMS token available in DB" },
+      { status: 500 }
+    );
+  }
+
+  // Get all hubs
+  const hubs = await prisma.hub.findMany({
+    select: { id: true, name: true, hmsHubId: true },
+  });
+
+  if (hubs.length === 0) {
+    return NextResponse.json(
+      { error: "No hubs in DB" },
+      { status: 400 }
+    );
+  }
+
+  const todayDate = getTodayDate();
+  const currDate = getMainCurrDate();
+
+  const results: Array<{
+    hubId: string;
+    hubName: string;
+    status: "created" | "existing" | "failed";
+    value?: number;
+    error?: string;
+  }> = [];
+
+  for (const hub of hubs) {
     try {
+      // Skip kalau snapshot hari ini sudah ada
+      const existing = await prisma.cleanFloorSnapshot.findUnique({
+        where: {
+          facility_date: { facility: hub.hmsHubId, date: todayDate },
+        },
+      });
+
+      if (existing) {
+        console.log(
+          `[cron] Skip ${hub.name} — snapshot exists (${existing.value.toFixed(2)}%)`
+        );
+        results.push({
+          hubId: hub.hmsHubId,
+          hubName: hub.name,
+          status: "existing",
+          value: parseFloat(existing.value.toFixed(2)),
+        });
+        continue;
+      }
+
+      // Fetch HMS
+      const res = await callHMS(token, {
+        hub_ids: JSON.stringify([hub.hmsHubId]),
+        curr_date: currDate,
+        payment_types: PAYMENT_TYPES,
+        service_types: SERVICE_TYPES,
+      });
+
+      const main = parseCompact(res.data.data, res.data.fields);
+      if (!main) {
+        console.warn(`[cron] Empty HMS response for ${hub.name}`);
+        results.push({
+          hubId: hub.hmsHubId,
+          hubName: hub.name,
+          status: "failed",
+          error: "Empty HMS response",
+        });
+        continue;
+      }
+
+      // Compute Clean Floor
+      const delivered = toSafeNumber(main.delivered);
+      const ongoing = toSafeNumber(main.ongoing_delivery);
+      const ftd = toSafeNumber(main.ftd);
+      const others = toSafeNumber(main.others);
+      const justArrived = toSafeNumber(main.just_arrived);
+      const backlog = toSafeNumber(main.backlog);
+      const todayVolume = justArrived + backlog;
+      const numerator = ongoing + delivered + ftd + others;
+      const value =
+        todayVolume > 0 ? (numerator / todayVolume) * 100 : 0;
+
+      // Save
       const created = await prisma.cleanFloorSnapshot.create({
         data: {
-          ...snapshotKey,
+          facility: hub.hmsHubId,
+          date: todayDate,
           value,
           numerator,
-          denominator,
+          denominator: todayVolume,
           delivered,
           ongoing,
           ftd,
           others,
         },
       });
-      console.log(`[cron/clean-floor] Created snapshot: value=${value.toFixed(2)}%`);
-      return NextResponse.json({
-        success: true,
-        captured_at: created.capturedAt.toISOString(),
+
+      console.log(
+        `[cron] Created snapshot ${hub.name}: ${created.value.toFixed(2)}%`
+      );
+      results.push({
+        hubId: hub.hmsHubId,
+        hubName: hub.name,
+        status: "created",
         value: parseFloat(created.value.toFixed(2)),
-        breakdown: { delivered, ongoing, ftd, others, today_volume: denominator },
-        triggered_by: manager.email,
       });
-    } catch (error: any) {
-      if (error.code === "P2002") {
-        // Race: ada yang create duluan
-        const winner = await prisma.cleanFloorSnapshot.findUnique({
-          where: { facility_date: snapshotKey },
-        });
-        return NextResponse.json({
-          skipped: true,
-          reason: "Race condition — snapshot sudah dibuat request lain",
-          captured_at: winner?.capturedAt.toISOString(),
-        });
-      }
-      throw error;
+    } catch (e: any) {
+      console.error(`[cron] Error ${hub.name}:`, e.message);
+      results.push({
+        hubId: hub.hmsHubId,
+        hubName: hub.name,
+        status: "failed",
+        error: e.message,
+      });
     }
-  } catch (e: any) {
-    console.error("[cron/clean-floor] Error:", e.message);
-    return NextResponse.json(
-      { error: "HMS failed", detail: e.message },
-      { status: 502 }
-    );
+
+    // Delay kecil antar hub (rate limit HMS)
+    await new Promise((r) => setTimeout(r, 300));
   }
+
+  const summary = {
+    total: hubs.length,
+    created: results.filter((r) => r.status === "created").length,
+    existing: results.filter((r) => r.status === "existing").length,
+    failed: results.filter((r) => r.status === "failed").length,
+  };
+
+  return NextResponse.json({
+    success: true,
+    date: todayDate,
+    summary,
+    results,
+  });
 }
