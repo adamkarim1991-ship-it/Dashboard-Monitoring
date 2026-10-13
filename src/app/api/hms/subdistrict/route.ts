@@ -68,6 +68,22 @@ function getTodayWIBUnix(hour: number): number {
   return Math.floor(timestampMs / 1000);
 }
 
+/**
+ * Normalize nama hub: case-insensitive, hapus "GTL", "Hub", dan karakter non-alphanumeric.
+ * Contoh:
+ *   "GTL Pulogadung Hub" -> "pulogadung"
+ *   "Pulogadung"         -> "pulogadung"
+ *   "GTL PULOGADUNG"     -> "pulogadung"
+ */
+function normalizeHubName(name: string): string {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/\bgtl\b/g, "")
+    .replace(/\bhub\b/g, "")
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
+}
+
 async function callHMS(
   token: string,
   apiId: string,
@@ -239,7 +255,7 @@ async function fetchOperationalInboundByAwb(
   hubName: string,
   fromTs: number,
   toTs: number
-) {
+): Promise<{ inboundByAwb: Map<string, number>; debugFacilities: Set<string> }> {
   const firstPage = await fetchInboundTasksPage(token, 1, fromTs, toTs);
   const totalRecords = Number(firstPage?.data?.pagination?.total) || 0;
   const totalPages = Math.ceil(totalRecords / 100);
@@ -260,8 +276,14 @@ async function fetchOperationalInboundByAwb(
   }
 
   const inboundByAwb = new Map<string, number>();
+  const debugFacilities = new Set<string>();
+  const normalizedHubName = normalizeHubName(hubName);
+
   for (const task of allTasks) {
-    if (task.lm_facility !== hubName) continue;
+    const taskFacility = String(task.lm_facility || "");
+    if (taskFacility) debugFacilities.add(taskFacility);
+
+    if (normalizeHubName(taskFacility) !== normalizedHubName) continue;
     if (task.delivery_type && task.delivery_type !== "Forward") continue;
 
     const awb = String(task.awb_number || task.tracking_number || "").trim();
@@ -271,7 +293,8 @@ async function fetchOperationalInboundByAwb(
     const existing = inboundByAwb.get(awb);
     if (!existing || receivedAt < existing) inboundByAwb.set(awb, receivedAt);
   }
-  return inboundByAwb;
+
+  return { inboundByAwb, debugFacilities };
 }
 
 async function fetchShipmentsForAwbs(
@@ -572,12 +595,16 @@ export async function GET(req: NextRequest) {
     const todayStartTs = getTodayWIBUnix(0);
     const c1EndTs = getTodayWIBUnix(8);
     const before12Ts = getTodayWIBUnix(12);
-    const operationalInboundByAwb = await fetchOperationalInboundByAwb(
+
+    const inboundResult = await fetchOperationalInboundByAwb(
       user.hmsToken,
       HUB_NAME,
       fromTs,
       toTs
     );
+    const operationalInboundByAwb = inboundResult.inboundByAwb;
+    const debugFacilities = Array.from(inboundResult.debugFacilities).sort();
+
     const allShipments = await fetchShipmentsForAwbs(
       user.hmsToken,
       Array.from(operationalInboundByAwb.keys())
@@ -588,8 +615,12 @@ export async function GET(req: NextRequest) {
       const key = String(shipment.awb_number || shipment.id || `row-${index}`);
       if (!uniqueMap.has(key)) uniqueMap.set(key, shipment);
     }
+
+    const normalizedHubName = normalizeHubName(HUB_NAME);
     const filtered = Array.from(uniqueMap.values()).filter(
-      (shipment) => shipment.actual_hub === HUB_NAME
+      (shipment) =>
+        normalizeHubName(String(shipment.actual_hub || "")) ===
+        normalizedHubName
     );
 
     type GroupData = {
@@ -683,6 +714,7 @@ export async function GET(req: NextRequest) {
         hub_name: HUB_NAME,
         total_shipments: filtered.length,
         operational_awbs: operationalInboundByAwb.size,
+        debug_lm_facilities: debugFacilities.slice(0, 30),
         missing_tms_shipments: Math.max(
           operationalInboundByAwb.size - filtered.length,
           0
