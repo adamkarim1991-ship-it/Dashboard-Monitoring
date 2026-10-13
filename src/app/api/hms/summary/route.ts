@@ -1,5 +1,6 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { getHubToken } from "@/lib/hms-token";
 import { NextRequest, NextResponse } from "next/server";
 
 const API_ID_MAIN = "7564027893345453074";
@@ -134,6 +135,15 @@ function toUnixSeconds(value: unknown): number {
   return 0;
 }
 
+function normalizeHubName(name: string): string {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/\bgtl\b/g, "")
+    .replace(/\bhub\b/g, "")
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
+}
+
 async function fetchInboundTasksPage(
   token: string,
   page: number,
@@ -243,7 +253,10 @@ async function computeC1FromInboundScan(
     }
   }
 
-  const hubTasks = allTasks.filter((task) => task.lm_facility === hubName);
+  const normalizedHubName = normalizeHubName(hubName);
+  const hubTasks = allTasks.filter(
+    (task) => normalizeHubName(String(task.lm_facility || "")) === normalizedHubName
+  );
   const uniqueFreshC1Tasks = Array.from(
     new Map(
       hubTasks.map((task, index) => [
@@ -301,11 +314,6 @@ async function resolveActiveHub(
   return userHubs[0].hub;
 }
 
-/**
- * Fetch & merge data dedicated dari semua cycle (C1 + C2 + C3).
- * Sum picked & delivered per driver.
- * Achievement = (total delivered / (count × target)) × 100
- */
 async function fetchDedicatedMerged(
   token: string,
   hubId: string
@@ -443,18 +451,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
-    select: { hmsToken: true },
-  });
-
-  if (!user?.hmsToken) {
-    return NextResponse.json(
-      { error: "No HMS token", message: "Buka HMS dulu." },
-      { status: 403 }
-    );
-  }
-
   const requestedHubId = req.nextUrl.searchParams.get("hubId");
   const activeHub = await resolveActiveHub(
     session.user.id,
@@ -467,6 +463,25 @@ export async function GET(req: NextRequest) {
 
   const HUB_ID = activeHub.hmsHubId;
   const HUB_NAME = activeHub.name;
+  const HUB_INTERNAL_ID = activeHub.id;
+
+  // Resolve HMS token (per-hub credential atau fallback)
+  let hubToken: string;
+  let tokenSource: string;
+  try {
+    const res = await getHubToken(HUB_INTERNAL_ID, session.user.id);
+    hubToken = res.token;
+    tokenSource = res.source;
+  } catch (e: any) {
+    return NextResponse.json(
+      { error: "No HMS token for this hub", detail: e.message },
+      { status: 409 }
+    );
+  }
+
+  console.log(
+    `[summary] hub = ${HUB_NAME} (${HUB_ID}) token=${tokenSource}`
+  );
 
   const cacheKey = HUB_ID;
   const now = Date.now();
@@ -477,6 +492,7 @@ export async function GET(req: NextRequest) {
       meta: {
         cached: true,
         cache_age_seconds: Math.floor((now - cached.timestamp) / 1000),
+        token_source: tokenSource,
       },
       summary: cached.data,
     });
@@ -498,13 +514,13 @@ export async function GET(req: NextRequest) {
       dedicatedMerged,
       c1Result,
     ] = await Promise.all([
-      callHMS(user.hmsToken, API_ID_MAIN, {
+      callHMS(hubToken, API_ID_MAIN, {
         hub_ids: JSON.stringify([HUB_ID]),
         curr_date: currDate,
         payment_types: PAYMENT_TYPES,
         service_types: SERVICE_TYPES,
       }),
-      callHMS(user.hmsToken, API_ID_MAIN, {
+      callHMS(hubToken, API_ID_MAIN, {
         hub_ids: JSON.stringify([HUB_ID]),
         curr_date: currDate,
         payment_types: PAYMENT_TYPES_COD,
@@ -513,7 +529,7 @@ export async function GET(req: NextRequest) {
         console.warn("[cod] Gagal:", e.message);
         return null;
       }),
-      callHMS(user.hmsToken, API_ID_CYCLE1, {
+      callHMS(hubToken, API_ID_CYCLE1, {
         hub_id: HUB_ID,
         driver_name: "",
         job_roles: JOB_ROLES_CYCLE,
@@ -522,7 +538,7 @@ export async function GET(req: NextRequest) {
         console.warn("[cycle1] Gagal:", e.message);
         return null;
       }),
-      callHMS(user.hmsToken, API_ID_OPS, {
+      callHMS(hubToken, API_ID_OPS, {
         hub_ids: JSON.stringify([HUB_ID]),
         curr_date_start: currDate,
         date: todayDate,
@@ -530,7 +546,7 @@ export async function GET(req: NextRequest) {
         console.warn("[ops] Gagal:", e.message);
         return null;
       }),
-      callHMS(user.hmsToken, API_ID_COURIER, {
+      callHMS(hubToken, API_ID_COURIER, {
         hub_ids: JSON.stringify([HUB_ID]),
         curr_date_start: currDate,
         date: todayDate,
@@ -539,7 +555,7 @@ export async function GET(req: NextRequest) {
         console.warn("[courier] Gagal:", e.message);
         return null;
       }),
-      fetchDedicatedMerged(user.hmsToken, HUB_ID).catch((e) => {
+      fetchDedicatedMerged(hubToken, HUB_ID).catch((e) => {
         console.warn("[dedicated] Gagal:", e.message);
         return {
           actual: 0,
@@ -551,7 +567,7 @@ export async function GET(req: NextRequest) {
           drivers: [],
         };
       }),
-      computeC1FromInboundScan(user.hmsToken, HUB_NAME).catch((e) => {
+      computeC1FromInboundScan(hubToken, HUB_NAME).catch((e) => {
         console.warn("[c1c2] Gagal:", e.message);
         return { c1: 0, deliveredBefore12: 0 };
       }),
@@ -746,7 +762,6 @@ export async function GET(req: NextRequest) {
       courier_out_percent: parseFloat(courier?.out_percent) || 0,
       courier_avg_productivity:
         parseFloat(courier?.avg_productivity) || 0,
-      // === DEDICATED (C1 + C2 + C3 merged) ===
       dedicated_actual: dedicatedMerged.actual,
       dedicated_total_picked: dedicatedMerged.totalPicked,
       dedicated_total_delivered: dedicatedMerged.totalDelivered,
@@ -755,7 +770,6 @@ export async function GET(req: NextRequest) {
       dedicated_achievement_pct: dedicatedMerged.achievementPct,
       dedicated_target: DEDICATED_TARGET,
       dedicated_drivers: dedicatedMerged.drivers,
-      // === OPS ===
       ops_assigned: ops?.assigned || 0,
       ops_check_in: ops?.check_in || 0,
       ops_check_in_percent: parseFloat(ops?.check_in_percent) || 0,
@@ -775,6 +789,7 @@ export async function GET(req: NextRequest) {
         fetched_at: new Date().toISOString(),
         hub_id: HUB_ID,
         hub_name: HUB_NAME,
+        token_source: tokenSource,
       },
       summary,
     });
