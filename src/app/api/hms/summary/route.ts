@@ -1,6 +1,5 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { getHubToken } from "@/lib/hms-token";
 import { NextRequest, NextResponse } from "next/server";
 
 const API_ID_MAIN = "7564027893345453074";
@@ -65,13 +64,12 @@ function getTodayWIBUnix(hour: number): number {
   );
 }
 
-function normalizeHubName(name: string): string {
-  return String(name || "")
-    .toLowerCase()
-    .replace(/\bgtl\b/g, "")
-    .replace(/\bhub\b/g, "")
-    .replace(/[^a-z0-9]+/g, "")
-    .trim();
+function get12amWIBUnix(): number {
+  return getTodayWIBUnix(0);
+}
+
+function get8amWIBUnix(): number {
+  return getTodayWIBUnix(8);
 }
 
 async function callHMS(
@@ -217,85 +215,35 @@ async function fetchShipmentsForAwbs(token: string, awbs: string[]) {
   return shipments;
 }
 
-/**
- * Compute C1 (fresh cycle 1).
- *
- * Logic:
- *   C1 = paket yang inbound scan di hub antara 00:00 - 08:00 WIB
- *   C2 = paket yang inbound scan setelah 08:00 WIB (dihitung = justArrived - C1)
- *
- * Fetch strategy: chunk 3-jam HANYA di window 00:00-08:00 (3 chunk: 00-03, 03-06, 06-08)
- * untuk hindari HMS result cap pada token yang aksesnya luas.
- */
 async function computeC1FromInboundScan(
   hmsToken: string,
   hubName: string
 ) {
-  const c1StartTs = getTodayWIBUnix(0); // 00:00 hari ini
-  const c1EndTs = getTodayWIBUnix(8);   // 08:00 hari ini
+  const fromTs = get12amWIBUnix();
+  const toTs = get8amWIBUnix();
+  const firstPage = await fetchInboundTasksPage(hmsToken, 1, fromTs, toTs);
+  const totalRecords = Number(firstPage?.data?.pagination?.total) || 0;
+  const totalPages = Math.ceil(totalRecords / 100);
+  let allTasks: any[] = firstPage?.data?.tasks || [];
 
-  // Chunk 3 jam dalam window C1
-  const CHUNK_SECONDS = 3 * 60 * 60;
-  const chunks: Array<{ from: number; to: number }> = [];
-  for (let t = c1StartTs; t < c1EndTs; t += CHUNK_SECONDS) {
-    chunks.push({ from: t, to: Math.min(t + CHUNK_SECONDS, c1EndTs) });
-  }
-
-  const allTasks: any[] = [];
-  for (const chunk of chunks) {
-    try {
-      const firstPage = await fetchInboundTasksPage(
-        hmsToken,
-        1,
-        chunk.from,
-        chunk.to
+  if (totalPages > 1) {
+    const pages = Array.from(
+      { length: totalPages - 1 },
+      (_, i) => i + 2
+    );
+    for (let i = 0; i < pages.length; i += 5) {
+      const results = await Promise.all(
+        pages
+          .slice(i, i + 5)
+          .map((page) => fetchInboundTasksPage(hmsToken, page, fromTs, toTs))
       );
-      const totalRecords = Number(firstPage?.data?.pagination?.total) || 0;
-      const totalPages = Math.ceil(totalRecords / 100);
-      let chunkTasks: any[] = firstPage?.data?.tasks || [];
-
-      if (totalPages > 1) {
-        const pages = Array.from(
-          { length: totalPages - 1 },
-          (_, i) => i + 2
-        );
-        for (let i = 0; i < pages.length; i += 5) {
-          const results = await Promise.all(
-            pages
-              .slice(i, i + 5)
-              .map((page) =>
-                fetchInboundTasksPage(
-                  hmsToken,
-                  page,
-                  chunk.from,
-                  chunk.to
-                ).catch(() => null)
-              )
-          );
-          for (const result of results) {
-            if (result)
-              chunkTasks = chunkTasks.concat(result?.data?.tasks || []);
-          }
-        }
+      for (const result of results) {
+        allTasks = allTasks.concat(result?.data?.tasks || []);
       }
-
-      allTasks.push(...chunkTasks);
-    } catch (e: any) {
-      console.warn(
-        `[c1-chunk] ${chunk.from}-${chunk.to} failed:`,
-        e.message
-      );
     }
   }
 
-  // Filter by hub name (normalized)
-  const normalizedHubName = normalizeHubName(hubName);
-  const hubTasks = allTasks.filter(
-    (task) =>
-      normalizeHubName(String(task.lm_facility || "")) === normalizedHubName
-  );
-
-  // Dedup by AWB
+  const hubTasks = allTasks.filter((task) => task.lm_facility === hubName);
   const uniqueFreshC1Tasks = Array.from(
     new Map(
       hubTasks.map((task, index) => [
@@ -307,18 +255,14 @@ async function computeC1FromInboundScan(
       ])
     ).values()
   );
-
+  const deliveredFromTs = getTodayWIBUnix(0);
+  const deliveredBeforeTs = getTodayWIBUnix(12);
   const freshC1Awbs = uniqueFreshC1Tasks
     .map((task) =>
       String(task.awb_number || task.tracking_number || "").trim()
     )
     .filter(Boolean);
-
   const shipments = await fetchShipmentsForAwbs(hmsToken, freshC1Awbs);
-
-  // C1 delivered before 12:00 WIB
-  const deliveredFromTs = getTodayWIBUnix(0);
-  const deliveredBeforeTs = getTodayWIBUnix(12);
   const deliveredBefore12 = new Set(
     shipments
       .filter((shipment) => {
@@ -497,6 +441,18 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { hmsToken: true },
+  });
+
+  if (!user?.hmsToken) {
+    return NextResponse.json(
+      { error: "No HMS token", message: "Buka HMS dulu." },
+      { status: 403 }
+    );
+  }
+
   const requestedHubId = req.nextUrl.searchParams.get("hubId");
   const activeHub = await resolveActiveHub(
     session.user.id,
@@ -509,24 +465,6 @@ export async function GET(req: NextRequest) {
 
   const HUB_ID = activeHub.hmsHubId;
   const HUB_NAME = activeHub.name;
-  const HUB_INTERNAL_ID = activeHub.id;
-
-  let hubToken: string;
-  let tokenSource: string;
-  try {
-    const res = await getHubToken(HUB_INTERNAL_ID, session.user.id);
-    hubToken = res.token;
-    tokenSource = res.source;
-  } catch (e: any) {
-    return NextResponse.json(
-      { error: "No HMS token for this hub", detail: e.message },
-      { status: 409 }
-    );
-  }
-
-  console.log(
-    `[summary] hub = ${HUB_NAME} (${HUB_ID}) token=${tokenSource}`
-  );
 
   const cacheKey = HUB_ID;
   const now = Date.now();
@@ -537,7 +475,6 @@ export async function GET(req: NextRequest) {
       meta: {
         cached: true,
         cache_age_seconds: Math.floor((now - cached.timestamp) / 1000),
-        token_source: tokenSource,
       },
       summary: cached.data,
     });
@@ -559,13 +496,13 @@ export async function GET(req: NextRequest) {
       dedicatedMerged,
       c1Result,
     ] = await Promise.all([
-      callHMS(hubToken, API_ID_MAIN, {
+      callHMS(user.hmsToken, API_ID_MAIN, {
         hub_ids: JSON.stringify([HUB_ID]),
         curr_date: currDate,
         payment_types: PAYMENT_TYPES,
         service_types: SERVICE_TYPES,
       }),
-      callHMS(hubToken, API_ID_MAIN, {
+      callHMS(user.hmsToken, API_ID_MAIN, {
         hub_ids: JSON.stringify([HUB_ID]),
         curr_date: currDate,
         payment_types: PAYMENT_TYPES_COD,
@@ -574,7 +511,7 @@ export async function GET(req: NextRequest) {
         console.warn("[cod] Gagal:", e.message);
         return null;
       }),
-      callHMS(hubToken, API_ID_CYCLE1, {
+      callHMS(user.hmsToken, API_ID_CYCLE1, {
         hub_id: HUB_ID,
         driver_name: "",
         job_roles: JOB_ROLES_CYCLE,
@@ -583,7 +520,7 @@ export async function GET(req: NextRequest) {
         console.warn("[cycle1] Gagal:", e.message);
         return null;
       }),
-      callHMS(hubToken, API_ID_OPS, {
+      callHMS(user.hmsToken, API_ID_OPS, {
         hub_ids: JSON.stringify([HUB_ID]),
         curr_date_start: currDate,
         date: todayDate,
@@ -591,7 +528,7 @@ export async function GET(req: NextRequest) {
         console.warn("[ops] Gagal:", e.message);
         return null;
       }),
-      callHMS(hubToken, API_ID_COURIER, {
+      callHMS(user.hmsToken, API_ID_COURIER, {
         hub_ids: JSON.stringify([HUB_ID]),
         curr_date_start: currDate,
         date: todayDate,
@@ -600,7 +537,7 @@ export async function GET(req: NextRequest) {
         console.warn("[courier] Gagal:", e.message);
         return null;
       }),
-      fetchDedicatedMerged(hubToken, HUB_ID).catch((e) => {
+      fetchDedicatedMerged(user.hmsToken, HUB_ID).catch((e) => {
         console.warn("[dedicated] Gagal:", e.message);
         return {
           actual: 0,
@@ -612,7 +549,7 @@ export async function GET(req: NextRequest) {
           drivers: [],
         };
       }),
-      computeC1FromInboundScan(hubToken, HUB_NAME).catch((e) => {
+      computeC1FromInboundScan(user.hmsToken, HUB_NAME).catch((e) => {
         console.warn("[c1c2] Gagal:", e.message);
         return { c1: 0, deliveredBefore12: 0 };
       }),
@@ -835,7 +772,6 @@ export async function GET(req: NextRequest) {
         fetched_at: new Date().toISOString(),
         hub_id: HUB_ID,
         hub_name: HUB_NAME,
-        token_source: tokenSource,
       },
       summary,
     });
