@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { signOut } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -108,7 +109,6 @@ export default function CoverageView({ user }: { user: SessionUser }) {
     ? now.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
     : "N/A";
 
-  // Sort hubs
   const sortedHubs = data?.hubs
     ? [...data.hubs].sort((a, b) => {
         if (!a.success) return 1;
@@ -236,7 +236,7 @@ export default function CoverageView({ user }: { user: SessionUser }) {
         {/* GRID HUBS */}
         <div>
           <h2 className="text-sm font-bold text-gray-700 mb-2">
-            Hub Scorecard ({sortedHubs.length} hubs)
+            Hub Scorecard ({sortedHubs.length} hubs) - klik untuk detail
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
             {sortedHubs.map((hub) => (
@@ -281,6 +281,7 @@ export default function CoverageView({ user }: { user: SessionUser }) {
                   >
                     Success {sortBy === "success" && (sortDir === "desc" ? "↓" : "↑")}
                   </th>
+                  <th className="px-4 py-2 text-right font-semibold">Aksi</th>
                 </tr>
               </thead>
               <tbody>
@@ -304,6 +305,14 @@ export default function CoverageView({ user }: { user: SessionUser }) {
                         <span className={hub.delivered_percentage && hub.delivered_percentage >= 10 ? "text-green-600" : hub.delivered_percentage && hub.delivered_percentage >= 5 ? "text-amber-600" : "text-red-600"}>
                           {(hub.delivered_percentage || 0).toFixed(2)}%
                         </span>
+                      </td>
+                      <td className="px-4 py-2 text-right">
+                        <Link
+                          href={`/spv/hub/${hub.hubId}`}
+                          className="inline-flex items-center gap-1 text-sky-600 hover:text-sky-800 font-semibold"
+                        >
+                          Detail →
+                        </Link>
                       </td>
                     </tr>
                   );
@@ -375,7 +384,10 @@ function HubCard({ hub }: { hub: HubSummary }) {
   const statusText = isGood ? "text-green-600" : isMid ? "text-amber-600" : "text-red-600";
 
   return (
-    <div className={`bg-white rounded shadow-sm border-l-4 ${statusColor} p-4`}>
+    <Link
+      href={`/spv/hub/${hub.hubId}`}
+      className={`block bg-white rounded shadow-sm border-l-4 ${statusColor} p-4 transition hover:shadow-md hover:border-l-8 cursor-pointer`}
+    >
       <div className="flex items-start justify-between">
         <div className="flex-1 min-w-0">
           <p className="text-sm font-bold text-gray-800 truncate">{hub.hubName}</p>
@@ -388,7 +400,7 @@ function HubCard({ hub }: { hub: HubSummary }) {
         )}
       </div>
 
-            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
         <div>
           <p className="text-gray-400 text-[10px]">Volume</p>
           <p className="font-bold text-gray-800">{(hub.today_volume || 0).toLocaleString("id-ID")}</p>
@@ -405,8 +417,6 @@ function HubCard({ hub }: { hub: HubSummary }) {
           <p className="text-gray-400 text-[10px]">FTD</p>
           <p className="font-bold text-red-600">{(hub.ftd || 0).toLocaleString("id-ID")}</p>
         </div>
-
-        {/* ═══ METRIK BARU — Tahap 1 ═══ */}
         <div>
           <p className="text-gray-400 text-[10px]">Fresh Success</p>
           <p className="font-bold text-emerald-600">{(hub.fresh_success || 0).toFixed(2)}%</p>
@@ -423,7 +433,6 @@ function HubCard({ hub }: { hub: HubSummary }) {
           <p className="text-gray-400 text-[10px]">&nbsp;</p>
           <p className="font-bold text-gray-300">—</p>
         </div>
-        {/* ═══ END METRIK BARU ═══ */}
       </div>
 
       <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between">
@@ -432,6 +441,6 @@ function HubCard({ hub }: { hub: HubSummary }) {
           {successPct.toFixed(2)}%
         </span>
       </div>
-    </div>
+    </Link>
   );
 }

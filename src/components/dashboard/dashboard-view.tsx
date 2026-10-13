@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { signOut } from "next-auth/react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import {
   RefreshCw,
@@ -13,6 +14,7 @@ import {
   AlertTriangle,
   KeyRound,
   X,
+  ArrowLeft,
 } from "lucide-react";
 
 type AppRole = "MANAGER" | "SPV" | "HUB_LEAD";
@@ -136,7 +138,15 @@ type CleanFloorData = {
   captured_at: string;
 };
 
-export default function DashboardView({ user }: { user: SessionUser }) {
+export default function DashboardView({
+  user,
+  hubId,
+  hubName,
+}: {
+  user: SessionUser;
+  hubId?: string;
+  hubName?: string;
+}) {
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
   const [subdistricts, setSubdistricts] = useState<SubdistrictRow[]>([]);
   const [showUrgent, setShowUrgent] = useState(false);
@@ -184,7 +194,7 @@ export default function DashboardView({ user }: { user: SessionUser }) {
   const fetchSummary = useCallback(async () => {
     setLoading(true);
     try {
-      const activeHubId = user.hmsHubIds?.[0] || "";
+      const activeHubId = hubId || user.hmsHubIds?.[0] || "";
       const res = await fetch(`/api/hms/summary${activeHubId ? `?hubId=${activeHubId}` : ""}`);
       const d = await res.json();
       if (d.success) {
@@ -209,12 +219,13 @@ export default function DashboardView({ user }: { user: SessionUser }) {
     } finally {
       setLoading(false);
     }
-  }, [user.hmsHubIds]);
+  }, [user.hmsHubIds, hubId]);
 
   const fetchSubdistricts = useCallback(async () => {
     setSubLoading(true);
     try {
-      const res = await fetch("/api/hms/subdistrict");
+      const activeHubId = hubId || user.hmsHubIds?.[0] || "";
+      const res = await fetch(`/api/hms/subdistrict${activeHubId ? `?hubId=${activeHubId}` : ""}`);
       const d = await res.json();
       if (d.success) {
         setSubdistricts(d.subdistricts || []);
@@ -227,7 +238,7 @@ export default function DashboardView({ user }: { user: SessionUser }) {
     } finally {
       setSubLoading(false);
     }
-  }, []);
+  }, [user.hmsHubIds, hubId]);
 
   useEffect(() => {
     fetchSummary();
@@ -369,6 +380,12 @@ export default function DashboardView({ user }: { user: SessionUser }) {
     }
   };
 
+  const displayHubName = hubName ?? summary?.hub_name ?? "GTL Jatinegara Hub";
+  const shortHubName = displayHubName
+    .replace(/^GTL\s+/i, "")
+    .replace(/\s+Hub$/i, "")
+    .toUpperCase();
+
   return (
     <div className="min-h-screen bg-gray-100">
       {/* HEADER */}
@@ -386,12 +403,11 @@ export default function DashboardView({ user }: { user: SessionUser }) {
             </div>
 
             <h1 className="text-xl font-bold tracking-tight mt-1 text-white">
-              MONITORING HOURLY JATINEGARA
+              MONITORING HOURLY {shortHubName}
             </h1>
 
             <p className="text-[11px] text-gray-300 mt-0.5">
-              {summary?.hub_name ?? "GTL Jatinegara Hub"} | Operational date{" "}
-              {opDate}
+              {displayHubName} | Operational date {opDate}
             </p>
 
             <p className="text-[11px] text-gray-400 mt-0.5 flex items-center gap-1.5">
@@ -404,6 +420,19 @@ export default function DashboardView({ user }: { user: SessionUser }) {
           </div>
 
           <div className="flex items-center gap-3 flex-shrink-0">
+            {hubId && (
+              <Link href="/spv">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="bg-white/10 border-white/20 text-white hover:bg-white/20 hover:text-white"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5 mr-1.5" />
+                  Kembali
+                </Button>
+              </Link>
+            )}
+
             <Button
               variant="outline"
               size="sm"
