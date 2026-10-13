@@ -43,6 +43,7 @@ type HubSummary = {
   fresh_success?: number;
   sd_before_12?: number;
   cod_fd?: number;
+  clean_floor?: number;
 };
 
 type CoverageResponse = {
@@ -430,8 +431,8 @@ function HubCard({ hub }: { hub: HubSummary }) {
           <p className="font-bold text-purple-600">{(hub.cod_fd || 0).toFixed(2)}%</p>
         </div>
         <div>
-          <p className="text-gray-400 text-[10px]">&nbsp;</p>
-          <p className="font-bold text-gray-300">—</p>
+          <p className="text-gray-400 text-[10px]">Clean Floor</p>
+          <p className="font-bold text-amber-600">{(hub.clean_floor || 0).toFixed(2)}%</p>
         </div>
       </div>
 

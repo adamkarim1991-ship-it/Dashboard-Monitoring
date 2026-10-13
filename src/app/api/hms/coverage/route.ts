@@ -26,7 +26,7 @@ async function callHMS(
   retries = 3
 ) {
   const url = `${process.env.HMS_BASE_URL}/dc/v1/oneservice`;
-  
+
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const res = await fetch(url, {
@@ -43,10 +43,10 @@ async function callHMS(
         body: JSON.stringify({ api_id: apiId, params }),
         cache: "no-store",
       });
-      
+
       if (!res.ok) throw new Error(`HMS HTTP ${res.status}`);
       const json = await res.json();
-      
+
       if (json.code !== 200) {
         // Rate limit — retry dengan delay lebih panjang
         if (json.code === 400 && json.msg?.includes("qps") && attempt < retries) {
@@ -107,11 +107,17 @@ async function fetchHubSummary(
     const others = Number(main.others) || 0;
 
     const todayVolume = justArrived + backlog;
-    const deliveredPct = todayVolume > 0 ? (delivered / todayVolume) * 100 : 0;
+    const deliveredPct =
+      todayVolume > 0 ? (delivered / todayVolume) * 100 : 0;
     const freshSuccess =
       justArrived > 0
         ? ((Number(main.delivered_just_arrived) || 0) / justArrived) * 100
         : 0;
+
+    // Clean Floor = (ongoing + delivered + ftd + others) / (just_arrived + backlog) × 100
+    const cleanFloorNumerator = ongoing + delivered + ftd + others;
+    const cleanFloor =
+      todayVolume > 0 ? (cleanFloorNumerator / todayVolume) * 100 : 0;
 
     return {
       hubId,
@@ -128,6 +134,7 @@ async function fetchHubSummary(
       fresh_success: parseFloat(freshSuccess.toFixed(2)),
       sd_before_12: parseFloat(main.sd_before_12) || 0,
       cod_fd: parseFloat(main.cod_fd) || 0,
+      clean_floor: parseFloat(cleanFloor.toFixed(2)),
     };
   } catch (e: any) {
     return { hubId, hubName, success: false, error: e.message };
@@ -190,7 +197,6 @@ export async function GET(req: NextRequest) {
 
   const currDate = getMainCurrDate();
 
-  // Batch fetch: 2 hub per batch + delay 1000ms (HMS rate limit 5 QPS)
   const results = await fetchInBatches(
     userHubs.map((uh) => ({
       hubId: uh.hub.hmsHubId,
