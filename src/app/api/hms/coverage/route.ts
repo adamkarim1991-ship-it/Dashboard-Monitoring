@@ -10,13 +10,21 @@ function toWIB(): Date {
   return new Date(Date.now() + 7 * 60 * 60 * 1000);
 }
 
-function getMainCurrDate(): string {
-  const d = toWIB();
-  d.setUTCDate(d.getUTCDate() - 1);
+function formatDateYMD(d: Date): string {
   const y = d.getUTCFullYear();
   const m = d.getUTCMonth();
   const day = d.getUTCDate();
-  return `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")} 17:00:00`;
+  return `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function getMainCurrDate(): string {
+  const d = toWIB();
+  d.setUTCDate(d.getUTCDate() - 1);
+  return `${formatDateYMD(d)} 17:00:00`;
+}
+
+function getTodayDate(): string {
+  return formatDateYMD(toWIB());
 }
 
 async function callHMS(
@@ -48,7 +56,6 @@ async function callHMS(
       const json = await res.json();
 
       if (json.code !== 200) {
-        // Rate limit — retry dengan delay lebih panjang
         if (json.code === 400 && json.msg?.includes("qps") && attempt < retries) {
           console.warn(`[rate-limit] Retry ${attempt + 1}/${retries} — delay ${1500 * (attempt + 1)}ms`);
           await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
@@ -114,11 +121,6 @@ async function fetchHubSummary(
         ? ((Number(main.delivered_just_arrived) || 0) / justArrived) * 100
         : 0;
 
-    // Clean Floor = (ongoing + delivered + ftd + others) / (just_arrived + backlog) × 100
-    const cleanFloorNumerator = ongoing + delivered + ftd + others;
-    const cleanFloor =
-      todayVolume > 0 ? (cleanFloorNumerator / todayVolume) * 100 : 0;
-
     return {
       hubId,
       hubName,
@@ -134,17 +136,14 @@ async function fetchHubSummary(
       fresh_success: parseFloat(freshSuccess.toFixed(2)),
       sd_before_12: parseFloat(main.sd_before_12) || 0,
       cod_fd: parseFloat(main.cod_fd) || 0,
-      clean_floor: parseFloat(cleanFloor.toFixed(2)),
+      // clean_floor akan di-override dari DB di handler GET
+      clean_floor: null as number | null,
     };
   } catch (e: any) {
     return { hubId, hubName, success: false, error: e.message };
   }
 }
 
-/**
- * Batch fetch: 2 hub per batch + delay 1000ms.
- * HMS rate limit = 5 QPS, jadi max 2 hub paralel.
- */
 async function fetchInBatches(
   hubs: Array<{ hubId: string; hubName: string }>,
   token: string,
@@ -196,7 +195,32 @@ export async function GET(req: NextRequest) {
   }
 
   const currDate = getMainCurrDate();
+  const todayDate = getTodayDate();
+  const hmsHubIds = userHubs.map((uh) => uh.hub.hmsHubId);
 
+  // ============================================================
+  // CLEAN FLOOR — ambil dari DB snapshot (locked jam 08:00)
+  // ============================================================
+  const cleanFloorRows = await prisma.cleanFloorSnapshot.findMany({
+    where: {
+      facility: { in: hmsHubIds },
+      date: todayDate,
+    },
+    select: { facility: true, value: true },
+  });
+
+  const cleanFloorMap = new Map<string, number>();
+  for (const row of cleanFloorRows) {
+    cleanFloorMap.set(row.facility, parseFloat(row.value.toFixed(2)));
+  }
+
+  console.log(
+    `[coverage] Clean Floor snapshots today: ${cleanFloorRows.length}/${hmsHubIds.length} hubs`
+  );
+
+  // ============================================================
+  // Fetch coverage per hub
+  // ============================================================
   const results = await fetchInBatches(
     userHubs.map((uh) => ({
       hubId: uh.hub.hmsHubId,
@@ -207,6 +231,14 @@ export async function GET(req: NextRequest) {
     2,
     1000
   );
+
+  // Override clean_floor dari DB
+  for (const r of results) {
+    if (r.success) {
+      const cf = cleanFloorMap.get(r.hubId);
+      r.clean_floor = cf !== undefined ? cf : null;
+    }
+  }
 
   const aggregated = results.reduce(
     (acc, r: any) => {
@@ -236,6 +268,7 @@ export async function GET(req: NextRequest) {
       success_count: successCount,
       fail_count: userHubs.length - successCount,
       fetched_at: new Date().toISOString(),
+      clean_floor_locked_count: cleanFloorRows.length,
     },
     aggregated: {
       ...aggregated,

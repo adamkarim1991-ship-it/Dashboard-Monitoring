@@ -13,6 +13,7 @@ import {
   TrendingUp,
   TrendingDown,
   MapPin,
+  Lock,
 } from "lucide-react";
 
 type AppRole = "MANAGER" | "SPV" | "HUB_LEAD";
@@ -43,7 +44,7 @@ type HubSummary = {
   fresh_success?: number;
   sd_before_12?: number;
   cod_fd?: number;
-  clean_floor?: number;
+  clean_floor?: number | null;
 };
 
 type CoverageResponse = {
@@ -53,6 +54,7 @@ type CoverageResponse = {
     success_count: number;
     fail_count: number;
     fetched_at: string;
+    clean_floor_locked_count?: number;
   };
   aggregated: {
     total_volume: number;
@@ -384,6 +386,8 @@ function HubCard({ hub }: { hub: HubSummary }) {
     : "border-l-red-500";
   const statusText = isGood ? "text-green-600" : isMid ? "text-amber-600" : "text-red-600";
 
+  const hasCleanFloor = hub.clean_floor !== null && hub.clean_floor !== undefined;
+
   return (
     <Link
       href={`/spv/hub/${hub.hubId}`}
@@ -431,8 +435,14 @@ function HubCard({ hub }: { hub: HubSummary }) {
           <p className="font-bold text-purple-600">{(hub.cod_fd || 0).toFixed(2)}%</p>
         </div>
         <div>
-          <p className="text-gray-400 text-[10px]">Clean Floor</p>
-          <p className="font-bold text-amber-600">{(hub.clean_floor || 0).toFixed(2)}%</p>
+          <div className="flex items-center gap-1">
+            <p className="text-gray-400 text-[10px]">Clean Floor</p>
+            {hasCleanFloor && <Lock className="w-2.5 h-2.5 text-amber-600" />}
+          </div>
+          <p className="font-bold text-amber-600">
+            {hasCleanFloor ? `${hub.clean_floor!.toFixed(2)}%` : "N/A"}
+          </p>
+          <p className="text-[8px] text-gray-300 leading-tight">lock 08:00</p>
         </div>
       </div>
 
