@@ -3,11 +3,11 @@ import { decrypt } from "@/lib/crypto";
 
 export type HubTokenSource =
   | "hub_credential"
+  | "caller_token"
   | "hub_lead_global"
   | "manager_global"
   | "hub_lead_membership"
-  | "manager_membership"
-  | "caller_token";
+  | "manager_membership";
 
 export interface HubTokenResult {
   token: string;
@@ -18,11 +18,11 @@ export interface HubTokenResult {
 /**
  * Get HMS token untuk sebuah hub. Prioritas:
  * 1. HubCredential (ACTIVE) — per-hub token dari extension
- * 2. User dengan global role HUB_LEAD (paling punya akses luas)
- * 3. User dengan global role MANAGER
- * 4. UserHub member dengan role HUB_LEAD
- * 5. UserHub member dengan role MANAGER
- * 6. Caller's own token (fallback terakhir)
+ * 2. Caller's own token — kalau caller (SPV/Manager) punya akses luas
+ * 3. Global HUB_LEAD — biasanya punya akses luas
+ * 4. Global MANAGER
+ * 5. Per-hub HUB_LEAD membership
+ * 6. Per-hub MANAGER membership
  */
 export async function getHubToken(
   hubInternalId: string,
@@ -53,7 +53,17 @@ export async function getHubToken(
     }
   }
 
-  // 2. Global HUB_LEAD — biasanya punya akses luas
+  // 2. Caller's own token (SPV biasanya punya akses lebih luas)
+  if (callerUserId) {
+    const user = await prisma.user.findUnique({
+      where: { id: callerUserId },
+      select: { hmsToken: true, leaderHmsToken: true },
+    });
+    const token = user?.leaderHmsToken || user?.hmsToken;
+    if (token) return { token, source: "caller_token" };
+  }
+
+  // 3. Global HUB_LEAD
   const hubLeadGlobal = await prisma.user.findFirst({
     where: {
       hmsToken: { not: null },
@@ -65,7 +75,7 @@ export async function getHubToken(
     return { token: hubLeadGlobal.hmsToken, source: "hub_lead_global" };
   }
 
-  // 3. Global MANAGER — akses luas
+  // 4. Global MANAGER
   const managerGlobal = await prisma.user.findFirst({
     where: {
       hmsToken: { not: null },
@@ -77,7 +87,7 @@ export async function getHubToken(
     return { token: managerGlobal.hmsToken, source: "manager_global" };
   }
 
-  // 4. Per-hub HUB_LEAD membership
+  // 5. Per-hub HUB_LEAD membership
   const hubLead = await prisma.userHub.findFirst({
     where: {
       hubId: hubInternalId,
@@ -92,7 +102,7 @@ export async function getHubToken(
     if (token) return { token, source: "hub_lead_membership" };
   }
 
-  // 5. Per-hub MANAGER membership
+  // 6. Per-hub MANAGER membership
   const manager = await prisma.userHub.findFirst({
     where: {
       hubId: hubInternalId,
@@ -105,16 +115,6 @@ export async function getHubToken(
   if (manager?.user) {
     const token = manager.user.hmsToken || manager.user.leaderHmsToken;
     if (token) return { token, source: "manager_membership" };
-  }
-
-  // 6. Caller's own token
-  if (callerUserId) {
-    const user = await prisma.user.findUnique({
-      where: { id: callerUserId },
-      select: { hmsToken: true, leaderHmsToken: true },
-    });
-    const token = user?.hmsToken || user?.leaderHmsToken;
-    if (token) return { token, source: "caller_token" };
   }
 
   throw new Error(`No HMS token available for hub ${hubInternalId}`);
