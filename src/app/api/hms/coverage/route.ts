@@ -20,7 +20,7 @@ const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 60 * 1000;
 
 // ============================================================
-// HELPER WAKTU — Operational Date: 00:00 WIB hari ini
+// HELPER WAKTU
 // ============================================================
 function toWIB(): Date {
   return new Date(Date.now() + 7 * 60 * 60 * 1000);
@@ -40,6 +40,10 @@ function getMainCurrDate(): string {
 
 function getTodayDate(): string {
   return formatDateYMD(toWIB());
+}
+
+function getCurrentWIBHour(): number {
+  return toWIB().getUTCHours();
 }
 
 // ============================================================
@@ -98,7 +102,7 @@ function parseCompact(dataStr: string, fields: { name: string }[]) {
 }
 
 // ============================================================
-// DEDICATED MERGED (copy dari summary)
+// DEDICATED MERGED
 // ============================================================
 async function fetchDedicatedMerged(token: string, hubId: string) {
   const result = {
@@ -141,7 +145,6 @@ async function fetchDedicatedMerged(token: string, hubId: string) {
       });
 
       if (!res?.data?.data || !res?.data?.fields) continue;
-
       const rows = JSON.parse(res.data.data);
       const fields: { name: string }[] = res.data.fields;
       const pickedIdx = fields.findIndex((f: any) => f.name === "total_picked");
@@ -190,7 +193,55 @@ async function fetchDedicatedMerged(token: string, hubId: string) {
 }
 
 // ============================================================
-// FETCH HUB SUMMARY (per hub)
+// FTD BASELINE — akumulasi per hari (reset jam 00:00)
+// ============================================================
+async function getOrCreateFtdBaseline(
+  hubId: string,
+  date: string,
+  currentFtd: number
+): Promise<number> {
+  try {
+    const existing = await prisma.hubDailyBaseline.findUnique({
+      where: { hubId_date: { hubId, date } },
+    });
+    if (existing) return existing.ftdBase;
+
+    const created = await prisma.hubDailyBaseline.create({
+      data: { hubId, date, ftdBase: currentFtd },
+    });
+    return created.ftdBase;
+  } catch (e: any) {
+    if (e.code === "P2002") {
+      const winner = await prisma.hubDailyBaseline.findUnique({
+        where: { hubId_date: { hubId, date } },
+      });
+      return winner?.ftdBase ?? currentFtd;
+    }
+    console.warn(`[ftd-baseline] Error for ${hubId}:`, e.message);
+    return currentFtd;
+  }
+}
+
+// ============================================================
+// LIVE CLEAN FLOOR
+// Formula: (ongoing + delivered + ftd_total + others) / (just_arrived + backlog) × 100
+// ============================================================
+function computeCleanFloor(main: any): number {
+  const delivered = Number(main.delivered) || 0;
+  const ongoing = Number(main.ongoing_delivery) || 0;
+  const ftdTotal = Number(main.ftd) || 0;
+  const others = Number(main.others) || 0;
+  const justArrived = Number(main.just_arrived) || 0;
+  const backlog = Number(main.backlog) || 0;
+
+  const numerator = ongoing + delivered + ftdTotal + others;
+  const denominator = justArrived + backlog;
+
+  return denominator > 0 ? (numerator / denominator) * 100 : 0;
+}
+
+// ============================================================
+// FETCH HUB SUMMARY
 // ============================================================
 async function fetchHubSummary(
   token: string,
@@ -251,7 +302,12 @@ async function fetchHubSummary(
     const backlog = Number(main.backlog) || 0;
     const delivered = Number(main.delivered) || 0;
     const ongoing = Number(main.ongoing_delivery) || 0;
-    const ftd = Number(main.ftd) || 0;
+    const ftdNow = Number(main.ftd) || 0;
+
+    // FTD akumulasi harian
+    const ftdBaseline = await getOrCreateFtdBaseline(hubId, todayDate, ftdNow);
+    const ftdHariIni = Math.max(ftdNow - ftdBaseline, 0);
+
     const others = Number(main.others) || 0;
     const todayVolume = justArrived + backlog;
 
@@ -260,6 +316,8 @@ async function fetchHubSummary(
       justArrived > 0
         ? ((Number(main.delivered_just_arrived) || 0) / justArrived) * 100
         : 0;
+
+    const cleanFloorLive = computeCleanFloor(main);
 
     let codFd = 0;
     let codTotal = 0;
@@ -305,7 +363,9 @@ async function fetchHubSummary(
       today_volume: todayVolume,
       delivered,
       ongoing_delivery: ongoing,
-      ftd,
+      ftd: ftdHariIni,
+      ftd_now: ftdNow,
+      ftd_baseline: ftdBaseline,
       others,
       delivered_percentage: parseFloat(deliveredPct.toFixed(2)),
       fresh_success: parseFloat(freshSuccess.toFixed(2)),
@@ -322,7 +382,7 @@ async function fetchHubSummary(
       dedicated_drivers: dedicated.drivers,
       ops_productivity: opsProductivity,
       ops_achieved: opsAchieved,
-      clean_floor: null as number | null,
+      clean_floor: parseFloat(cleanFloorLive.toFixed(2)),
     };
   } catch (e: any) {
     return { hubId, hubName, success: false, error: e.message };
@@ -388,7 +448,9 @@ export async function GET(req: NextRequest) {
 
   const currDate = getMainCurrDate();
   const todayDate = getTodayDate();
+  const currentHour = getCurrentWIBHour();
 
+  // Cek snapshot clean floor yang sudah locked
   const cleanFloorRows = await prisma.cleanFloorSnapshot.findMany({
     where: {
       facility: { in: userHubs.map((uh) => uh.hub.hmsHubId) },
@@ -410,10 +472,16 @@ export async function GET(req: NextRequest) {
     1500
   );
 
+  // Override clean_floor: pakai DB kalau ada, kalau nggak pakai live
   for (const r of results) {
     if (r.success) {
       const cf = cleanFloorMap.get(r.hubId);
-      r.clean_floor = cf !== undefined ? cf : null;
+      if (cf !== undefined) {
+        r.clean_floor = cf;
+        r.clean_floor_locked = true;
+      } else {
+        r.clean_floor_locked = currentHour >= 8;
+      }
     }
   }
 
@@ -443,6 +511,7 @@ export async function GET(req: NextRequest) {
       success_count: successCount,
       fail_count: userHubs.length - successCount,
       fetched_at: new Date().toISOString(),
+      current_wib_hour: currentHour,
     },
     aggregated: { ...aggregated, avg_success: avgSuccess },
     hubs: results,

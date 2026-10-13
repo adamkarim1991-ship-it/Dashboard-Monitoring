@@ -58,6 +58,21 @@ model User {
 }
 
 // =====================================================
+// FTD BASELINE — reset otomatis jam 00:00 WIB
+// =====================================================
+
+model HubDailyBaseline {
+  id        String   @id @default(cuid())
+  hubId     String
+  date      String
+  ftdBase   Int
+  createdAt DateTime @default(now())
+
+  @@unique([hubId, date])
+  @@index([hubId, date])
+}
+
+// =====================================================
 // CLUSTER & HUB
 // =====================================================
 
