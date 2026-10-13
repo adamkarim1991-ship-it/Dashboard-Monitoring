@@ -65,12 +65,21 @@ function getTodayWIBUnix(hour: number): number {
   );
 }
 
-function get12amWIBUnix(): number {
-  return getTodayWIBUnix(0);
+function getCycleStartUnix(): number {
+  const d = toWIB();
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();
+  const day = d.getUTCDate() - 1;
+  return Math.floor((Date.UTC(y, m, day, 17, 0, 0) - 7 * 60 * 60 * 1000) / 1000);
 }
 
-function get8amWIBUnix(): number {
-  return getTodayWIBUnix(8);
+function normalizeHubName(name: string): string {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/\bgtl\b/g, "")
+    .replace(/\bhub\b/g, "")
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
 }
 
 async function callHMS(
@@ -133,15 +142,6 @@ function toUnixSeconds(value: unknown): number {
     return Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000);
   }
   return 0;
-}
-
-function normalizeHubName(name: string): string {
-  return String(name || "")
-    .toLowerCase()
-    .replace(/\bgtl\b/g, "")
-    .replace(/\bhub\b/g, "")
-    .replace(/[^a-z0-9]+/g, "")
-    .trim();
 }
 
 async function fetchInboundTasksPage(
@@ -225,41 +225,94 @@ async function fetchShipmentsForAwbs(token: string, awbs: string[]) {
   return shipments;
 }
 
+/**
+ * Compute C1 (fresh cycle 1) via inbound scan.
+ * Chunk window per 3 jam untuk hindari HMS result cap.
+ * C1 = task masuk hub antara 00:00 - 08:00 WIB.
+ */
 async function computeC1FromInboundScan(
   hmsToken: string,
   hubName: string
 ) {
-  const fromTs = get12amWIBUnix();
-  const toTs = get8amWIBUnix();
-  const firstPage = await fetchInboundTasksPage(hmsToken, 1, fromTs, toTs);
-  const totalRecords = Number(firstPage?.data?.pagination?.total) || 0;
-  const totalPages = Math.ceil(totalRecords / 100);
-  let allTasks: any[] = firstPage?.data?.tasks || [];
+  // Full window sama seperti subdistrict: 17:00 kemarin → sekarang
+  const fromTs = getCycleStartUnix();
+  const toTs = Math.floor(Date.now() / 1000);
 
-  if (totalPages > 1) {
-    const pages = Array.from(
-      { length: totalPages - 1 },
-      (_, i) => i + 2
-    );
-    for (let i = 0; i < pages.length; i += 5) {
-      const results = await Promise.all(
-        pages
-          .slice(i, i + 5)
-          .map((page) => fetchInboundTasksPage(hmsToken, page, fromTs, toTs))
+  // C1 window untuk filter: 00:00 - 08:00 WIB hari ini
+  const c1StartTs = getTodayWIBUnix(0);
+  const c1EndTs = getTodayWIBUnix(8);
+
+  // Chunk 3 jam
+  const CHUNK_SECONDS = 3 * 60 * 60;
+  const chunks: Array<{ from: number; to: number }> = [];
+  for (let t = fromTs; t < toTs; t += CHUNK_SECONDS) {
+    chunks.push({ from: t, to: Math.min(t + CHUNK_SECONDS, toTs) });
+  }
+
+  const allTasks: any[] = [];
+  for (const chunk of chunks) {
+    try {
+      const firstPage = await fetchInboundTasksPage(
+        hmsToken,
+        1,
+        chunk.from,
+        chunk.to
       );
-      for (const result of results) {
-        allTasks = allTasks.concat(result?.data?.tasks || []);
+      const totalRecords = Number(firstPage?.data?.pagination?.total) || 0;
+      const totalPages = Math.ceil(totalRecords / 100);
+      let chunkTasks: any[] = firstPage?.data?.tasks || [];
+
+      if (totalPages > 1) {
+        const pages = Array.from(
+          { length: totalPages - 1 },
+          (_, i) => i + 2
+        );
+        for (let i = 0; i < pages.length; i += 5) {
+          const results = await Promise.all(
+            pages
+              .slice(i, i + 5)
+              .map((page) =>
+                fetchInboundTasksPage(
+                  hmsToken,
+                  page,
+                  chunk.from,
+                  chunk.to
+                ).catch(() => null)
+              )
+          );
+          for (const result of results) {
+            if (result)
+              chunkTasks = chunkTasks.concat(result?.data?.tasks || []);
+          }
+        }
       }
+
+      allTasks.push(...chunkTasks);
+    } catch (e: any) {
+      console.warn(
+        `[c1-chunk] ${chunk.from}-${chunk.to} failed:`,
+        e.message
+      );
     }
   }
 
+  // Filter by hub name (normalized)
   const normalizedHubName = normalizeHubName(hubName);
   const hubTasks = allTasks.filter(
-    (task) => normalizeHubName(String(task.lm_facility || "")) === normalizedHubName
+    (task) =>
+      normalizeHubName(String(task.lm_facility || "")) === normalizedHubName
   );
+
+  // Filter C1 window: 00:00 - 08:00 WIB
+  const c1Tasks = hubTasks.filter((task) => {
+    const receivedAt = toUnixSeconds(task.received_at);
+    return receivedAt >= c1StartTs && receivedAt < c1EndTs;
+  });
+
+  // Dedup by AWB
   const uniqueFreshC1Tasks = Array.from(
     new Map(
-      hubTasks.map((task, index) => [
+      c1Tasks.map((task, index) => [
         task.awb_number ||
           task.tracking_number ||
           task.id ||
@@ -268,14 +321,17 @@ async function computeC1FromInboundScan(
       ])
     ).values()
   );
-  const deliveredFromTs = getTodayWIBUnix(0);
-  const deliveredBeforeTs = getTodayWIBUnix(12);
+
   const freshC1Awbs = uniqueFreshC1Tasks
     .map((task) =>
       String(task.awb_number || task.tracking_number || "").trim()
     )
     .filter(Boolean);
+
   const shipments = await fetchShipmentsForAwbs(hmsToken, freshC1Awbs);
+
+  const deliveredFromTs = getTodayWIBUnix(0);
+  const deliveredBeforeTs = getTodayWIBUnix(12);
   const deliveredBefore12 = new Set(
     shipments
       .filter((shipment) => {
@@ -435,7 +491,10 @@ async function fetchDedicatedMerged(
   result.achievementPct =
     driverMap.size > 0
       ? parseFloat(
-          ((totalDelivered / (driverMap.size * DEDICATED_TARGET)) * 100).toFixed(2)
+          (
+            (totalDelivered / (driverMap.size * DEDICATED_TARGET)) *
+            100
+          ).toFixed(2)
         )
       : 0;
   result.drivers = drivers;
@@ -465,7 +524,6 @@ export async function GET(req: NextRequest) {
   const HUB_NAME = activeHub.name;
   const HUB_INTERNAL_ID = activeHub.id;
 
-  // Resolve HMS token (per-hub credential atau fallback)
   let hubToken: string;
   let tokenSource: string;
   try {
@@ -591,7 +649,6 @@ export async function GET(req: NextRequest) {
       ? parseCompact(courierRes.data.data, courierRes.data.fields)
       : null;
 
-    // === COD ===
     let codReadyToReturn = 0,
       codJustArrived = 0,
       codBacklog = 0,
@@ -736,8 +793,10 @@ export async function GET(req: NextRequest) {
       fresh_total_computed: freshC1 + freshC2,
       pending_at_hub: main.pending_at_hub || 0,
       ongoing_delivery: main.ongoing_delivery || 0,
-      ongoing_delivery_just_arrived: Number(main.ongoing_delivery_just_arrived) || 0,
-      ongoing_delivery_backlog: Number(main.ongoing_delivery_backlog) || 0,
+      ongoing_delivery_just_arrived:
+        Number(main.ongoing_delivery_just_arrived) || 0,
+      ongoing_delivery_backlog:
+        Number(main.ongoing_delivery_backlog) || 0,
       delivered: main.delivered || 0,
       delivered_percentage: parseFloat(main.delivered_percentage) || 0,
       ftd: main.ftd || 0,
