@@ -1,4 +1,4 @@
-import { auth } from "@/lib/auth";
+﻿import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -345,18 +345,15 @@ async function fetchDedicatedMerged(token: string, hubId: string) {
 // ============================================================
 // CLEAN FLOOR (live)
 // ============================================================
-function computeCleanFloor(main: any): number {
-  const delivered = Number(main.delivered) || 0;
-  const ongoing = Number(main.ongoing_delivery) || 0;
+function computeCleanFloor(main: any, freshC1: number): number {
+  const ongoingJa = Number(main.ongoing_delivery_just_arrived) || 0;
+  const deliveredJa = Number(main.delivered_just_arrived) || 0;
   const ftdTotal = Number(main.ftd) || 0;
   const others = Number(main.others) || 0;
-  const justArrived = Number(main.just_arrived) || 0;
   const backlog = Number(main.backlog) || 0;
-
-  const numerator = ongoing + delivered + ftdTotal + others;
-  const denominator = justArrived + backlog;
-
-  return denominator > 0 ? (numerator / denominator) * 100 : 0;
+  const numerator = ongoingJa + deliveredJa + ftdTotal + others;
+  const denominator = freshC1 + backlog;
+  return denominator > 0 ? Math.min((numerator / denominator) * 100, 100) : 0;
 }
 
 // ============================================================
@@ -413,7 +410,7 @@ async function fetchHubSummary(
       console.warn(`[coverage] Dedicated failed for ${hubName}:`, e.message);
     }
 
-    // SD12 — real-time sampai jam 12
+    // SD12 â€” real-time sampai jam 12
     let sdBefore12 = 0;
     let c1Count = 0;
     let deliveredBefore12 = 0;
@@ -443,7 +440,7 @@ async function fetchHubSummary(
         ? ((Number(main.delivered_just_arrived) || 0) / justArrived) * 100
         : 0;
 
-    const cleanFloorLive = computeCleanFloor(main);
+    const cleanFloorLive = computeCleanFloor(main, c1Count);
 
     let codFd = 0;
     let codTotal = 0;
