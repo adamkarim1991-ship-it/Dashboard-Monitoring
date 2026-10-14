@@ -1,4 +1,4 @@
-import { auth } from "@/lib/auth";
+﻿import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -518,9 +518,6 @@ const cleanFloorNumerator = cleanFloorOngoing + cleanFloorDelivered;
 const cleanFloorValue = cleanFloorTodayVolume > 0
   ? Math.min((cleanFloorNumerator / cleanFloorTodayVolume) * 100, 100)
   : 0;
-      ? (cleanFloorNumerator / cleanFloorTodayVolume) * 100
-      : 0;
-    const currentWibHour = new Date(Date.now() + 7 * 60 * 60 * 1000).getUTCHours();
     const lockedAt = `${todayDate}T01:00:00.000Z`;
     const snapshotKey = { facility: HUB_ID, date: todayDate };
 
