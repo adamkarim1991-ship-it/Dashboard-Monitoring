@@ -1,5 +1,6 @@
 ﻿import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { buildHmsHeaders } from '@/lib/hms-headers';
 import { NextRequest, NextResponse } from "next/server";
 
 const API_ID_MAIN = "7564027893345453074";
