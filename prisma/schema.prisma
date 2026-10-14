@@ -41,15 +41,15 @@ model User {
   password     String
   createdAt    DateTime @default(now())
 
-  // Legacy fields â€” simpan sementara untuk backward compat
+  // Legacy fields ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â simpan sementara untuk backward compat
   role                         Role?
-  hmsToken                     String?
   leaderHmsToken               String?
-  hmsTokenUpdatedAt            DateTime?
 
-  // Phase 3 â€” Auto-refresh token
+  // Phase 3 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Auto-refresh token
+  hmsToken                     String?
   hmsRefreshToken              String?
   hmsTokenExpiresAt            DateTime?
+  hmsTokenUpdatedAt            DateTime?
   hmsRefreshTokenUpdatedAt     DateTime?
 
   hubs UserHub[]
@@ -58,7 +58,7 @@ model User {
 }
 
 // =====================================================
-// FTD BASELINE â€” reset otomatis jam 00:00 WIB
+// FTD BASELINE ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â reset otomatis jam 00:00 WIB
 // =====================================================
 
 model HubDailyBaseline {
@@ -100,7 +100,14 @@ model Hub {
   cleanFloors  CleanFloorSnapshot[]
   auditLogs    AuditLog[]
 
+
+  hmsToken              String?
+  hmsRefreshToken       String?
+  hmsTokenExpiresAt     DateTime?
+  hmsTokenUpdatedAt     DateTime?
+
   @@index([hmsHubId])
+
 }
 
 model UserHub {
