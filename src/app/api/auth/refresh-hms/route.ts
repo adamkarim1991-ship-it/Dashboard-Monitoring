@@ -1,174 +1,89 @@
-import { prisma } from "@/lib/prisma";
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from 'next/server'
+import { prisma } from '@/lib/prisma'
 
-const HMS_BASE_URL = process.env.HMS_BASE_URL || "https://gtl-id.tokgistic.com";
-const CLIENT_ID = "gtl-frontend";
-const REFRESH_THRESHOLD_HOURS = 6; // Refresh kalau token < 6 jam
+const HMS_BASE = process.env.HMS_BASE_URL || 'https://gtl-id.tokgistic.com'
+const CLIENT_ID = 'gtl-frontend'
 
-interface RefreshResult {
-  email: string;
-  status: "refreshed" | "skipped" | "failed";
-  reason?: string;
-  oldExpiresAt?: string;
-  newExpiresAt?: string;
-}
-
-/**
- * Refresh HMS access token untuk 1 user pakai refresh_token.
- * Endpoint: POST https://gtl-id.tokgistic.com/auth/token
- * Header: Authorization: Bearer <old_access_token>
- * Body: { grant: "refresh_token", client_id, refresh_token }
- */
-async function refreshUserToken(user: {
-  id: string;
-  email: string;
-  hmsToken: string | null;
-  hmsRefreshToken: string | null;
-  hmsTokenExpiresAt: Date | null;
-}): Promise<RefreshResult> {
-  if (!user.hmsToken || !user.hmsRefreshToken) {
-    return { email: user.email, status: "skipped", reason: "No token/refresh" };
-  }
-
-  // Cek apakah perlu refresh
-  const now = Date.now();
-  const expiresAt = user.hmsTokenExpiresAt?.getTime() || 0;
-  const hoursLeft = (expiresAt - now) / (1000 * 60 * 60);
-
-  if (hoursLeft > REFRESH_THRESHOLD_HOURS) {
-    return {
-      email: user.email,
-      status: "skipped",
-      reason: `Still valid (${hoursLeft.toFixed(1)}h left)`,
-    };
-  }
-
-  // Refresh!
+export async function refreshHmsToken(oldAccessToken: string, refreshToken: string) {
   try {
-    const url = `${HMS_BASE_URL}/auth/token`;
-    const body = {
-      grant: "refresh_token",
-      client_id: CLIENT_ID,
-      refresh_token: user.hmsRefreshToken,
-    };
-
-    const res = await fetch(url, {
-      method: "POST",
+    const res = await fetch(`${HMS_BASE}/auth/token`, {
+      method: 'POST',
       headers: {
-        Authorization: `Bearer ${user.hmsToken}`,
+        Authorization: `Bearer ${oldAccessToken}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
       },
-      body: JSON.stringify(body),
-    });
-
+      body: JSON.stringify({ grant: 'refresh_token', client_id: CLIENT_ID, refresh_token: refreshToken }),
+      cache: 'no-store',
+    })
     if (!res.ok) {
-      const errText = await res.text();
-      return {
-        email: user.email,
-        status: "failed",
-        reason: `HTTP ${res.status}: ${errText.slice(0, 100)}`,
-      };
+      const text = await res.text()
+      return { success: false, error: `HMS ${res.status}: ${text.slice(0, 200)}` }
     }
-
-    const json = await res.json();
-    const newAccess = json.access_token;
-    const newRefresh = json.refresh_token;
-    const expiresIn = Number(json.expires_in) || 86400;
-
-    if (!newAccess) {
-      return {
-        email: user.email,
-        status: "failed",
-        reason: "No access_token in response",
-      };
+    const json = await res.json()
+    if (!json.access_token) {
+      return { success: false, error: `No access_token: ${JSON.stringify(json).slice(0, 200)}` }
     }
-
-    const newExpiresAt = new Date(Date.now() + expiresIn * 1000);
-
-    await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        hmsToken: newAccess,
-        hmsRefreshToken: newRefresh || user.hmsRefreshToken, // rotation
-        hmsTokenExpiresAt: newExpiresAt,
-        hmsTokenUpdatedAt: new Date(),
-        hmsRefreshTokenUpdatedAt: new Date(),
-      },
-    });
-
     return {
-      email: user.email,
-      status: "refreshed",
-      oldExpiresAt: user.hmsTokenExpiresAt?.toISOString(),
-      newExpiresAt: newExpiresAt.toISOString(),
-    };
+      success: true,
+      accessToken: json.access_token as string,
+      refreshToken: (json.refresh_token as string) || undefined,
+      expiresIn: Number(json.expires_in) || 86400,
+    }
   } catch (e: any) {
-    return {
-      email: user.email,
-      status: "failed",
-      reason: e.message || "Unknown error",
-    };
+    return { success: false, error: e.message }
   }
 }
 
-export async function GET(req: NextRequest) {
-  return handler(req);
+export async function refreshUserToken(userId: string) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, email: true, hmsToken: true, hmsRefreshToken: true },
+  })
+  if (!user) return { success: false, error: 'User not found' }
+  if (!user.hmsToken || !user.hmsRefreshToken) return { success: false, error: 'Missing tokens' }
+
+  const result = await refreshHmsToken(user.hmsToken, user.hmsRefreshToken)
+  if (!result.success) return result
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      hmsToken: result.accessToken,
+      hmsRefreshToken: result.refreshToken || user.hmsRefreshToken,
+      hmsTokenExpiresAt: new Date(Date.now() + result.expiresIn! * 1000),
+      hmsRefreshTokenUpdatedAt: new Date(),
+      hmsTokenUpdatedAt: new Date(),
+    },
+  })
+  return result
 }
 
 export async function POST(req: NextRequest) {
-  return handler(req);
-}
+  const isCron = req.headers.get('authorization') === `Bearer ${process.env.CRON_SECRET}`
+  let body: any = {}
+  try { body = await req.json() } catch {}
 
-async function handler(req: NextRequest) {
-  console.log("=== HIT /api/auth/refresh-hms ===");
-
-  // Auth: CRON_SECRET atau query param secret
-  const authHeader = req.headers.get("authorization");
-  const secret = process.env.CRON_SECRET;
-  const providedToken =
-    authHeader?.replace(/^Bearer\s+/i, "") ||
-    req.nextUrl.searchParams.get("secret");
-
-  // Kalau ada CRON_SECRET, wajib match
-  // Kalau nggak ada CRON_SECRET (dev), skip auth
-  if (secret && providedToken !== secret) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (body.userId && !isCron) {
+    const result = await refreshUserToken(body.userId)
+    return NextResponse.json(result, { status: result.success ? 200 : 400 })
   }
+  if (!isCron) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-  // Ambil user yang punya refresh token
   const users = await prisma.user.findMany({
-    where: {
-      hmsToken: { not: null },
-      hmsRefreshToken: { not: null },
-    },
-    select: {
-      id: true,
-      email: true,
-      hmsToken: true,
-      hmsRefreshToken: true,
-      hmsTokenExpiresAt: true,
-    },
-  });
-
-  console.log(`[refresh-hms] Found ${users.length} users with refresh token`);
-
-  const results: RefreshResult[] = [];
-
-  for (const user of users) {
-    const result = await refreshUserToken(user);
-    console.log(`[refresh-hms] ${result.email}: ${result.status} ${result.reason || ""}`);
-    results.push(result);
+    where: { hmsRefreshToken: { not: null }, hmsToken: { not: null } },
+    select: { id: true, email: true },
+  })
+  const results: any[] = []
+  for (const u of users) {
+    const r = await refreshUserToken(u.id)
+    results.push({ email: u.email, success: r.success, error: r.error })
   }
-
-  const summary = {
-    total: results.length,
-    refreshed: results.filter((r) => r.status === "refreshed").length,
-    skipped: results.filter((r) => r.status === "skipped").length,
-    failed: results.filter((r) => r.status === "failed").length,
-  };
-
   return NextResponse.json({
-    success: true,
-    summary,
+    ok: true,
+    count: users.length,
+    success: results.filter(r => r.success).length,
+    failed: results.filter(r => !r.success).length,
     results,
-  });
+  })
 }

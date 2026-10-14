@@ -1,0 +1,17 @@
+name: Auto Refresh HMS Tokens
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger token refresh
+        run: |
+          echo "Refresh at $(date -u '+%Y-%m-%d %H:%M UTC')"
+          curl -fsS -X POST "${{ secrets.APP_URL }}/api/cron/refresh-tokens" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            --max-time 120

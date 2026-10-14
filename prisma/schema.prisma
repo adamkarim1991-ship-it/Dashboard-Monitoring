@@ -41,13 +41,13 @@ model User {
   password     String
   createdAt    DateTime @default(now())
 
-  // Legacy fields — simpan sementara untuk backward compat
+  // Legacy fields â€” simpan sementara untuk backward compat
   role                         Role?
   hmsToken                     String?
   leaderHmsToken               String?
   hmsTokenUpdatedAt            DateTime?
 
-  // Phase 3 — Auto-refresh token
+  // Phase 3 â€” Auto-refresh token
   hmsRefreshToken              String?
   hmsTokenExpiresAt            DateTime?
   hmsRefreshTokenUpdatedAt     DateTime?
@@ -58,7 +58,7 @@ model User {
 }
 
 // =====================================================
-// FTD BASELINE — reset otomatis jam 00:00 WIB
+// FTD BASELINE â€” reset otomatis jam 00:00 WIB
 // =====================================================
 
 model HubDailyBaseline {
