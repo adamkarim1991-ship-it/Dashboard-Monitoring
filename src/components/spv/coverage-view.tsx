@@ -262,7 +262,7 @@ export default function CoverageView({ user }: { user: SessionUser }) {
                     className="px-4 py-2 text-right font-semibold cursor-pointer hover:bg-gray-100"
                     onClick={() => toggleSort("volume")}
                   >
-                    Volume {sortBy === "volume" && (sortDir === "desc" ? "ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬Å“" : "ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬Ëœ")}
+                    Volume {sortBy === "volume" && (sortDir === "desc" ? " v" : " ^")}
                   </th>
                   <th className="px-4 py-2 text-right font-semibold">Delivered</th>
                   <th className="px-4 py-2 text-right font-semibold">Ongoing</th>
@@ -271,7 +271,7 @@ export default function CoverageView({ user }: { user: SessionUser }) {
                     className="px-4 py-2 text-right font-semibold cursor-pointer hover:bg-gray-100"
                     onClick={() => toggleSort("success")}
                   >
-                    Success {sortBy === "success" && (sortDir === "desc" ? "ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬Å“" : "ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬Ëœ")}
+                    Success {sortBy === "success" && (sortDir === "desc" ? " v" : " ^")}
                   </th>
                   <th className="px-4 py-2 text-right font-semibold">Aksi</th>
                 </tr>
@@ -303,7 +303,7 @@ export default function CoverageView({ user }: { user: SessionUser }) {
                           href={`/spv/hub/${hub.hubId}`}
                           className="inline-flex items-center gap-1 text-sky-600 hover:text-sky-800 font-semibold"
                         >
-                          Detail ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢
+                          Detail >
                         </Link>
                       </td>
                     </tr>
@@ -360,7 +360,7 @@ function HubCard({ hub }: { hub: HubSummary }) {
     return (
       <div className="bg-white rounded shadow-sm border-l-4 border-gray-300 p-4">
         <p className="text-sm font-bold text-gray-800">{hub.hubName}</p>
-        <p className="text-xs text-red-600 mt-2">ÃƒÂ¢Ã…Â¡Ã‚Â ÃƒÂ¯Ã‚Â¸Ã‚Â {hub.error || "Error"}</p>
+        <p className="text-xs text-red-600 mt-2"> {hub.error || "Error"}</p>
       </div>
     );
   }
