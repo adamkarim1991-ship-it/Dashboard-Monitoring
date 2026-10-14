@@ -509,6 +509,7 @@ export async function GET(req: NextRequest) {
         : 0;
 
     const backlog = Number(main.backlog) || 0;
+    const volumeOverall = justArrived + backlog;
     const cleanFloorOngoing = Number(main.ongoing_delivery_just_arrived) || 0;
 const cleanFloorDelivered = Number(main.delivered_just_arrived) || 0;
 const cleanFloorFtd = 0;
