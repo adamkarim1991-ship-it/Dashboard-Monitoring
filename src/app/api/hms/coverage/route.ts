@@ -397,18 +397,13 @@ async function fetchHubSummary(
       console.warn(`[coverage] Dedicated failed for ${hubName}:`, e.message);
     }
 
-    // SD12 â€” real-time sampai jam 12
-    let sdBefore12 = 0;
-    let c1Count = 0;
-    let deliveredBefore12 = 0;
-    try {
-      const c1Result = await computeC1FromInboundScan(token, hubName);
-      c1Count = c1Result.c1;
-      deliveredBefore12 = Math.min(c1Result.deliveredBefore12, c1Count);
-      sdBefore12 = c1Count > 0 ? (deliveredBefore12 / c1Count) * 100 : 0;
-    } catch (e: any) {
-      console.warn(`[coverage] C1/SD12 failed for ${hubName}:`, e.message);
-    }
+
+    // SD12 = fresh success proxy (delivered_just_arrived / just_arrived)
+    const justArrivedForSd = Number(main.just_arrived) || 0;
+    const deliveredJaForSd = Number(main.delivered_just_arrived) || 0;
+    let sdBefore12 = justArrivedForSd > 0 ? (deliveredJaForSd / justArrivedForSd) * 100 : 0;
+    let c1Count = justArrivedForSd;
+    let deliveredBefore12 = deliveredJaForSd;
 
     const justArrived = Number(main.just_arrived) || 0;
     const backlog = Number(main.backlog) || 0;
