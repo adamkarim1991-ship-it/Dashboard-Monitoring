@@ -34,6 +34,7 @@ type HubSummary = {
   success: boolean;
   error?: string;
   today_volume?: number;
+  pending_at_hub?: number;
   delivered?: number;
   ongoing_delivery?: number;
   ftd?: number;
@@ -165,7 +166,7 @@ export default function CoverageView({ user }: { user: SessionUser }) {
               </span>
             </div>
             <h1 className="text-xl font-bold tracking-tight mt-1 text-white">
-              COVERAGE — JABODETABEK EAST
+              COVERAGE Ã¢â‚¬â€ JABODETABEK EAST
             </h1>
             <p className="text-[11px] text-gray-300 mt-0.5 flex items-center gap-2">
               <MapPin className="w-3 h-3" />
@@ -261,7 +262,7 @@ export default function CoverageView({ user }: { user: SessionUser }) {
                     className="px-4 py-2 text-right font-semibold cursor-pointer hover:bg-gray-100"
                     onClick={() => toggleSort("volume")}
                   >
-                    Volume {sortBy === "volume" && (sortDir === "desc" ? "↓" : "↑")}
+                    Volume {sortBy === "volume" && (sortDir === "desc" ? "Ã¢â€ â€œ" : "Ã¢â€ â€˜")}
                   </th>
                   <th className="px-4 py-2 text-right font-semibold">Delivered</th>
                   <th className="px-4 py-2 text-right font-semibold">Ongoing</th>
@@ -270,7 +271,7 @@ export default function CoverageView({ user }: { user: SessionUser }) {
                     className="px-4 py-2 text-right font-semibold cursor-pointer hover:bg-gray-100"
                     onClick={() => toggleSort("success")}
                   >
-                    Success {sortBy === "success" && (sortDir === "desc" ? "↓" : "↑")}
+                    Success {sortBy === "success" && (sortDir === "desc" ? "Ã¢â€ â€œ" : "Ã¢â€ â€˜")}
                   </th>
                   <th className="px-4 py-2 text-right font-semibold">Aksi</th>
                 </tr>
@@ -302,7 +303,7 @@ export default function CoverageView({ user }: { user: SessionUser }) {
                           href={`/spv/hub/${hub.hubId}`}
                           className="inline-flex items-center gap-1 text-sky-600 hover:text-sky-800 font-semibold"
                         >
-                          Detail →
+                          Detail Ã¢â€ â€™
                         </Link>
                       </td>
                     </tr>
@@ -359,7 +360,7 @@ function HubCard({ hub }: { hub: HubSummary }) {
     return (
       <div className="bg-white rounded shadow-sm border-l-4 border-gray-300 p-4">
         <p className="text-sm font-bold text-gray-800">{hub.hubName}</p>
-        <p className="text-xs text-red-600 mt-2">⚠️ {hub.error || "Error"}</p>
+        <p className="text-xs text-red-600 mt-2">Ã¢Å¡Â Ã¯Â¸Â {hub.error || "Error"}</p>
       </div>
     );
   }
@@ -412,6 +413,10 @@ function HubCard({ hub }: { hub: HubSummary }) {
         <div>
           <p className="text-gray-400 text-[10px]">Ongoing</p>
           <p className="font-bold text-gray-800">{(hub.ongoing_delivery || 0).toLocaleString("id-ID")}</p>
+        </div>
+        <div>
+          <p className="text-gray-400 text-[10px]">Pending at Hub</p>
+          <p className="font-bold text-amber-600">{(hub.pending_at_hub || 0).toLocaleString("id-ID")}</p>
         </div>
         <div>
           <p className="text-gray-400 text-[10px]">FTD</p>
