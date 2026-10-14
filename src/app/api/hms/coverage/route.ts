@@ -18,6 +18,9 @@ type CacheEntry = { data: any; timestamp: number };
 const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 60 * 1000;
 
+// ============================================================
+// WAKTU
+// ============================================================
 function toWIB(): Date {
   return new Date(Date.now() + 7 * 60 * 60 * 1000);
 }
@@ -43,6 +46,17 @@ function getCurrentWIBHour(): number {
   return toWIB().getUTCHours();
 }
 
+function getTodayWIBUnix(hour: number): number {
+  const d = toWIB();
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();
+  const day = d.getUTCDate();
+  return Math.floor((Date.UTC(y, m, day, hour, 0, 0) - 7 * 60 * 60 * 1000) / 1000);
+}
+
+// ============================================================
+// HMS CALL
+// ============================================================
 async function callHMS(
   token: string,
   apiId: string,
@@ -95,6 +109,158 @@ function parseCompact(dataStr: string, fields: { name: string }[]) {
   return obj;
 }
 
+function toUnixSeconds(value: unknown): number {
+  if (typeof value === "number") {
+    return value > 1_000_000_000_000 ? Math.floor(value / 1000) : value;
+  }
+  if (typeof value === "string" && value) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      return numeric > 1_000_000_000_000 ? Math.floor(numeric / 1000) : numeric;
+    }
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000);
+  }
+  return 0;
+}
+
+// ============================================================
+// C1 SCANNER (untuk SD12)
+// ============================================================
+async function fetchInboundTasksPage(
+  token: string,
+  page: number,
+  fromTs: number,
+  toTs: number
+) {
+  const res = await fetch(
+    `${process.env.HMS_BASE_URL}/api/hms/v1/ui/task/search`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Origin: "https://gtl-id.tokgistic.com",
+        Referer: "https://gtl-id.tokgistic.com/hms/order-management",
+      },
+      body: JSON.stringify({
+        filters: { received_at_from: fromTs, received_at_to: toTs },
+        page,
+        size: 100,
+      }),
+      cache: "no-store",
+    }
+  );
+  if (!res.ok) throw new Error(`HMS task page ${page}: ${res.status}`);
+  const json = await res.json();
+  if (json.code !== 200) throw new Error(`HMS task error: ${json.message || json.code}`);
+  return json;
+}
+
+async function fetchShipmentsPage(
+  token: string,
+  page: number,
+  awbNumbers: string[]
+) {
+  const url = new URL(`${process.env.HMS_BASE_URL}/tms/api/lms/v1/shipments`);
+  url.searchParams.set("type", "order_management");
+  url.searchParams.set("leg_type", "last_mile");
+  url.searchParams.set("per_page", "100");
+  url.searchParams.set("tab", "order_view");
+  url.searchParams.set("page", String(page));
+  url.searchParams.set("awb_numbers", awbNumbers.join(","));
+
+  const res = await fetch(url.toString(), {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json, text/plain, */*",
+      "Accept-Language": "en",
+      Origin: "https://gtl-id.tokgistic.com",
+      Referer: "https://gtl-id.tokgistic.com/hms/order-management",
+    },
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`TMS page ${page}: ${res.status}`);
+  return res.json();
+}
+
+async function fetchShipmentsForAwbs(token: string, awbs: string[]) {
+  if (awbs.length === 0) return [];
+  const chunks = Array.from(
+    { length: Math.ceil(awbs.length / 50) },
+    (_, i) => awbs.slice(i * 50, i * 50 + 50)
+  );
+  const shipments: any[] = [];
+  for (let i = 0; i < chunks.length; i += 5) {
+    const results = await Promise.all(
+      chunks.slice(i, i + 5).map((chunk) => fetchShipmentsPage(token, 1, chunk))
+    );
+    for (const result of results) {
+      shipments.push(...(result?.data?.shipments || []));
+    }
+  }
+  return shipments;
+}
+
+async function computeC1FromInboundScan(
+  hmsToken: string,
+  hubName: string
+): Promise<{ c1: number; deliveredBefore12: number }> {
+  const fromTs = getTodayWIBUnix(0);
+  const toTs = getTodayWIBUnix(8);
+  const firstPage = await fetchInboundTasksPage(hmsToken, 1, fromTs, toTs);
+  const totalRecords = Number(firstPage?.data?.pagination?.total) || 0;
+  const totalPages = Math.ceil(totalRecords / 100);
+  let allTasks: any[] = firstPage?.data?.tasks || [];
+
+  if (totalPages > 1) {
+    const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
+    for (let i = 0; i < pages.length; i += 5) {
+      const results = await Promise.all(
+        pages
+          .slice(i, i + 5)
+          .map((page) => fetchInboundTasksPage(hmsToken, page, fromTs, toTs))
+      );
+      for (const result of results) {
+        allTasks = allTasks.concat(result?.data?.tasks || []);
+      }
+    }
+  }
+
+  const hubTasks = allTasks.filter((task) => task.lm_facility === hubName);
+  const uniqueFreshC1Tasks = Array.from(
+    new Map(
+      hubTasks.map((task, index) => [
+        task.awb_number || task.tracking_number || task.id || `row-${index}`,
+        task,
+      ])
+    ).values()
+  );
+  const deliveredFromTs = getTodayWIBUnix(0);
+  const deliveredBeforeTs = getTodayWIBUnix(12);
+  const freshC1Awbs = uniqueFreshC1Tasks
+    .map((task) => String(task.awb_number || task.tracking_number || "").trim())
+    .filter(Boolean);
+  const shipments = await fetchShipmentsForAwbs(hmsToken, freshC1Awbs);
+  const deliveredBefore12 = new Set(
+    shipments
+      .filter((shipment) => {
+        const deliveredAt = toUnixSeconds(
+          shipment.destination_details?.delivery_time
+        );
+        return deliveredAt >= deliveredFromTs && deliveredAt < deliveredBeforeTs;
+      })
+      .map((shipment) => String(shipment.awb_number || "").trim())
+      .filter(Boolean)
+  ).size;
+
+  return { c1: uniqueFreshC1Tasks.length, deliveredBefore12 };
+}
+
+// ============================================================
+// DEDICATED MERGED
+// ============================================================
 async function fetchDedicatedMerged(token: string, hubId: string) {
   const result = {
     actual: 0, totalPicked: 0, totalDelivered: 0,
@@ -176,6 +342,9 @@ async function fetchDedicatedMerged(token: string, hubId: string) {
   return result;
 }
 
+// ============================================================
+// CLEAN FLOOR (live)
+// ============================================================
 function computeCleanFloor(main: any): number {
   const delivered = Number(main.delivered) || 0;
   const ongoing = Number(main.ongoing_delivery) || 0;
@@ -190,6 +359,9 @@ function computeCleanFloor(main: any): number {
   return denominator > 0 ? (numerator / denominator) * 100 : 0;
 }
 
+// ============================================================
+// FETCH HUB SUMMARY
+// ============================================================
 async function fetchHubSummary(
   token: string,
   hubId: string,
@@ -241,6 +413,19 @@ async function fetchHubSummary(
       console.warn(`[coverage] Dedicated failed for ${hubName}:`, e.message);
     }
 
+    // SD12 — real-time sampai jam 12
+    let sdBefore12 = 0;
+    let c1Count = 0;
+    let deliveredBefore12 = 0;
+    try {
+      const c1Result = await computeC1FromInboundScan(token, hubName);
+      c1Count = c1Result.c1;
+      deliveredBefore12 = Math.min(c1Result.deliveredBefore12, c1Count);
+      sdBefore12 = c1Count > 0 ? (deliveredBefore12 / c1Count) * 100 : 0;
+    } catch (e: any) {
+      console.warn(`[coverage] C1/SD12 failed for ${hubName}:`, e.message);
+    }
+
     const justArrived = Number(main.just_arrived) || 0;
     const backlog = Number(main.backlog) || 0;
     const delivered = Number(main.delivered) || 0;
@@ -283,7 +468,7 @@ async function fetchHubSummary(
       }
     }
 
-    // Oncall = Courier (Rider LM 2W Mitra) — avg productivity per rider
+    // Oncall = Courier (Rider LM 2W Mitra)
     let oncallAvgProductivity = 0;
     let oncallCheckIn = 0;
     let oncallAssigned = 0;
@@ -313,7 +498,9 @@ async function fetchHubSummary(
       others,
       delivered_percentage: parseFloat(deliveredPct.toFixed(2)),
       fresh_success: parseFloat(freshSuccess.toFixed(2)),
-      sd_before_12: 0,
+      sd_before_12: parseFloat(sdBefore12.toFixed(2)),
+      sd12_c1_total: c1Count,
+      sd12_delivered_before_12: deliveredBefore12,
       cod_fd: parseFloat(codFd.toFixed(2)),
       cod_total: codTotal,
       urgent_pct: parseFloat(urgentPct.toFixed(2)),
@@ -324,7 +511,6 @@ async function fetchHubSummary(
       dedicated_achievement_pct: dedicated.achievementPct,
       dedicated_actual: dedicated.actual,
       dedicated_drivers: dedicated.drivers,
-      // Oncall = Courier
       oncall_avg_productivity: parseFloat(oncallAvgProductivity.toFixed(2)),
       oncall_check_in: oncallCheckIn,
       oncall_assigned: oncallAssigned,
