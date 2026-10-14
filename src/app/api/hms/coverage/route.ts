@@ -1,4 +1,4 @@
-﻿import { auth } from "@/lib/auth";
+import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { buildHmsHeaders } from '@/lib/hms-headers';
 import { NextRequest, NextResponse } from "next/server";
@@ -70,13 +70,7 @@ async function callHMS(
       const res = await fetch(url, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-          Accept: "*/*",
-          "x-location": "Asia/Jakarta",
-          "x-request-source": "web",
-          Origin: "https://gtl-id.tokgistic.com",
-          Referer: "https://gtl-id.tokgistic.com/tms/operation-performance-central",
+          ...buildHmsHeaders(token),
         },
         body: JSON.stringify({ api_id: apiId, params }),
         cache: "no-store",
@@ -139,11 +133,7 @@ async function fetchInboundTasksPage(
     {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        Origin: "https://gtl-id.tokgistic.com",
-        Referer: "https://gtl-id.tokgistic.com/hms/order-management",
+        ...buildHmsHeaders(token),
       },
       body: JSON.stringify({
         filters: { received_at_from: fromTs, received_at_to: toTs },
@@ -174,11 +164,7 @@ async function fetchShipmentsPage(
 
   const res = await fetch(url.toString(), {
     headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/json, text/plain, */*",
-      "Accept-Language": "en",
-      Origin: "https://gtl-id.tokgistic.com",
-      Referer: "https://gtl-id.tokgistic.com/hms/order-management",
+      ...buildHmsHeaders(token),
     },
     cache: "no-store",
   });
