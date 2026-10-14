@@ -512,10 +512,10 @@ export async function GET(req: NextRequest) {
     const volumeOverall = justArrived + backlog;
     const cleanFloorOngoing = Number(main.ongoing_delivery_just_arrived) || 0;
 const cleanFloorDelivered = Number(main.delivered_just_arrived) || 0;
-const cleanFloorFtd = 0;
-const cleanFloorOthers = 0;
-const cleanFloorTodayVolume = freshC1;
-const cleanFloorNumerator = cleanFloorOngoing + cleanFloorDelivered;
+const cleanFloorFtd = Number(main.ftd) || 0;
+const cleanFloorOthers = Number(main.others) || 0;
+const cleanFloorTodayVolume = freshC1 + backlog;
+const cleanFloorNumerator = cleanFloorOngoing + cleanFloorDelivered + cleanFloorFtd + cleanFloorOthers;
 const cleanFloorValue = cleanFloorTodayVolume > 0
   ? Math.min((cleanFloorNumerator / cleanFloorTodayVolume) * 100, 100)
   : 0;
