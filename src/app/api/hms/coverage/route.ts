@@ -3,12 +3,14 @@ import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
 const API_ID_MAIN = "7564027893345453074";
-const API_ID_OPS = "7517597334683780103";
+const API_ID_COURIER = "7514949742451868679";
 const API_ID_DEDICATED = "7591486857905554439";
 
 const PAYMENT_TYPES_ALL = '["cashless","cod"]';
 const PAYMENT_TYPES_COD = '["cod"]';
 const SERVICE_TYPES = '["INS","SDS","REG","NDD","OTHERS"]';
+const JOB_ROLES_CYCLE =
+  '["Rider LM 2W - Mitra Prioritas","Ops LM - Mitra","Ops LM - Mitra Oncall","Rider LM 2W","Dedicated Rider LM 2W","Ops LM"]';
 const JOB_ROLES_DEDICATED = '["Dedicated Rider LM 2W"]';
 const DEDICATED_TARGET = 135;
 
@@ -27,7 +29,6 @@ function formatDateYMD(d: Date): string {
   return `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
-// Operational date: 17:00 kemarin (konsisten HMS)
 function getMainCurrDate(): string {
   const d = toWIB();
   d.setUTCDate(d.getUTCDate() - 1);
@@ -96,13 +97,8 @@ function parseCompact(dataStr: string, fields: { name: string }[]) {
 
 async function fetchDedicatedMerged(token: string, hubId: string) {
   const result = {
-    actual: 0,
-    totalPicked: 0,
-    totalDelivered: 0,
-    avgPickup: 0,
-    avgDelivered: 0,
-    achievementPct: 0,
-    drivers: [] as string[],
+    actual: 0, totalPicked: 0, totalDelivered: 0,
+    avgPickup: 0, avgDelivered: 0, achievementPct: 0, drivers: [] as string[],
   };
 
   const cycles = [
@@ -180,11 +176,10 @@ async function fetchDedicatedMerged(token: string, hubId: string) {
   return result;
 }
 
-// Clean Floor: pakai ftd_total (bukan in_driver) karena numerator harus lengkap
 function computeCleanFloor(main: any): number {
   const delivered = Number(main.delivered) || 0;
   const ongoing = Number(main.ongoing_delivery) || 0;
-  const ftdTotal = Number(main.ftd) || 0; // pakai TOTAL (in_driver + returned)
+  const ftdTotal = Number(main.ftd) || 0;
   const others = Number(main.others) || 0;
   const justArrived = Number(main.just_arrived) || 0;
   const backlog = Number(main.backlog) || 0;
@@ -203,7 +198,7 @@ async function fetchHubSummary(
   todayDate: string
 ) {
   try {
-    const [mainRes, codRes, urgentRes, opsRes] = await Promise.all([
+    const [mainRes, codRes, urgentRes, courierRes] = await Promise.all([
       callHMS(token, API_ID_MAIN, {
         hub_ids: JSON.stringify([hubId]),
         curr_date: currDate,
@@ -223,10 +218,11 @@ async function fetchHubSummary(
         service_types: SERVICE_TYPES,
         is_urgent: "true",
       }).catch(() => null),
-      callHMS(token, API_ID_OPS, {
+      callHMS(token, API_ID_COURIER, {
         hub_ids: JSON.stringify([hubId]),
         curr_date_start: currDate,
         date: todayDate,
+        job_roles: JOB_ROLES_CYCLE,
       }).catch(() => null),
     ]);
 
@@ -249,7 +245,6 @@ async function fetchHubSummary(
     const backlog = Number(main.backlog) || 0;
     const delivered = Number(main.delivered) || 0;
     const ongoing = Number(main.ongoing_delivery) || 0;
-    // FTD untuk DISPLAY = in_driver saja
     const ftdInDriver = Number(main.in_driver) || 0;
     const ftdTotal = Number(main.ftd) || 0;
     const pendingAtHub = Number(main.pending_at_hub) || 0;
@@ -288,13 +283,18 @@ async function fetchHubSummary(
       }
     }
 
-    let opsProductivity = 0;
-    let opsAchieved = false;
-    if (opsRes) {
-      const ops = parseCompact(opsRes.data.data, opsRes.data.fields);
-      if (ops) {
-        opsProductivity = parseFloat(ops.avg_productivity) || 0;
-        opsAchieved = opsProductivity >= 1100;
+    // Oncall = Courier (Rider LM 2W Mitra) — avg productivity per rider
+    let oncallAvgProductivity = 0;
+    let oncallCheckIn = 0;
+    let oncallAssigned = 0;
+    let oncallOutDrivers = 0;
+    if (courierRes) {
+      const courier = parseCompact(courierRes.data.data, courierRes.data.fields);
+      if (courier) {
+        oncallAvgProductivity = parseFloat(courier.avg_productivity) || 0;
+        oncallCheckIn = Number(courier.check_in) || 0;
+        oncallAssigned = Number(courier.assigned) || 0;
+        oncallOutDrivers = Number(courier.out_drivers) || 0;
       }
     }
 
@@ -308,8 +308,8 @@ async function fetchHubSummary(
       pending_at_hub: pendingAtHub,
       delivered,
       ongoing_delivery: ongoing,
-      ftd: ftdInDriver,       // DISPLAY = in_driver
-      ftd_total: ftdTotal,     // untuk clean floor
+      ftd: ftdInDriver,
+      ftd_total: ftdTotal,
       others,
       delivered_percentage: parseFloat(deliveredPct.toFixed(2)),
       fresh_success: parseFloat(freshSuccess.toFixed(2)),
@@ -324,8 +324,11 @@ async function fetchHubSummary(
       dedicated_achievement_pct: dedicated.achievementPct,
       dedicated_actual: dedicated.actual,
       dedicated_drivers: dedicated.drivers,
-      ops_productivity: opsProductivity,
-      ops_achieved: opsAchieved,
+      // Oncall = Courier
+      oncall_avg_productivity: parseFloat(oncallAvgProductivity.toFixed(2)),
+      oncall_check_in: oncallCheckIn,
+      oncall_assigned: oncallAssigned,
+      oncall_out_drivers: oncallOutDrivers,
       clean_floor: parseFloat(cleanFloorLive.toFixed(2)),
     };
   } catch (e: any) {

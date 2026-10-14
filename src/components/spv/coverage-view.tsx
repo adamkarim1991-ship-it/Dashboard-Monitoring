@@ -51,8 +51,10 @@ type HubSummary = {
   dedicated_achievement_pct?: number;
   dedicated_actual?: number;
   dedicated_drivers?: string[];
-  ops_productivity?: number;
-  ops_achieved?: boolean;
+  oncall_avg_productivity?: number;
+  oncall_check_in?: number;
+  oncall_assigned?: number;
+  oncall_out_drivers?: number;
   clean_floor?: number | null;
   clean_floor_locked?: boolean;
 };
@@ -435,11 +437,13 @@ function HubCard({ hub }: { hub: HubSummary }) {
           <p className="text-gray-400 text-[10px]">Dedicated Avg Del</p>
           <p className="font-bold text-amber-600">{hub.dedicated_avg_delivered || 0}</p>
         </div>
-        <div>
-          <p className="text-gray-400 text-[10px]">Oncall Prod</p>
+            <div>
+          <p className="text-gray-400 text-[10px]">Oncall Avg Prod</p>
           <p className="font-bold text-teal-600">
-            {(hub.ops_productivity || 0).toFixed(0)}
-            {hub.ops_achieved ? " ✓" : ""}
+            {(hub.oncall_avg_productivity || 0).toFixed(2)}
+          </p>
+          <p className="text-[8px] text-gray-400 leading-tight">
+            {hub.oncall_check_in || 0} riders check-in
           </p>
         </div>
         <div className="col-span-2">
