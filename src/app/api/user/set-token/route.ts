@@ -1,4 +1,4 @@
-import { auth } from "@/lib/auth";
+﻿import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -31,18 +31,35 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const current = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { hmsToken: true, hmsRefreshToken: true, hmsTokenExpiresAt: true },
+  });
+
+  const newExpires = hmsTokenExpiresAt ? new Date(hmsTokenExpiresAt) : null;
+
+  if (
+    current?.hmsTokenExpiresAt &&
+    newExpires &&
+    current.hmsTokenExpiresAt > newExpires
+  ) {
+    console.log(`[set-token] SKIP - DB fresher`);
+    return NextResponse.json({ success: true, skipped: true });
+  }
+
   const data: any = {
     hmsToken,
     hmsTokenUpdatedAt: new Date(),
   };
 
-  if (hmsRefreshToken) {
+  const accessTokenChanged = current?.hmsToken !== hmsToken;
+  if (hmsRefreshToken && (!current?.hmsRefreshToken || accessTokenChanged)) {
     data.hmsRefreshToken = hmsRefreshToken;
     data.hmsRefreshTokenUpdatedAt = new Date();
   }
 
-  if (hmsTokenExpiresAt) {
-    data.hmsTokenExpiresAt = new Date(hmsTokenExpiresAt);
+  if (newExpires) {
+    data.hmsTokenExpiresAt = newExpires;
   }
 
   await prisma.user.update({
@@ -50,9 +67,6 @@ export async function POST(req: NextRequest) {
     data,
   });
 
-  console.log(
-    `[set-token] ✅ Updated user ${session.user.id} — token + refresh saved`
-  );
-
+  console.log(`[set-token] Updated user ${session.user.id}`);
   return NextResponse.json({ success: true });
 }
