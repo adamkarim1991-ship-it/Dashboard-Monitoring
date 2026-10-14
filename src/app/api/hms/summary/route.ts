@@ -518,6 +518,7 @@ const cleanFloorNumerator = cleanFloorOngoing + cleanFloorDelivered;
 const cleanFloorValue = cleanFloorTodayVolume > 0
   ? Math.min((cleanFloorNumerator / cleanFloorTodayVolume) * 100, 100)
   : 0;
+    const currentWibHour = new Date(Date.now() + 7 * 60 * 60 * 1000).getUTCHours();
     const lockedAt = `${todayDate}T01:00:00.000Z`;
     const snapshotKey = { facility: HUB_ID, date: todayDate };
 
