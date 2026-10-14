@@ -303,7 +303,7 @@ export default function CoverageView({ user }: { user: SessionUser }) {
                           href={`/spv/hub/${hub.hubId}`}
                           className="inline-flex items-center gap-1 text-sky-600 hover:text-sky-800 font-semibold"
                         >
-                          Detail >
+                          Detail {">"}
                         </Link>
                       </td>
                     </tr>
