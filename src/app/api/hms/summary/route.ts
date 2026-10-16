@@ -201,6 +201,12 @@ async function fetchShipmentsForAwbs(token: string, awbs: string[]) {
   return shipments;
 }
 
+
+// Normalize hub name for matching (strip GTL prefix, Hub suffix)
+function normalizeHubName(name: string): string {
+  return name.replace(/^GTL\s+/i, "").replace(/\s+Hub$/i, "").trim().toLowerCase();
+}
+
 async function computeC1FromInboundScan(hmsToken: string, hubName: string) {
   const fromTs = get12amWIBUnix();
   const toTs = get8amWIBUnix();
@@ -223,7 +229,11 @@ async function computeC1FromInboundScan(hmsToken: string, hubName: string) {
     }
   }
 
-  const hubTasks = allTasks.filter((task) => task.lm_facility === hubName);
+  
+  const normalizedTarget = normalizeHubName(hubName);
+  const hubTasks = allTasks.filter(
+    (task) => normalizeHubName(task.lm_facility || "") === normalizedTarget
+  );
   const uniqueFreshC1Tasks = Array.from(
     new Map(
       hubTasks.map((task, index) => [

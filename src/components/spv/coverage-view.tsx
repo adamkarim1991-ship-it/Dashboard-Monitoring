@@ -441,8 +441,12 @@ function HubCard({ hub }: { hub: HubSummary }) {
           <p className="font-bold text-purple-600">{(hub.cod_fd || 0).toFixed(2)}%</p>
         </div>
         <div>
-          <p className="text-gray-500 text-xs font-semibold">Urgent %</p>
-          <p className="font-bold text-rose-600">{(hub.urgent_pct || 0).toFixed(2)}%</p>
+          <p className="text-gray-500 text-xs font-semibold">Urgent Delivered%</p>
+          <p className="font-bold text-rose-600">{
+(hub.urgent_pct || 0).toFixed(2)}%</p>
+          <p className="text-[10px] text-gray-400 leading-tight mt-0.5">
+            {(hub.urgent_delivered || 0)} / {(hub.urgent_total || 0)}
+          </p>
         </div>
         <div>
           <p className="text-gray-500 text-xs font-semibold">Dedicated Avg Del</p>
