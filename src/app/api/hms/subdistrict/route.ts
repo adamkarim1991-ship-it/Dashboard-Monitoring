@@ -1,6 +1,8 @@
-import { auth } from "@/lib/auth";
+﻿import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
+
+const REFRESH_WINDOW_MS = 30 * 60 * 1000;
 
 const API_ID_MAIN = "7564027893345453074";
 const PAYMENT_TYPES_ALL = '["cashless","cod"]';
@@ -624,3 +626,4 @@ export async function GET(req: NextRequest) {
     );
   }
 }
+

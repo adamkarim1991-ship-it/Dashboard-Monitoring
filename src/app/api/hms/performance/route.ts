@@ -81,6 +81,8 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  const hmsToken = user.hmsToken;
+
   const fromTs = getTodayStartWIB();
   const toTs = getNowUnix();
 
@@ -91,7 +93,7 @@ export async function GET(req: NextRequest) {
 
   try {
     // Fetch halaman 1 untuk tahu total records
-    const firstPage = await fetchHMSPage(user.hmsToken, 1, fromTs, toTs);
+    const firstPage = await fetchHMSPage(hmsToken, 1, fromTs, toTs);
 
     const totalRecords = firstPage?.data?.total_records || 0;
     const totalPages = Math.ceil(totalRecords / 100);
@@ -114,7 +116,7 @@ export async function GET(req: NextRequest) {
         const batch = pagesToFetch.slice(i, i + batchSize);
         const results = await Promise.all(
           batch.map((page) =>
-            fetchHMSPage(user.hmsToken!, page, fromTs, toTs).catch((e) => {
+            fetchHMSPage(hmsToken, page, fromTs, toTs).catch((e) => {
               console.error(`Page ${page} error:`, e.message);
               return null;
             })

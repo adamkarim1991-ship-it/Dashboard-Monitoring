@@ -1,7 +1,10 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { buildHmsHeaders } from '@/lib/hms-headers';
+import { refreshHmsToken } from '@/lib/hms-client';
 import { NextRequest, NextResponse } from "next/server";
+
+const REFRESH_WINDOW_MS = 30 * 60 * 1000;
 
 const API_ID_MAIN = "7564027893345453074";
 const API_ID_COURIER = "7514949742451868679";
@@ -619,3 +622,5 @@ export async function GET(req: NextRequest) {
     hubs: results,
   });
 }
+
+
