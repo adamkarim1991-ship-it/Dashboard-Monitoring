@@ -597,9 +597,10 @@ export async function GET(req: NextRequest) {
       acc.total_delivered += r.delivered || 0;
       acc.total_ongoing += r.ongoing_delivery || 0;
       acc.total_ftd += r.ftd || 0;
+      acc.total_pending += r.pending_at_hub || 0;
       return acc;
     },
-    { total_volume: 0, total_delivered: 0, total_ongoing: 0, total_ftd: 0 }
+    { total_volume: 0, total_delivered: 0, total_ongoing: 0, total_ftd: 0, total_pending: 0 }
   );
 
   const avgSuccess =
@@ -618,7 +619,7 @@ export async function GET(req: NextRequest) {
       fetched_at: new Date().toISOString(),
       current_wib_hour: currentHour,
     },
-    aggregated: { ...aggregated, avg_success: avgSuccess },
+    aggregated: { ...aggregated, avg_success: avgSuccess, total_pending: aggregated.total_pending },
     hubs: results,
   });
 }

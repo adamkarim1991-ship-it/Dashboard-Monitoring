@@ -66,6 +66,14 @@ type SummaryResponse = {
   ops_target: number;
   ops_achieved: boolean;
   cycle_name: string;
+  urgent_total?: number;
+  urgent_delivered?: number;
+  urgent_pct?: number;
+  cod_ready_to_return?: number;
+  cod_just_arrived?: number;
+  cod_backlog?: number;
+  cod_total_volume?: number;
+  cod_fd?: number;
   fetched_at: string;
   clean_floor: CleanFloorData;
   dedicated_actual?: number;
@@ -213,6 +221,23 @@ export default function DashboardView({
             target: d.summary.dedicated_target || 135,
             drivers: d.summary.dedicated_drivers || [],
           });
+        }
+        if (!showSubdistrict) {
+          if (d.summary.cod_total_volume !== undefined) {
+            setCod({
+              total: d.summary.cod_total_volume || 0,
+              ready_to_return: d.summary.cod_ready_to_return || 0,
+              fd_percentage: d.summary.cod_fd || 0,
+            });
+          }
+          if (d.summary.urgent_total !== undefined) {
+            setUrgent({
+              total: d.summary.urgent_total || 0,
+              delivered: d.summary.urgent_delivered || 0,
+              failed: (d.summary.urgent_total || 0) - (d.summary.urgent_delivered || 0),
+              delivered_percentage: d.summary.urgent_pct || 0,
+            });
+          }
         }
         setLastUpdate(new Date());
       }

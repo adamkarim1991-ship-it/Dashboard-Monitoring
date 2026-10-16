@@ -11,6 +11,7 @@ const API_ID_DEDICATED = "7591486857905554439";
 
 const PAYMENT_TYPES = '["cashless","cod"]';
 const PAYMENT_TYPES_COD = '["cod"]';
+const PAYMENT_TYPES_URGENT = '["cashless","cod"]';
 const SERVICE_TYPES = '["INS","SDS","REG","NDD","OTHERS"]';
 const JOB_ROLES_CYCLE =
   '["Rider LM 2W - Mitra Prioritas","Ops LM - Mitra","Ops LM - Mitra Oncall","Rider LM 2W","Dedicated Rider LM 2W","Ops LM"]';
@@ -403,7 +404,7 @@ export async function GET(req: NextRequest) {
     const todayDate = getTodayDate();
     const cycleList = getCycleList();
 
-    const [mainRes, codRes, cycleRes, opsRes, courierRes, dedicatedMerged, c1Result] =
+    const [mainRes, codRes, cycleRes, opsRes, courierRes, urgentRes, dedicatedMerged, c1Result] =
       await Promise.all([
         callHMS(user.hmsToken, API_ID_MAIN, {
           hub_ids: JSON.stringify([HUB_ID]),
@@ -446,6 +447,16 @@ export async function GET(req: NextRequest) {
           console.warn("[courier] Gagal:", e.message);
           return null;
         }),
+        callHMS(user.hmsToken, API_ID_MAIN, {
+          hub_ids: JSON.stringify([HUB_ID]),
+          curr_date: currDate,
+          payment_types: PAYMENT_TYPES_URGENT,
+          service_types: SERVICE_TYPES,
+          is_urgent: "true",
+        }).catch((e) => {
+          console.warn("[urgent] Gagal:", e.message);
+          return null;
+        }),
         fetchDedicatedMerged(user.hmsToken, HUB_ID).catch((e) => {
           console.warn("[dedicated] Gagal:", e.message);
           return {
@@ -480,6 +491,16 @@ export async function GET(req: NextRequest) {
         codFd = codTotalVolume > 0
           ? parseFloat(((codReadyToReturn / codTotalVolume) * 100).toFixed(2))
           : 0;
+      }
+    }
+
+    let urgentTotal = 0, urgentDelivered = 0, urgentPct = 0;
+    if (urgentRes) {
+      const urg = parseCompact(urgentRes.data.data, urgentRes.data.fields);
+      if (urg) {
+        urgentTotal = (Number(urg.just_arrived) || 0) + (Number(urg.backlog) || 0);
+        urgentDelivered = Number(urg.delivered) || 0;
+        urgentPct = urgentTotal > 0 ? parseFloat(((urgentDelivered / urgentTotal) * 100).toFixed(2)) : 0;
       }
     }
 
@@ -631,6 +652,9 @@ const cleanFloorValue = cleanFloorTodayVolume > 0
       ops_target: opsTarget,
       ops_achieved: opsAchieved,
       cycle_name: cycle?.cycle_name || "",
+      urgent_total: urgentTotal,
+      urgent_delivered: urgentDelivered,
+      urgent_pct: urgentPct,
       fetched_at: new Date().toISOString(),
     };
 

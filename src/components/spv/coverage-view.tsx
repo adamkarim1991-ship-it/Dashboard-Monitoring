@@ -74,6 +74,7 @@ type CoverageResponse = {
     total_delivered: number;
     total_ongoing: number;
     total_ftd: number;
+    total_pending: number;
     avg_success: number;
   };
   hubs: HubSummary[];
@@ -218,10 +219,11 @@ export default function CoverageView({ user }: { user: SessionUser }) {
 
       <main className="max-w-[1600px] mx-auto px-6 py-4 space-y-4">
         {data && (
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
             <SummaryCard label="TOTAL VOLUME" value={data.aggregated.total_volume} accent="blue" />
             <SummaryCard label="TOTAL DELIVERED" value={data.aggregated.total_delivered} accent="green" />
             <SummaryCard label="ONGOING" value={data.aggregated.total_ongoing} accent="purple" />
+            <SummaryCard label="PENDING AT HUB" value={data.aggregated.total_pending} accent="amber" />
             <SummaryCard label="FTD" value={data.aggregated.total_ftd} accent="red" />
             <SummaryCard label="AVG SUCCESS" value={data.aggregated.avg_success} suffix="%" accent="teal" />
           </div>
@@ -266,6 +268,7 @@ export default function CoverageView({ user }: { user: SessionUser }) {
                   </th>
                   <th className="px-4 py-2 text-right font-semibold">Delivered</th>
                   <th className="px-4 py-2 text-right font-semibold">Ongoing</th>
+                  <th className="px-4 py-2 text-right font-semibold">Pending</th>
                   <th className="px-4 py-2 text-right font-semibold">FTD</th>
                   <th
                     className="px-4 py-2 text-right font-semibold cursor-pointer hover:bg-gray-100"
@@ -292,6 +295,7 @@ export default function CoverageView({ user }: { user: SessionUser }) {
                       <td className="px-4 py-2 text-right tabular-nums">{(hub.today_volume || 0).toLocaleString("id-ID")}</td>
                       <td className="px-4 py-2 text-right tabular-nums">{(hub.delivered || 0).toLocaleString("id-ID")}</td>
                       <td className="px-4 py-2 text-right tabular-nums">{(hub.ongoing_delivery || 0).toLocaleString("id-ID")}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-amber-600">{(hub.pending_at_hub || 0).toLocaleString("id-ID")}</td>
                       <td className="px-4 py-2 text-right tabular-nums text-red-600">{(hub.ftd || 0).toLocaleString("id-ID")}</td>
                       <td className="px-4 py-2 text-right tabular-nums font-semibold">
                         <span className={hub.delivered_percentage && hub.delivered_percentage >= 10 ? "text-green-600" : hub.delivered_percentage && hub.delivered_percentage >= 5 ? "text-amber-600" : "text-red-600"}>
@@ -329,21 +333,23 @@ function SummaryCard({
   label: string;
   value: number;
   suffix?: string;
-  accent: "blue" | "green" | "purple" | "red" | "teal";
+  accent: "blue" | "green" | "purple" | "red" | "teal" | "amber";
 }) {
-  const accents = {
+  const accents: Record<string, string> = {
     blue: "border-l-blue-500",
     green: "border-l-green-500",
     purple: "border-l-purple-500",
     red: "border-l-red-500",
     teal: "border-l-teal-500",
+    amber: "border-l-amber-500",
   };
-  const textColors = {
+  const textColors: Record<string, string> = {
     blue: "text-blue-600",
     green: "text-green-600",
     purple: "text-purple-600",
     red: "text-red-600",
     teal: "text-teal-600",
+    amber: "text-amber-600",
   };
   return (
     <div className={`bg-white rounded shadow-sm border-l-4 ${accents[accent]} px-4 py-3`}>
@@ -391,8 +397,8 @@ function HubCard({ hub }: { hub: HubSummary }) {
     >
       <div className="flex items-start justify-between">
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-bold text-gray-800 truncate">{hub.hubName}</p>
-          <p className="text-[10px] text-gray-400 mt-0.5">Hub ID: {hub.hubId}</p>
+          <p className="text-base font-bold text-gray-900 truncate">{hub.hubName}</p>
+          <p className="text-xs font-medium text-gray-600 mt-0.5">Hub ID: {hub.hubId}</p>
         </div>
         {isGood ? (
           <TrendingUp className="w-4 h-4 text-green-500" />
@@ -403,51 +409,51 @@ function HubCard({ hub }: { hub: HubSummary }) {
 
       <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
         <div>
-          <p className="text-gray-400 text-[10px]">Volume</p>
+          <p className="text-gray-500 text-xs font-semibold">Volume</p>
           <p className="font-bold text-gray-800">{(hub.today_volume || 0).toLocaleString("id-ID")}</p>
         </div>
         <div>
-          <p className="text-gray-400 text-[10px]">Delivered</p>
+          <p className="text-gray-500 text-xs font-semibold">Delivered</p>
           <p className="font-bold text-gray-800">{(hub.delivered || 0).toLocaleString("id-ID")}</p>
         </div>
         <div>
-          <p className="text-gray-400 text-[10px]">Ongoing</p>
+          <p className="text-gray-500 text-xs font-semibold">Ongoing</p>
           <p className="font-bold text-gray-800">{(hub.ongoing_delivery || 0).toLocaleString("id-ID")}</p>
         </div>
         <div>
-          <p className="text-gray-400 text-[10px]">Pending at Hub</p>
+          <p className="text-gray-500 text-xs font-semibold">Pending at Hub</p>
           <p className="font-bold text-amber-600">{(hub.pending_at_hub || 0).toLocaleString("id-ID")}</p>
         </div>
         <div>
-          <p className="text-gray-400 text-[10px]">FTD</p>
+          <p className="text-gray-500 text-xs font-semibold">FTD</p>
           <p className="font-bold text-red-600">{(hub.ftd || 0).toLocaleString("id-ID")}</p>
         </div>
         <div>
-          <p className="text-gray-400 text-[10px]">Fresh Success</p>
+          <p className="text-gray-500 text-xs font-semibold">Fresh Success</p>
           <p className="font-bold text-emerald-600">{(hub.fresh_success || 0).toFixed(2)}%</p>
         </div>
         <div>
-          <p className="text-gray-400 text-[10px]">SD &lt; 12 PM</p>
+          <p className="text-gray-500 text-xs font-semibold">SD &lt; 12 PM</p>
           <p className="font-bold text-blue-600">{(hub.sd_before_12 || 0).toFixed(2)}%</p>
         </div>
         <div>
-          <p className="text-gray-400 text-[10px]">COD FD</p>
+          <p className="text-gray-500 text-xs font-semibold">COD FD</p>
           <p className="font-bold text-purple-600">{(hub.cod_fd || 0).toFixed(2)}%</p>
         </div>
         <div>
-          <p className="text-gray-400 text-[10px]">Urgent %</p>
+          <p className="text-gray-500 text-xs font-semibold">Urgent %</p>
           <p className="font-bold text-rose-600">{(hub.urgent_pct || 0).toFixed(2)}%</p>
         </div>
         <div>
-          <p className="text-gray-400 text-[10px]">Dedicated Avg Del</p>
+          <p className="text-gray-500 text-xs font-semibold">Dedicated Avg Del</p>
           <p className="font-bold text-amber-600">{hub.dedicated_avg_delivered || 0}</p>
         </div>
             <div>
-          <p className="text-gray-400 text-[10px]">Oncall Avg Prod</p>
+          <p className="text-gray-500 text-xs font-semibold">Oncall Avg Prod</p>
           <p className="font-bold text-teal-600">
             {(hub.oncall_avg_productivity || 0).toFixed(2)}
           </p>
-          <p className="text-[8px] text-gray-400 leading-tight">
+          <p className="text-[11px] text-gray-700 font-semibold leading-tight mt-0.5">
             {hub.oncall_check_in || 0} riders check-in
           </p>
         </div>
