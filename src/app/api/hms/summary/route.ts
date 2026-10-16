@@ -1,4 +1,4 @@
-﻿import { auth } from "@/lib/auth";
+import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { buildHmsHeaders } from '@/lib/hms-headers';
 import { NextRequest, NextResponse } from "next/server";
@@ -487,8 +487,8 @@ export async function GET(req: NextRequest) {
     const justArrived = Number(main.just_arrived) || 0;
     const freshC1 = Math.min(c1Result.c1, justArrived);
     const freshC2 = Math.max(justArrived - freshC1, 0);
-    const deliveredBefore12 = Number(main.delivered_just_arrived) || 0;
-    const sdBefore12 = justArrived > 0 ? (deliveredBefore12 / justArrived) * 100 : 0;
+    const deliveredBefore12 = c1Result.deliveredBefore12;
+    const sdBefore12 = freshC1 > 0 ? (deliveredBefore12 / freshC1) * 100 : 0;
     const freshSuccess =
       justArrived > 0
         ? parseFloat(((deliveredJustArrived / justArrived) * 100).toFixed(2))
