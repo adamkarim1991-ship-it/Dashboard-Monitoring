@@ -139,7 +139,11 @@ async function fetchInboundTasksPage(
     {
       method: "POST",
       headers: {
-        ...buildHmsHeaders(token),
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Origin: "https://gtl-id.tokgistic.com",
+        Referer: "https://gtl-id.tokgistic.com/hms/order-management",
       },
       body: JSON.stringify({
         filters: { received_at_from: fromTs, received_at_to: toTs },
@@ -202,9 +206,14 @@ async function fetchShipmentsForAwbs(token: string, awbs: string[]) {
 }
 
 
-// Normalize hub name for matching (strip GTL prefix, Hub suffix)
+// Normalize hub name for matching (strip GTL/Hub tokens, remove non-alphanumeric)
 function normalizeHubName(name: string): string {
-  return name.replace(/^GTL\s+/i, "").replace(/\s+Hub$/i, "").trim().toLowerCase();
+  return String(name || "")
+    .toLowerCase()
+    .replace(/\bgtl\b/g, "")
+    .replace(/\bhub\b/g, "")
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
 }
 
 async function computeC1FromInboundScan(hmsToken: string, hubName: string) {
@@ -531,7 +540,7 @@ export async function GET(req: NextRequest) {
 const cleanFloorDelivered = Number(main.delivered_just_arrived) || 0;
 const cleanFloorFtd = Number(main.ftd) || 0;
 const cleanFloorOthers = Number(main.others) || 0;
-const cleanFloorTodayVolume = freshC1 + backlog;
+const cleanFloorTodayVolume = justArrived + backlog;
 const cleanFloorNumerator = cleanFloorOngoing + cleanFloorDelivered + cleanFloorFtd + cleanFloorOthers;
 const cleanFloorValue = cleanFloorTodayVolume > 0
   ? Math.min((cleanFloorNumerator / cleanFloorTodayVolume) * 100, 100)

@@ -136,7 +136,11 @@ async function fetchInboundTasksPage(
     {
       method: "POST",
       headers: {
-        ...buildHmsHeaders(token),
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Origin: "https://gtl-id.tokgistic.com",
+        Referer: "https://gtl-id.tokgistic.com/hms/order-management",
       },
       body: JSON.stringify({
         filters: { received_at_from: fromTs, received_at_to: toTs },
@@ -194,9 +198,14 @@ async function fetchShipmentsForAwbs(token: string, awbs: string[]) {
 }
 
 
-// Normalize hub name for matching (strip GTL prefix, Hub suffix)
+// Normalize hub name for matching (strip GTL/Hub tokens, remove non-alphanumeric)
 function normalizeHubName(name: string): string {
-  return name.replace(/^GTL\s+/i, "").replace(/\s+Hub$/i, "").trim().toLowerCase();
+  return String(name || "")
+    .toLowerCase()
+    .replace(/\bgtl\b/g, "")
+    .replace(/\bhub\b/g, "")
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
 }
 
 async function computeC1FromInboundScan(
@@ -352,7 +361,7 @@ function computeCleanFloor(main: any, freshC1: number): number {
   const others = Number(main.others) || 0;
   const backlog = Number(main.backlog) || 0;
   const numerator = ongoingJa + deliveredJa + ftdTotal + others;
-  const denominator = freshC1 + backlog;
+  const denominator = (Number(main.just_arrived) || 0) + backlog;
   return denominator > 0 ? Math.min((numerator / denominator) * 100, 100) : 0;
 }
 

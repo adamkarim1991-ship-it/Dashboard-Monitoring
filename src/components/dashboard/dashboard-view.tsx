@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { signOut } from "next-auth/react";
@@ -12,8 +12,6 @@ import {
   Wifi,
   Lock,
   AlertTriangle,
-  KeyRound,
-  X,
   ArrowLeft,
 } from "lucide-react";
 
@@ -483,16 +481,6 @@ export default function DashboardView({
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setIsTokenModalOpen(true)}
-              className="bg-white/10 border-white/20 text-white hover:bg-white/20 hover:text-white"
-            >
-              <KeyRound className="w-3.5 h-3.5 mr-1.5" />
-              Update HMS Token
-            </Button>
-
-            <Button
-              variant="outline"
-              size="sm"
               onClick={() => signOut({ callbackUrl: "/login" })}
               className="bg-white/10 border-white/20 text-white hover:bg-white/20 hover:text-white"
             >
@@ -502,64 +490,6 @@ export default function DashboardView({
           </div>
         </div>
       </header>
-
-      {isTokenModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
-          <div className="w-full max-w-2xl rounded-xl bg-white p-6 text-gray-900 shadow-2xl">
-            <div className="mb-5 flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-lg font-bold">Update Leader HMS Token</h2>
-                <p className="mt-1 text-sm text-gray-500">Save the leader account HMS token used by this dashboard.</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsTokenModalOpen(false)}
-                className="rounded-full p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
-                aria-label="Close token dialog"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              <label className="block text-sm font-semibold text-gray-700">
-                HMS Token (Leader Account)
-                <textarea
-                  value={leaderHmsTokenInput}
-                  onChange={(event) => setLeaderHmsTokenInput(event.target.value)}
-                  className="mt-2 min-h-28 w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-xs text-gray-900 outline-none focus:border-[#0f1e3d] focus:ring-2 focus:ring-[#0f1e3d]/20"
-                  placeholder="Paste leader or manager HMS token here"
-                />
-              </label>
-            </div>
-
-            {tokenMessage && (
-              <div className={`mt-4 rounded-lg px-3 py-2 text-sm ${tokenMessage.type === "success" ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>
-                {tokenMessage.text}
-              </div>
-            )}
-
-            <div className="mt-6 flex justify-end gap-3">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setIsTokenModalOpen(false)}
-                disabled={tokenSaving}
-              >
-                Cancel
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleSaveTokens}
-                disabled={tokenSaving}
-                className="bg-[#0f1e3d] text-white hover:bg-[#162a54]"
-              >
-                {tokenSaving ? "Saving..." : "Save"}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* STATUS BAR */}
       <div className="bg-green-50 border-b border-green-200">

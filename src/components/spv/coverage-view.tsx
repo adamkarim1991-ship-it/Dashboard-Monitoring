@@ -47,6 +47,7 @@ type HubSummary = {
   urgent_pct?: number;
   urgent_total?: number;
   urgent_delivered?: number;
+  dedicated_avg_pickup?: number;
   dedicated_avg_delivered?: number;
   dedicated_total_delivered?: number;
   dedicated_achievement_pct?: number;
@@ -448,8 +449,12 @@ function HubCard({ hub }: { hub: HubSummary }) {
             {(hub.urgent_delivered || 0)} / {(hub.urgent_total || 0)}
           </p>
         </div>
+          <div>
+            <p className="text-gray-500 text-xs font-semibold">Dedicated Avg Pickup</p>
+            <p className="font-bold text-indigo-600">{hub.dedicated_avg_pickup || 0}</p>
+          </div>
         <div>
-          <p className="text-gray-500 text-xs font-semibold">Dedicated Avg Del</p>
+          <p className="text-gray-500 text-xs font-semibold">Dedicated Avg Delivered</p>
           <p className="font-bold text-amber-600">{hub.dedicated_avg_delivered || 0}</p>
         </div>
             <div>
