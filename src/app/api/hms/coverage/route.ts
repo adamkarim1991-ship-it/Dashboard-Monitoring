@@ -355,14 +355,12 @@ async function fetchDedicatedMerged(token: string, hubId: string) {
 // CLEAN FLOOR (live)
 // ============================================================
 function computeCleanFloor(main: any, freshC1: number): number {
-  const ongoingJa = Number(main.ongoing_delivery_just_arrived) || 0;
-  const deliveredJa = Number(main.delivered_just_arrived) || 0;
-  const ftdTotal = Number(main.ftd) || 0;
-  const others = Number(main.others) || 0;
+  const justArrived = Number(main.just_arrived) || 0;
   const backlog = Number(main.backlog) || 0;
-  const numerator = ongoingJa + deliveredJa + ftdTotal + others;
-  const denominator = (Number(main.just_arrived) || 0) + backlog;
-  return denominator > 0 ? Math.min((numerator / denominator) * 100, 100) : 0;
+  const volumeOverall = justArrived + backlog;
+  const pendingAtHub = Number(main.pending_at_hub) || 0;
+  const numerator = volumeOverall - pendingAtHub;
+  return volumeOverall > 0 ? Math.min((numerator / volumeOverall) * 100, 100) : 0;
 }
 
 // ============================================================

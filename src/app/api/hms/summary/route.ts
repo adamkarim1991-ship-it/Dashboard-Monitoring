@@ -540,8 +540,9 @@ export async function GET(req: NextRequest) {
 const cleanFloorDelivered = Number(main.delivered_just_arrived) || 0;
 const cleanFloorFtd = Number(main.ftd) || 0;
 const cleanFloorOthers = Number(main.others) || 0;
+const cleanFloorPendingAtHub = Number(main.pending_at_hub) || 0;
 const cleanFloorTodayVolume = justArrived + backlog;
-const cleanFloorNumerator = cleanFloorOngoing + cleanFloorDelivered + cleanFloorFtd + cleanFloorOthers;
+const cleanFloorNumerator = cleanFloorTodayVolume - cleanFloorPendingAtHub;
 const cleanFloorValue = cleanFloorTodayVolume > 0
   ? Math.min((cleanFloorNumerator / cleanFloorTodayVolume) * 100, 100)
   : 0;

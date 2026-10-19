@@ -290,6 +290,7 @@ export default function DashboardView({
   const backlog = summary?.backlog ?? 0;
   const ongoing = summary?.ongoing_delivery ?? 0;
   const delivered = summary?.delivered ?? 0;
+  const pendingAtHub = summary?.pending_at_hub ?? 0;
   const ftd = summary?.ftd ?? 0;
   const others = summary?.others ?? 0;
   const deliveredJustArrived = summary?.delivered_just_arrived ?? 0;
@@ -534,6 +535,12 @@ export default function DashboardView({
             sub={`Fresh: ${ongoingFresh.toLocaleString("id-ID")}`}
             subSecond={`Backlog: ${ongoingBacklog.toLocaleString("id-ID")}`}
             accent="blue"
+          />
+          <BigVolumeCard
+            label="PENDING AT HUB"
+            value={pendingAtHub}
+            sub="Packages still at hub"
+            accent="red"
           />
           <BigVolumeCard
             label="FAILED TO DELIVER"
