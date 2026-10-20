@@ -421,12 +421,13 @@ async function fetchHubSummary(
       console.warn(`[coverage] C1 scan failed for ${hubName}:`, e.message);
       return { c1: 0, deliveredBefore12: 0 };
     });
-    let sdBefore12 = c1Result.c1 > 0 ? (c1Result.deliveredBefore12 / c1Result.c1) * 100 : 0;
-    let c1Count = c1Result.c1;
-    let deliveredBefore12 = c1Result.deliveredBefore12;
-
     const justArrived = Number(main.just_arrived) || 0;
     const backlog = Number(main.backlog) || 0;
+
+    let freshC1 = Math.min(c1Result.c1, justArrived);
+    let sdBefore12 = freshC1 > 0 ? (c1Result.deliveredBefore12 / freshC1) * 100 : 0;
+    let c1Count = freshC1;
+    let deliveredBefore12 = c1Result.deliveredBefore12;
     const delivered = Number(main.delivered) || 0;
     const ongoing = Number(main.ongoing_delivery) || 0;
     const ftdInDriver = Number(main.in_driver) || 0;
@@ -436,7 +437,7 @@ async function fetchHubSummary(
     const others = Number(main.others) || 0;
     const todayVolume = justArrived + backlog;
 
-    const deliveredPct = todayVolume > 0 ? (delivered / todayVolume) * 100 : 0;
+    const deliveredPct = Number(main.delivered_percentage) || 0;
     const freshSuccess =
       justArrived > 0
         ? ((Number(main.delivered_just_arrived) || 0) / justArrived) * 100

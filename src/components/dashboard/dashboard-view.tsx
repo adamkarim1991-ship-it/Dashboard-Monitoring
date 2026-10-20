@@ -509,7 +509,7 @@ export default function DashboardView({
 
       <main className="max-w-[1600px] mx-auto px-6 py-4 space-y-3">
         {/* ROW 1 - VOLUME CARDS */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3">
           <BigVolumeCard
             label="VOLUME OVERALL"
             value={todayVolume}
@@ -557,7 +557,7 @@ export default function DashboardView({
         </div>
 
         {/* ROW 2 - PERCENTAGE CARDS */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3">
           <BigPercentCard
             label="SUCCESS DELIVERED"
             value={successDelivered}

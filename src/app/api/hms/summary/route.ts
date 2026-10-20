@@ -585,7 +585,17 @@ const cleanFloorValue = cleanFloorTodayVolume > 0
         where: { facility_date: snapshotKey },
       });
       if (existing) {
-        cleanFloor = formatLockedSnapshot(existing);
+        const expectedNumerator = cleanFloorTodayVolume - cleanFloorPendingAtHub;
+        const isStale = Math.abs(existing.numerator - expectedNumerator) > 1;
+        if (isStale) {
+          const updated = await prisma.cleanFloorSnapshot.update({
+            where: { facility_date: snapshotKey },
+            data: { value: cleanFloorValue, numerator: expectedNumerator, denominator: cleanFloorTodayVolume },
+          });
+          cleanFloor = formatLockedSnapshot(updated);
+        } else {
+          cleanFloor = formatLockedSnapshot(existing);
+        }
       } else {
         try {
           const created = await prisma.cleanFloorSnapshot.create({

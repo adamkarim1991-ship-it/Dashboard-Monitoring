@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
   const today = `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 
   const deleted = await prisma.cleanFloorSnapshot.deleteMany({
-    where: { facility: HUB_ID_JATINEGARA, date: today },
+    where: { date: today },
   });
 
   return NextResponse.json({
