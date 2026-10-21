@@ -1,4 +1,4 @@
-import { auth } from "@/lib/auth";
+﻿import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getHubScope, type SessionUser } from "@/lib/rbac";
 import { NextResponse } from "next/server";
@@ -22,7 +22,6 @@ export async function GET() {
     orderBy: { name: "asc" },
   });
 
-  // Kumpulkan region unik dari hubs
   const regionSet = new Set<string>();
   hubs.forEach((h) => {
     if (h.region) regionSet.add(h.region);
@@ -33,6 +32,7 @@ export async function GET() {
     hubs: hubs.map((h) => ({
       id: h.id,
       name: h.name,
+      hmsHubId: h.hmsHubId,
       region: h.region,
       clusterId: h.clusterId,
       clusterName: h.cluster.name,
