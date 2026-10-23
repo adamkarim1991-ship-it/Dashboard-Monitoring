@@ -1,4 +1,4 @@
-﻿import { auth } from "@/lib/auth";
+import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getHubScope, type SessionUser } from "@/lib/rbac";
 import { NextResponse } from "next/server";
@@ -29,6 +29,7 @@ export async function GET() {
   const regions = Array.from(regionSet).sort();
 
   return NextResponse.json({
+    success: true,
     hubs: hubs.map((h) => ({
       id: h.id,
       name: h.name,

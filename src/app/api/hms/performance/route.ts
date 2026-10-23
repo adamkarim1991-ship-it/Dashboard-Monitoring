@@ -71,7 +71,8 @@ export async function GET(req: NextRequest) {
     select: { hmsToken: true },
   });
 
-  if (!user?.hmsToken) {
+  const hmsToken = user?.hmsToken || process.env.HMS_TOKEN || null;
+  if (!hmsToken) {
     return NextResponse.json(
       {
         error: "No HMS token",
@@ -81,7 +82,7 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const hmsToken = user.hmsToken;
+  
 
   const fromTs = getTodayStartWIB();
   const toTs = getNowUnix();

@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { signOut } from "next-auth/react";
 import { Button } from "@/components/ui/button";
-import { RefreshCw, LogOut, Wifi } from "lucide-react";
+import { LogOut, Wifi } from "lucide-react";
 import HourlyTab from "./hourly-tab";
 import OngoingCourierTab from "./ongoing-courier-tab";
 import UrgentMonitoringTab from "./urgent-monitoring-tab";
@@ -22,6 +22,11 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "forecast", label: "Forecast" },
 ];
 
+// Jatinegara is the only hub for OCC. Hardcoded fallback so data always loads
+// even when the hub-list endpoint is unavailable.
+const JATINEGARA_HUB_ID = "460450593288";
+const JATINEGARA_HUB_NAME = "GTL Jatinegara Hub";
+
 export type SessionUser = {
   id: string;
   name?: string | null;
@@ -35,28 +40,35 @@ export type SessionUser = {
 export default function OccDashboard({ user }: { user: SessionUser }) {
   const [activeTab, setActiveTab] = useState<TabId>("hourly");
   const [now, setNow] = useState<Date>(new Date());
-  const [hubId, setHubId] = useState<string>("");
-  const [hubName, setHubName] = useState<string>("");
+  const [hubId, setHubId] = useState<string>(JATINEGARA_HUB_ID);
+  const [hubName, setHubName] = useState<string>(JATINEGARA_HUB_NAME);
 
   useEffect(() => {
-    const findJatinegara = async () => {
+    let cancelled = false;
+
+    const resolveHub = async () => {
       try {
         const res = await fetch("/api/hms/hubs");
+        if (!res.ok) return;
         const data = await res.json();
-        if (data.success && data.hubs) {
-          const jtg = data.hubs.find((h: any) =>
-            h.name?.toLowerCase().includes("jatinegara")
-          );
-          if (jtg) {
-            setHubId(jtg.hmsHubId || jtg.id);
-            setHubName(jtg.name);
-          }
+        const list: any[] = Array.isArray(data) ? data : data?.hubs;
+        if (!Array.isArray(list) || list.length === 0) return;
+
+        const jtg = list.find((h: any) =>
+          String(h.name || "").toLowerCase().includes("jatinegara")
+        );
+        const picked = jtg || list[0];
+        if (!cancelled && picked) {
+          setHubId(String(picked.hmsHubId || picked.hms_hub_id || picked.id || JATINEGARA_HUB_ID));
+          setHubName(picked.name || JATINEGARA_HUB_NAME);
         }
-      } catch (e) {
-        console.error("Failed to find Jatinegara hub:", e);
+      } catch {
+        // keep hardcoded Jatinegara fallback
       }
     };
-    findJatinegara();
+
+    resolveHub();
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -73,7 +85,6 @@ export default function OccDashboard({ user }: { user: SessionUser }) {
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
-      {/* HEADER */}
       <header className="bg-[#0a1628] border-b border-blue-900/30">
         <div className="max-w-[1600px] mx-auto px-6 py-3 flex items-center justify-between">
           <div className="flex-1 min-w-0">
@@ -87,10 +98,10 @@ export default function OccDashboard({ user }: { user: SessionUser }) {
               </span>
             </div>
             <h1 className="text-xl font-bold tracking-tight mt-1 text-white">
-              OCC DASHBOARD — JATINEGARA
+              OCC DASHBOARD - JATINEGARA
             </h1>
             <p className="text-[11px] text-gray-400 mt-0.5">
-              {hubName || "Jatinegara Hub"} | Operational date {opDate} | {opTime} WIB
+              {hubName} | Operational date {opDate} | {opTime} WIB
             </p>
           </div>
           <div className="flex items-center gap-3 flex-shrink-0">
@@ -107,7 +118,6 @@ export default function OccDashboard({ user }: { user: SessionUser }) {
         </div>
       </header>
 
-      {/* TAB NAVIGATION */}
       <div className="bg-[#0f1e3d] border-b border-blue-900/30 sticky top-0 z-40">
         <div className="max-w-[1600px] mx-auto px-6">
           <nav className="flex gap-1 overflow-x-auto">
@@ -128,7 +138,6 @@ export default function OccDashboard({ user }: { user: SessionUser }) {
         </div>
       </div>
 
-      {/* TAB CONTENT */}
       <main className="max-w-[1600px] mx-auto">
         {activeTab === "hourly" && <HourlyTab hubId={hubId} hubName={hubName} />}
         {activeTab === "ongoing" && <OngoingCourierTab hubId={hubId} />}

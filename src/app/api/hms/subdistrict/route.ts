@@ -1,4 +1,4 @@
-﻿import { auth } from "@/lib/auth";
+import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -409,7 +409,8 @@ export async function GET(req: NextRequest) {
     where: { id: session.user.id },
     select: { hmsToken: true },
   });
-  if (!user?.hmsToken) {
+  const hmsToken = user?.hmsToken || process.env.HMS_TOKEN || null;
+  if (!hmsToken) {
     return NextResponse.json({ error: "No HMS token" }, { status: 403 });
   }
 
@@ -430,19 +431,19 @@ export async function GET(req: NextRequest) {
   let mainUrgent: any = null;
   try {
     const [allRes, codRes, urgentRes] = await Promise.all([
-      callHMS(user.hmsToken, API_ID_MAIN, {
+      callHMS(hmsToken, API_ID_MAIN, {
         hub_ids: JSON.stringify([HUB_ID]),
         curr_date: currDate,
         payment_types: PAYMENT_TYPES_ALL,
         service_types: SERVICE_TYPES,
       }),
-      callHMS(user.hmsToken, API_ID_MAIN, {
+      callHMS(hmsToken, API_ID_MAIN, {
         hub_ids: JSON.stringify([HUB_ID]),
         curr_date: currDate,
         payment_types: PAYMENT_TYPES_COD,
         service_types: SERVICE_TYPES,
       }),
-      callHMS(user.hmsToken, API_ID_MAIN, {
+      callHMS(hmsToken, API_ID_MAIN, {
         hub_ids: JSON.stringify([HUB_ID]),
         curr_date: currDate,
         payment_types: PAYMENT_TYPES_ALL,
@@ -509,14 +510,14 @@ export async function GET(req: NextRequest) {
     const before12Ts = getTodayWIBUnix(12);
 
     const inboundResult = await fetchOperationalInboundByAwb(
-      user.hmsToken, HUB_NAME, fromTs, toTs
+      hmsToken, HUB_NAME, fromTs, toTs
     );
     const operationalInboundByAwb = inboundResult.inboundByAwb;
     const debugFacilitiesAll = Array.from(inboundResult.debugFacilities).sort();
     const debugChunks = inboundResult.debugChunks;
 
     const allShipments = await fetchShipmentsForAwbs(
-      user.hmsToken, Array.from(operationalInboundByAwb.keys())
+      hmsToken, Array.from(operationalInboundByAwb.keys())
     );
 
     const uniqueMap = new Map<string, any>();

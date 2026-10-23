@@ -389,7 +389,8 @@ export async function GET(req: NextRequest) {
     where: { id: session.user.id },
     select: { hmsToken: true },
   });
-  if (!user?.hmsToken) {
+  const hmsToken = user?.hmsToken || process.env.HMS_TOKEN || null;
+  if (!hmsToken) {
     return NextResponse.json(
       { error: "No HMS token", message: "Buka HMS dulu." },
       { status: 403 }
@@ -425,13 +426,13 @@ export async function GET(req: NextRequest) {
 
     const [mainRes, codRes, cycleRes, opsRes, courierRes, urgentRes, dedicatedMerged, c1Result] =
       await Promise.all([
-        callHMS(user.hmsToken, API_ID_MAIN, {
+        callHMS(hmsToken, API_ID_MAIN, {
           hub_ids: JSON.stringify([HUB_ID]),
           curr_date: currDate,
           payment_types: PAYMENT_TYPES,
           service_types: SERVICE_TYPES,
         }),
-        callHMS(user.hmsToken, API_ID_MAIN, {
+        callHMS(hmsToken, API_ID_MAIN, {
           hub_ids: JSON.stringify([HUB_ID]),
           curr_date: currDate,
           payment_types: PAYMENT_TYPES_COD,
@@ -440,7 +441,7 @@ export async function GET(req: NextRequest) {
           console.warn("[cod] Gagal:", e.message);
           return null;
         }),
-        callHMS(user.hmsToken, API_ID_CYCLE1, {
+        callHMS(hmsToken, API_ID_CYCLE1, {
           hub_id: HUB_ID,
           driver_name: "",
           job_roles: JOB_ROLES_CYCLE,
@@ -449,7 +450,7 @@ export async function GET(req: NextRequest) {
           console.warn("[cycle1] Gagal:", e.message);
           return null;
         }),
-        callHMS(user.hmsToken, API_ID_OPS, {
+        callHMS(hmsToken, API_ID_OPS, {
           hub_ids: JSON.stringify([HUB_ID]),
           curr_date_start: currDate,
           date: todayDate,
@@ -457,7 +458,7 @@ export async function GET(req: NextRequest) {
           console.warn("[ops] Gagal:", e.message);
           return null;
         }),
-        callHMS(user.hmsToken, API_ID_COURIER, {
+        callHMS(hmsToken, API_ID_COURIER, {
           hub_ids: JSON.stringify([HUB_ID]),
           curr_date_start: currDate,
           date: todayDate,
@@ -466,7 +467,7 @@ export async function GET(req: NextRequest) {
           console.warn("[courier] Gagal:", e.message);
           return null;
         }),
-        callHMS(user.hmsToken, API_ID_MAIN, {
+        callHMS(hmsToken, API_ID_MAIN, {
           hub_ids: JSON.stringify([HUB_ID]),
           curr_date: currDate,
           payment_types: PAYMENT_TYPES_URGENT,
@@ -476,14 +477,14 @@ export async function GET(req: NextRequest) {
           console.warn("[urgent] Gagal:", e.message);
           return null;
         }),
-        fetchDedicatedMerged(user.hmsToken, HUB_ID).catch((e) => {
+        fetchDedicatedMerged(hmsToken, HUB_ID).catch((e) => {
           console.warn("[dedicated] Gagal:", e.message);
           return {
             actual: 0, totalPicked: 0, totalDelivered: 0,
             avgPickup: 0, avgDelivered: 0, achievementPct: 0, drivers: [],
           };
         }),
-        computeC1FromInboundScan(user.hmsToken, HUB_NAME).catch((e) => {
+        computeC1FromInboundScan(hmsToken, HUB_NAME).catch((e) => {
           console.warn("[c1c2] Gagal:", e.message);
           return { c1: 0, deliveredBefore12: 0 };
         }),

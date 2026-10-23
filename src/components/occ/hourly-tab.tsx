@@ -82,6 +82,7 @@ export default function HourlyTab({ hubId, hubName }: { hubId: string; hubName: 
   const [subdistricts, setSubdistricts] = useState<SubdistrictRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [subLoading, setSubLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [now, setNow] = useState<Date | null>(null);
   const [mounted, setMounted] = useState(false);
@@ -229,6 +230,17 @@ export default function HourlyTab({ hubId, hubName }: { hubId: string; hubName: 
           </button>
         </div>
       </div>
+
+      {error && (
+        <div className="flex items-start gap-2 rounded border border-red-800 bg-red-950/40 px-4 py-3 text-xs text-red-300">
+          <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+          <div>
+            <p className="font-semibold">Data HMS belum tersedia</p>
+            <p className="mt-0.5 text-red-400/80">{error}</p>
+            <p className="mt-1 text-[10px] text-red-400/60">Pastikan sesi HMS aktif (token tersimpan) atau variabel HMS_TOKEN tersedia di server.</p>
+          </div>
+        </div>
+      )}
 
       {/* ROW 1 - VOLUME CARDS (7 cols) */}
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3">
