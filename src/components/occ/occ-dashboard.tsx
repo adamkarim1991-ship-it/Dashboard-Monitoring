@@ -142,7 +142,7 @@ export default function OccDashboard({ user }: { user: SessionUser }) {
         {activeTab === "hourly" && <HourlyTab hubId={hubId} hubName={hubName} />}
         {activeTab === "ongoing" && <OngoingCourierTab hubId={hubId} />}
         {activeTab === "urgent" && <UrgentMonitoringTab hubId={hubId} />}
-        {activeTab === "aging" && <CekAgingTab />}
+        {activeTab === "aging" && <CekAgingTab hubId={hubId} />}
         {activeTab === "cleanfloor" && <CleanFloorTab hubId={hubId} />}
         {activeTab === "forecast" && <ForecastTab hubId={hubId} />}
       </main>

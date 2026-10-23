@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { RefreshCw, Download } from "lucide-react";
+import { RefreshCw, Download, AlertTriangle } from "lucide-react";
 
 type CourierRow = {
   name: string;
@@ -10,94 +10,192 @@ type CourierRow = {
   totalCarried: number;
   totalFtd: number;
   deliveredPct: number;
+  delivered: number;
 };
 
 type FilterMode = "all" | "below97" | "above97";
 type TabMode = "ongoing" | "top10";
 type SubTabMode = "c1" | "overall";
 
+// Parse HMS timestamps: unix seconds, unix ms, or ISO string
+function parseTs(x: any): number {
+  if (x === null || x === undefined || x === "") return 0;
+  if (typeof x === "number") {
+    if (!x) return 0;
+    return x > 1e12 ? Math.floor(x / 1000) : Math.floor(x);
+  }
+  const str = String(x).trim();
+  if (!str) return 0;
+  if (/^\d+$/.test(str)) {
+    const n = Number(str);
+    return n > 1e12 ? Math.floor(n / 1000) : n;
+  }
+  const t = Date.parse(str);
+  return Number.isFinite(t) ? Math.floor(t / 1000) : 0;
+}
+
+function isFtdStatus(status: string): boolean {
+  const s = String(status || "").toLowerCase();
+  return s === "failed_to_deliver" || s === "ftd" || s.indexOf("failed") >= 0;
+}
+
+function pickDriverName(s: any): string {
+  let drv =
+    (s && s.route && s.route.driver_name) ||
+    s.driver_name ||
+    s.courier_name ||
+    s.assigned_drivers ||
+    "";
+  if (Array.isArray(drv)) drv = drv[0] || "";
+  return String(drv).split(",")[0].trim();
+}
+
+function pickOfdTime(s: any): number {
+  return (
+    parseTs(s?.destination_details?.out_for_delivery_time) ||
+    parseTs(s?.out_for_delivery_time) ||
+    parseTs(s?.pickup_details?.pickup_time) ||
+    parseTs(s?.pickup_time) ||
+    parseTs(s?.picked_at)
+  );
+}
+
+function pickDeliveredTime(s: any): number {
+  return (
+    parseTs(s?.delivered_time) ||
+    parseTs(s?.destination_details?.delivery_time)
+  );
+}
+
 export default function OngoingCourierTab({ hubId }: { hubId: string }) {
   const [couriers, setCouriers] = useState<CourierRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [unassigned, setUnassigned] = useState(0);
   const [filter, setFilter] = useState<FilterMode>("all");
   const [tabMode, setTabMode] = useState<TabMode>("ongoing");
   const [subTab, setSubTab] = useState<SubTabMode>("c1");
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [ftdMap, setFtdMap] = useState<Map<string, number>>(new Map());
+  const [ftdFrozen, setFtdFrozen] = useState(false);
+  const currentDayRef = useRef<string>("");
   const tableRef = useRef<HTMLDivElement>(null);
+
+  const getWIBDateKey = (): string => {
+    const wib = new Date(Date.now() + 7 * 60 * 60 * 1000);
+    return `${wib.getUTCFullYear()}-${String(wib.getUTCMonth() + 1).padStart(2, "0")}-${String(wib.getUTCDate()).padStart(2, "0")}`;
+  };
+
+  const getWIBHourMinute = (): { hour: number; minute: number } => {
+    const wib = new Date(Date.now() + 7 * 60 * 60 * 1000);
+    return { hour: wib.getUTCHours(), minute: wib.getUTCMinutes() };
+  };
+
+  const getOpWindow = () => {
+    const wib = new Date(Date.now() + 7 * 60 * 60 * 1000);
+    const startUTC = Date.UTC(wib.getUTCFullYear(), wib.getUTCMonth(), wib.getUTCDate(), 0, 0, 0);
+    const start = Math.floor((startUTC - 7 * 60 * 60 * 1000) / 1000);
+    return { start, end: start + 86399, eight: start + 8 * 3600, noon: start + 12 * 3600 };
+  };
 
   const fetchData = useCallback(async () => {
     if (!hubId) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/hms/performance?hubId=${hubId}`);
+      const res = await fetch(`/api/hms/performance?hubId=${hubId}&days=2`);
       const d = await res.json();
-      if (d.success && d.shipments) {
+      if (d.success && Array.isArray(d.shipments)) {
         processShipments(d.shipments);
         setLastUpdate(new Date());
+        setError(null);
+      } else {
+        setError(d.message || d.error || `HMS error (HTTP ${res.status})`);
       }
-    } catch (e) { console.error("Courier fetch error:", e); }
-    finally { setLoading(false); }
+    } catch (e) {
+      console.error("Courier fetch error:", e);
+      setError("Tidak dapat menghubungi server HMS.");
+    } finally {
+      setLoading(false);
+    }
   }, [hubId]);
 
   const processShipments = (shipments: any[]) => {
-    const courierMap = new Map<string, {
-      freshC1: number; sd12Delivered: number; totalCarried: number;
-      totalDelivered: number; totalFtd: number;
-    }>();
+    const wibDayKey = getWIBDateKey();
+    const { hour, minute } = getWIBHourMinute();
+    const { start, end, eight, noon } = getOpWindow();
 
-    const todayWIB = new Date(Date.now() + 7 * 60 * 60 * 1000);
-    const todayStart = new Date(Date.UTC(todayWIB.getUTCFullYear(), todayWIB.getUTCMonth(), todayWIB.getUTCDate(), 0, 0, 0));
-    todayStart.setHours(todayStart.getHours() - 7);
-    const todayStartUnix = Math.floor(todayStart.getTime() / 1000);
-    const c1End = new Date(Date.UTC(todayWIB.getUTCFullYear(), todayWIB.getUTCMonth(), todayWIB.getUTCDate(), 8, 0, 0));
-    c1End.setHours(c1End.getHours() - 7);
-    const c1EndUnix = Math.floor(c1End.getTime() / 1000);
-    const noonEnd = new Date(Date.UTC(todayWIB.getUTCFullYear(), todayWIB.getUTCMonth(), todayWIB.getUTCDate(), 12, 0, 0));
-    noonEnd.setHours(noonEnd.getHours() - 7);
-    const noonEndUnix = Math.floor(noonEnd.getTime() / 1000);
+    if (currentDayRef.current && currentDayRef.current !== wibDayKey) {
+      setFtdMap(new Map());
+      setFtdFrozen(false);
+    }
+    currentDayRef.current = wibDayKey;
+
+    const isPast2330 = hour > 23 || (hour === 23 && minute >= 30);
+    const isMidnightReset = hour === 0 && minute < 1;
+    if (isMidnightReset) {
+      setFtdMap(new Map());
+      setFtdFrozen(false);
+    }
+    if (isPast2330 && !isMidnightReset) setFtdFrozen(true);
+
+    type Stat = { freshC1: number; sd12: number; carried: number; delivered: number; ftd: number };
+    const map = new Map<string, Stat>();
+    let noCourier = 0;
 
     for (const s of shipments) {
-      const driverName = s.driver?.name || s.driver_name || s.courier_name || "Unknown";
-      if (!courierMap.has(driverName)) {
-        courierMap.set(driverName, { freshC1: 0, sd12Delivered: 0, totalCarried: 0, totalDelivered: 0, totalFtd: 0 });
-      }
-      const c = courierMap.get(driverName)!;
-      c.totalCarried++;
+      const ofd = pickOfdTime(s);
+      if (!(ofd >= start && ofd <= end)) continue;
 
-      const status = String(s.status || "").toLowerCase().trim();
-      if (status === "delivered") c.totalDelivered++;
-      if (status === "ftd" || status === "failed_to_deliver" || status === "failed") c.totalFtd++;
-
-      const createdAt = typeof s.created_at === "number" ? (s.created_at > 1e12 ? Math.floor(s.created_at / 1000) : s.created_at) : 0;
-      if (createdAt >= todayStartUnix && createdAt < c1EndUnix) {
-        c.freshC1++;
-        if (status === "delivered") {
-          const deliveredAt = typeof s.destination_details?.delivery_time === "number"
-            ? (s.destination_details.delivery_time > 1e12 ? Math.floor(s.destination_details.delivery_time / 1000) : s.destination_details.delivery_time)
-            : 0;
-          if (deliveredAt >= todayStartUnix && deliveredAt < noonEndUnix) c.sd12Delivered++;
-        }
+      const name = pickDriverName(s);
+      if (!name) {
+        noCourier++;
+        continue;
       }
+
+      let st = map.get(name);
+      if (!st) {
+        st = { freshC1: 0, sd12: 0, carried: 0, delivered: 0, ftd: 0 };
+        map.set(name, st);
+      }
+
+      const status = String(s?.status || "").toLowerCase().trim();
+      const deliveredAt = pickDeliveredTime(s);
+      const isDelivered =
+        (deliveredAt >= start && deliveredAt <= end) || status === "delivered";
+      const isC1 = ofd < eight;
+
+      st.carried++;
+      if (isC1) st.freshC1++;
+      if (isDelivered) {
+        st.delivered++;
+        if (isC1 && deliveredAt > 0 && deliveredAt < noon) st.sd12++;
+      }
+      if (isFtdStatus(status)) st.ftd++;
     }
 
     const rows: CourierRow[] = [];
-    for (const [name, data] of courierMap.entries()) {
-      const sd12Pct = data.freshC1 > 0 ? (data.sd12Delivered / data.freshC1) * 100 : 0;
-      const deliveredPct = data.totalCarried > 0 ? (data.totalDelivered / data.totalCarried) * 100 : 0;
-
-      // FTD cumulative - merge with stored FTD
+    for (const [name, st] of map.entries()) {
       const storedFtd = ftdMap.get(name) || 0;
-      const effectiveFtd = Math.max(data.totalFtd, storedFtd);
-      setFtdMap(prev => {
-        const next = new Map(prev);
-        next.set(name, effectiveFtd);
-        return next;
+      const effectiveFtd = isPast2330 ? storedFtd : Math.max(st.ftd, storedFtd);
+      if (!isPast2330) {
+        setFtdMap((prev) => {
+          const next = new Map(prev);
+          next.set(name, effectiveFtd);
+          return next;
+        });
+      }
+      rows.push({
+        name,
+        freshC1: st.freshC1,
+        sd12Pct: st.freshC1 > 0 ? (st.sd12 / st.freshC1) * 100 : 0,
+        totalCarried: st.carried,
+        totalFtd: effectiveFtd,
+        deliveredPct: st.carried > 0 ? (st.delivered / st.carried) * 100 : 0,
+        delivered: st.delivered,
       });
-
-      rows.push({ name, freshC1: data.freshC1, sd12Pct, totalCarried: data.totalCarried, totalFtd: effectiveFtd, deliveredPct });
     }
 
+    setUnassigned(noCourier);
     setCouriers(rows.sort((a, b) => b.totalCarried - a.totalCarried));
   };
 
@@ -107,7 +205,6 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
     return () => clearInterval(t);
   }, [fetchData]);
 
-  // Filter + sort
   const filtered = couriers.filter((c) => {
     if (filter === "all") return true;
     if (filter === "below97") return c.deliveredPct < 97;
@@ -115,16 +212,19 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
     return true;
   });
 
-  const displayed = subTab === "c1" ? filtered.filter(c => c.freshC1 > 0) : filtered;
+  const displayed = subTab === "c1" ? filtered.filter((c) => c.freshC1 > 0) : filtered;
+  const displayList =
+    tabMode === "top10"
+      ? [...displayed].sort((a, b) => b.totalCarried - a.totalCarried).slice(0, 10)
+      : displayed;
 
-  const displayList = tabMode === "top10" ? [...displayed].sort((a, b) => b.totalCarried - a.totalCarried).slice(0, 10) : displayed;
-
-  // Aggregates
-  const totalCarried = couriers.reduce((s, c) => s + c.totalCarried, 0);
-  const totalFreshC1 = couriers.reduce((s, c) => s + c.freshC1, 0);
+  const totalCarried = couriers.reduce((a, c) => a + c.totalCarried, 0);
+  const totalFreshC1 = couriers.reduce((a, c) => a + c.freshC1, 0);
   const totalFreshC2 = totalCarried - totalFreshC1;
-  const avgSd12 = couriers.length > 0 ? couriers.reduce((s, c) => s + c.sd12Pct, 0) / couriers.length : 0;
-  const overallDeliveredPct = totalCarried > 0 ? (couriers.reduce((s, c) => s + (c.totalCarried * c.deliveredPct / 100), 0) / totalCarried * 100) : 0;
+  const totalDelivered = couriers.reduce((a, c) => a + c.delivered, 0);
+  const sd12Numerator = couriers.reduce((a, c) => a + (c.freshC1 * c.sd12Pct) / 100, 0);
+  const hubSd12 = totalFreshC1 > 0 ? (sd12Numerator / totalFreshC1) * 100 : 0;
+  const overallDeliveredPct = totalCarried > 0 ? (totalDelivered / totalCarried) * 100 : 0;
 
   const downloadPNG = async () => {
     if (!tableRef.current) return;
@@ -136,26 +236,37 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
       link.href = canvas.toDataURL();
       link.click();
     } catch {
-      alert("html2canvas not available for PNG export. Run: npm install html2canvas");
+      alert("html2canvas not available for PNG export.");
     }
   };
 
   return (
     <div className="px-6 py-4 space-y-4">
-      {/* Summary Cards */}
+      {error && (
+        <div className="flex items-start gap-2 rounded border border-red-800 bg-red-950/40 px-4 py-3 text-xs text-red-300">
+          <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+          <div>
+            <p className="font-semibold">Data kurir belum tersedia</p>
+            <p className="mt-0.5 text-red-400/80">{error}</p>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <SummaryCard label="Total Carried" value={totalCarried.toLocaleString("id-ID")} sub={`C1: ${totalFreshC1} | C2: ${totalFreshC2}`} accent="blue" />
-        <SummaryCard label="SD < 12PM %" value={`${avgSd12.toFixed(1)}%`} sub="Hub aggregate" accent="green" />
-        <SummaryCard label="C1 / C2 Split" value={`${totalFreshC1} / ${totalFreshC2}`} sub={totalCarried > 0 ? `C1: ${((totalFreshC1/totalCarried)*100).toFixed(0)}% · C2: ${((totalFreshC2/totalCarried)*100).toFixed(0)}%` : ""} accent="purple" />
-        <SummaryCard label="Overall Delivered %" value={`${overallDeliveredPct.toFixed(1)}%`} sub={`${couriers.reduce((s,c)=>s+(c.totalCarried*c.deliveredPct/100),0).toFixed(0)} / ${totalCarried}`} accent="green" />
+        <SummaryCard label="SD < 12PM %" value={`${hubSd12.toFixed(1)}%`} sub="Hub aggregate (C1)" accent="green" />
+        <SummaryCard label="C1 / C2 Split" value={`${totalFreshC1} / ${totalFreshC2}`} sub={totalCarried > 0 ? `C1: ${((totalFreshC1 / totalCarried) * 100).toFixed(0)}% · C2: ${((totalFreshC2 / totalCarried) * 100).toFixed(0)}%` : ""} accent="purple" />
+        <SummaryCard label="Overall Delivered %" value={`${overallDeliveredPct.toFixed(1)}%`} sub={`${totalDelivered} / ${totalCarried}`} accent="green" />
       </div>
 
-      {/* Controls */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
           <FilterBtn active={filter === "all"} onClick={() => setFilter("all")}>All</FilterBtn>
           <FilterBtn active={filter === "below97"} onClick={() => setFilter("below97")}>Below 97%</FilterBtn>
           <FilterBtn active={filter === "above97"} onClick={() => setFilter("above97")}>Above 97%</FilterBtn>
+          {unassigned > 0 && (
+            <span className="text-[10px] text-gray-500">+{unassigned} paket tanpa kurir</span>
+          )}
         </div>
         <div className="flex gap-2 items-center">
           <div className="flex rounded overflow-hidden border border-slate-600">
@@ -175,7 +286,6 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
         </div>
       </div>
 
-      {/* Table */}
       <div ref={tableRef} className="overflow-hidden rounded-lg border border-slate-700 bg-slate-900">
         <div className="overflow-x-auto">
           <table className="w-full text-xs text-slate-200">
@@ -191,9 +301,9 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
             </thead>
             <tbody>
               {displayList.length === 0 ? (
-                <tr><td colSpan={6} className="py-8 text-center text-slate-500">{loading ? "Loading..." : "No courier data"}</td></tr>
+                <tr><td colSpan={6} className="py-8 text-center text-slate-500">{loading ? "Loading..." : "Tidak ada data kurir untuk periode ini"}</td></tr>
               ) : (
-                displayList.map((c, i) => (
+                displayList.map((c) => (
                   <tr key={c.name} className="border-b border-slate-800 hover:bg-slate-800/50">
                     <td className="px-4 py-2.5 font-semibold text-white">{c.name}</td>
                     <td className="px-4 py-2.5 text-right tabular-nums">{c.freshC1.toLocaleString("id-ID")}</td>
@@ -216,7 +326,7 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
       </div>
 
       <p className="text-center text-[10px] text-gray-500 py-2">
-        Live courier tracking | Auto-refresh 60s | FTD cumulative (never decreases) | {lastUpdate ? `Last: ${lastUpdate.toLocaleTimeString("id-ID")}` : ""}
+        Live courier tracking | Auto-refresh 60s | FTD cumulative (never decreases){ftdFrozen ? " | FTD FROZEN at 23:30 WIB" : ""} | {lastUpdate ? `Last: ${lastUpdate.toLocaleTimeString("id-ID")}` : ""}
       </p>
     </div>
   );

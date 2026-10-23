@@ -29,7 +29,7 @@ export default function UrgentMonitoringTab({ hubId }: { hubId: string }) {
           const isUrgent = s.is_urgent === "true" || s.is_urgent === true || s.urgent === "true" || s.urgent === true || s.service_type === "SDS";
           if (isUrgent) {
             const status = String(s.status || "Unknown");
-            const driverName = s.driver?.name || s.driver_name || s.courier_name || "-";
+            const driverName = s.route?.driver_name || s.driver?.name || s.driver_name || s.courier_name || "-";
             urgentList.push({ awb: s.awb_number || "-", status, driverName });
             if (status.toLowerCase() === "delivered") del++;
           }
