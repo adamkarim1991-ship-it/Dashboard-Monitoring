@@ -1,10 +1,11 @@
-﻿import { auth } from "@/lib/auth";
+import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { dbRead, dbWrite } from "@/lib/db-safe";
+import { storePushedToken } from "@/lib/hms-context";
+import { readTokenChunkCount, writeTokenCookies } from "@/lib/hms-token-store";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
-  console.log("=== HIT /api/user/set-token ===");
-
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -31,42 +32,72 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const current = await prisma.user.findUnique({
-    where: { id: session.user.id },
-    select: { hmsToken: true, hmsRefreshToken: true, hmsTokenExpiresAt: true },
+  const expiresAt =
+    typeof hmsTokenExpiresAt === "number" && Number.isFinite(hmsTokenExpiresAt)
+      ? hmsTokenExpiresAt
+      : null;
+
+  // Always make the token usable for this origin first: dashboards read it from
+  // the cookie / instance cache, which keeps working when the database is down.
+  const entry = storePushedToken(session.user.id, {
+    token: hmsToken,
+    refreshToken: hmsRefreshToken ?? null,
+    expiresAt,
   });
 
-  const newExpires = hmsTokenExpiresAt ? new Date(hmsTokenExpiresAt) : null;
+  const current = await dbRead(
+    () =>
+      prisma.user.findUnique({
+        where: { id: session.user.id },
+        select: { hmsToken: true, hmsRefreshToken: true, hmsTokenExpiresAt: true },
+      }),
+    null,
+    "user.findUnique"
+  );
 
-  if (
-    current?.hmsTokenExpiresAt &&
-    newExpires &&
-    current.hmsTokenExpiresAt > newExpires
-  ) {
-    console.log(`[set-token] SKIP - DB fresher`);
-    return NextResponse.json({ success: true, skipped: true });
+  const newExpires = expiresAt ? new Date(expiresAt) : null;
+  const dbIsFresher =
+    !!current?.hmsTokenExpiresAt &&
+    !!newExpires &&
+    current.hmsTokenExpiresAt > newExpires &&
+    !!current.hmsToken;
+
+  let persisted = false;
+  let persistError: string | undefined;
+
+  if (dbIsFresher) {
+    persisted = true;
+  } else {
+    const data: Record<string, unknown> = {
+      hmsToken,
+      hmsTokenUpdatedAt: new Date(),
+    };
+
+    const accessTokenChanged = current?.hmsToken !== hmsToken;
+    if (hmsRefreshToken && (!current?.hmsRefreshToken || accessTokenChanged)) {
+      data.hmsRefreshToken = hmsRefreshToken;
+      data.hmsRefreshTokenUpdatedAt = new Date();
+    }
+    if (newExpires) data.hmsTokenExpiresAt = newExpires;
+
+    const write = await dbWrite(
+      () => prisma.user.update({ where: { id: session.user.id }, data }),
+      "user.update.hmsToken"
+    );
+    persisted = write.ok;
+    if (!write.ok) persistError = write.error;
   }
 
-  const data: any = {
-    hmsToken,
-    hmsTokenUpdatedAt: new Date(),
-  };
-
-  const accessTokenChanged = current?.hmsToken !== hmsToken;
-  if (hmsRefreshToken && (!current?.hmsRefreshToken || accessTokenChanged)) {
-    data.hmsRefreshToken = hmsRefreshToken;
-    data.hmsRefreshTokenUpdatedAt = new Date();
+  if (persistError) {
+    console.warn(`[set-token] DB write skipped for ${session.user.id}: ${persistError}`);
   }
 
-  if (newExpires) {
-    data.hmsTokenExpiresAt = newExpires;
-  }
-
-  await prisma.user.update({
-    where: { id: session.user.id },
-    data,
+  const res = NextResponse.json({
+    success: true,
+    persisted,
+    storage: persisted ? "database" : "cookie",
   });
 
-  console.log(`[set-token] Updated user ${session.user.id}`);
-  return NextResponse.json({ success: true });
+  writeTokenCookies(res, entry, readTokenChunkCount(req));
+  return res;
 }

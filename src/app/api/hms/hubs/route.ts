@@ -1,5 +1,6 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { dbRead } from "@/lib/db-safe";
 import { getHubScope, type SessionUser } from "@/lib/rbac";
 import { NextResponse } from "next/server";
 
@@ -11,16 +12,46 @@ export async function GET() {
 
   const user = session.user as SessionUser;
 
-  const hubs = await prisma.hub.findMany({
-    where: getHubScope(user),
-    include: { cluster: true },
-    orderBy: { name: "asc" },
-  });
+  const hubs = await dbRead(
+    () =>
+      prisma.hub.findMany({
+        where: getHubScope(user),
+        include: { cluster: true },
+        orderBy: { name: "asc" },
+      }),
+    [],
+    "hub.findMany"
+  );
 
-  const clusters = await prisma.cluster.findMany({
-    where: { id: { in: user.clusterIds } },
-    orderBy: { name: "asc" },
-  });
+  if (hubs.length === 0) {
+    // Database unavailable: the JWT already carries the user's hub membership.
+    const sessionHubs = (user.hubs ?? []).map((h) => ({
+      id: h.id,
+      name: h.name,
+      hmsHubId: h.hmsHubId,
+      region: "",
+      clusterId: "",
+      clusterName: "",
+    }));
+
+    return NextResponse.json({
+      success: true,
+      degraded: true,
+      hubs: sessionHubs,
+      clusters: [],
+      regions: [],
+    });
+  }
+
+  const clusters = await dbRead(
+    () =>
+      prisma.cluster.findMany({
+        where: { id: { in: user.clusterIds } },
+        orderBy: { name: "asc" },
+      }),
+    [],
+    "cluster.findMany"
+  );
 
   const regionSet = new Set<string>();
   hubs.forEach((h) => {
@@ -36,7 +67,7 @@ export async function GET() {
       hmsHubId: h.hmsHubId,
       region: h.region,
       clusterId: h.clusterId,
-      clusterName: h.cluster.name,
+      clusterName: h.cluster?.name ?? "",
     })),
     clusters: clusters.map((c) => ({ id: c.id, name: c.name })),
     regions,

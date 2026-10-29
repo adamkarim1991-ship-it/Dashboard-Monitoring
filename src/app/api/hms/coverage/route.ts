@@ -1,5 +1,7 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { dbRead } from "@/lib/db-safe";
+import { resolveHmsToken } from "@/lib/hms-context";
 import { buildHmsHeaders } from '@/lib/hms-headers';
 import { refreshHmsToken } from '@/lib/hms-client';
 import { NextRequest, NextResponse } from "next/server";
@@ -552,19 +554,22 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const userHubs = await prisma.userHub.findMany({
-    where: { userId: session.user.id },
-    include: { hub: true },
-  });
+  const hubRows = await dbRead(
+    () => prisma.userHub.findMany({ where: { userId: session.user.id }, include: { hub: true } }),
+    [],
+    "userHub.findMany"
+  );
+  const userHubs =
+    hubRows.length > 0
+      ? hubRows
+      : (session.user.hubs ?? []).map((hub) => ({ hub }));
+
   if (userHubs.length === 0) {
     return NextResponse.json({ error: "No hub access" }, { status: 403 });
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
-    select: { hmsToken: true },
-  });
-  if (!user?.hmsToken) {
+  const { token: hmsToken } = await resolveHmsToken(req, session.user.id, session.user);
+  if (!hmsToken) {
     return NextResponse.json(
       { error: "No HMS token", message: "Buka HMS dulu." },
       { status: 403 }
@@ -575,13 +580,18 @@ export async function GET(req: NextRequest) {
   const todayDate = getTodayDate();
   const currentHour = getCurrentWIBHour();
 
-  const cleanFloorRows = await prisma.cleanFloorSnapshot.findMany({
-    where: {
-      facility: { in: userHubs.map((uh) => uh.hub.hmsHubId) },
-      date: todayDate,
-    },
-    select: { facility: true, value: true },
-  });
+  const cleanFloorRows = await dbRead(
+    () =>
+      prisma.cleanFloorSnapshot.findMany({
+        where: {
+          facility: { in: userHubs.map((uh) => uh.hub.hmsHubId) },
+          date: todayDate,
+        },
+        select: { facility: true, value: true },
+      }),
+    [] as Array<{ facility: string; value: number }>,
+    "cleanFloorSnapshot.findMany"
+  );
   const cleanFloorMap = new Map<string, number>();
   for (const row of cleanFloorRows) {
     cleanFloorMap.set(row.facility, parseFloat(row.value.toFixed(2)));
@@ -589,7 +599,7 @@ export async function GET(req: NextRequest) {
 
   const results = await fetchInBatches(
     userHubs.map((uh) => ({ hubId: uh.hub.hmsHubId, hubName: uh.hub.name })),
-    user.hmsToken,
+    hmsToken,
     currDate,
     todayDate,
     2,

@@ -1,5 +1,7 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { dbRead, dbWrite } from "@/lib/db-safe";
+import { resolveActiveHub, resolveHmsToken } from "@/lib/hms-context";
 import { NextRequest, NextResponse } from "next/server";
 
 const REFRESH_WINDOW_MS = 30 * 60 * 1000;
@@ -143,24 +145,6 @@ function getShipmentStatus(status: unknown) {
     return "failed";
   }
   return null;
-}
-
-async function resolveActiveHub(
-  userId: string,
-  requestedHmsHubId: string | null
-) {
-  const userHubs = await prisma.userHub.findMany({
-    where: { userId },
-    include: { hub: true },
-  });
-  if (userHubs.length === 0) return null;
-  if (requestedHmsHubId) {
-    const match = userHubs.find(
-      (uh) => uh.hub.hmsHubId === requestedHmsHubId
-    );
-    if (match) return match.hub;
-  }
-  return userHubs[0].hub;
 }
 
 async function fetchShipmentsPage(
@@ -316,9 +300,11 @@ async function getCleanFloor(
   const snapshotKey = { facility: hmsHubId, date: wib.date };
 
   if (wib.hour >= 8) {
-    const existing = await prisma.cleanFloorSnapshot.findUnique({
-      where: { facility_date: snapshotKey },
-    });
+    const existing = await dbRead(
+      () => prisma.cleanFloorSnapshot.findUnique({ where: { facility_date: snapshotKey } }),
+      null,
+      "cleanFloorSnapshot.findUnique"
+    );
     if (existing) {
       return {
         value: parseFloat(existing.value.toFixed(2)),
@@ -355,47 +341,38 @@ async function getCleanFloor(
     };
   }
 
-  try {
-    const created = await prisma.cleanFloorSnapshot.create({
-      data: {
-        ...snapshotKey, value, numerator, denominator: todayVolume,
-        delivered, ongoing, ftd, others,
-      },
-    });
-    return {
-      value: parseFloat(created.value.toFixed(2)),
-      breakdown: {
-        delivered: created.delivered, ongoing: created.ongoing,
-        ftd: created.ftd, others: created.others,
-        pending: 0, today_volume: created.denominator,
-        numerator: created.numerator,
-      },
-      is_locked: true, locked_at: lockedAt,
-      quality: "accurate" as const,
-      captured_at: created.capturedAt.toISOString(),
-    };
-  } catch (error: any) {
-    if (error.code === "P2002") {
-      const existing = await prisma.cleanFloorSnapshot.findUnique({
-        where: { facility_date: snapshotKey },
-      });
-      if (existing) {
-        return {
-          value: parseFloat(existing.value.toFixed(2)),
-          breakdown: {
-            delivered: existing.delivered, ongoing: existing.ongoing,
-            ftd: existing.ftd, others: existing.others,
-            pending: 0, today_volume: existing.denominator,
-            numerator: existing.numerator,
-          },
-          is_locked: true, locked_at: lockedAt,
-          quality: "accurate" as const,
-          captured_at: existing.capturedAt.toISOString(),
-        };
-      }
-    }
-    throw error;
-  }
+  const liveCleanFloor = {
+    value: parseFloat(value.toFixed(2)),
+    breakdown: { delivered, ongoing, ftd, others, pending, today_volume: todayVolume, numerator },
+    is_locked: false, locked_at: lockedAt,
+    quality: "live" as const, captured_at: new Date().toISOString(),
+  };
+
+  const created = await dbWrite(
+    () =>
+      prisma.cleanFloorSnapshot.create({
+        data: {
+          ...snapshotKey, value, numerator, denominator: todayVolume,
+          delivered, ongoing, ftd, others,
+        },
+      }),
+    "cleanFloorSnapshot.create"
+  );
+
+  if (!created.ok) return liveCleanFloor;
+
+  return {
+    value: parseFloat(created.value.value.toFixed(2)),
+    breakdown: {
+      delivered: created.value.delivered, ongoing: created.value.ongoing,
+      ftd: created.value.ftd, others: created.value.others,
+      pending: 0, today_volume: created.value.denominator,
+      numerator: created.value.numerator,
+    },
+    is_locked: true, locked_at: lockedAt,
+    quality: "accurate" as const,
+    captured_at: created.value.capturedAt.toISOString(),
+  };
 }
 
 export async function GET(req: NextRequest) {
@@ -405,17 +382,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
-    select: { hmsToken: true },
-  });
-  const hmsToken = user?.hmsToken || process.env.HMS_TOKEN || null;
+  const { token: hmsToken } = await resolveHmsToken(req, session.user.id, session.user);
   if (!hmsToken) {
     return NextResponse.json({ error: "No HMS token" }, { status: 403 });
   }
 
   const requestedHubId = req.nextUrl.searchParams.get("hubId");
-  const activeHub = await resolveActiveHub(session.user.id, requestedHubId);
+  const activeHub = await resolveActiveHub(session.user.id, requestedHubId, session.user);
   if (!activeHub) {
     return NextResponse.json({ error: "No hub access" }, { status: 403 });
   }

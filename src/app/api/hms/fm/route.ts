@@ -1,5 +1,5 @@
 import { auth } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { resolveHmsToken } from "@/lib/hms-context";
 import { NextRequest, NextResponse } from "next/server";
 
 const JATINEGARA_HUB = "GTL Jatinegara Hub";
@@ -106,12 +106,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
-    select: { hmsToken: true },
-  });
-
-  const hmsToken = user?.hmsToken || process.env.HMS_TOKEN || null;
+  const { token: hmsToken } = await resolveHmsToken(req, session.user.id, session.user);
   if (!hmsToken) {
     return NextResponse.json(
       { error: "No HMS token", message: "Buka HMS di tab lain untuk sync token." },

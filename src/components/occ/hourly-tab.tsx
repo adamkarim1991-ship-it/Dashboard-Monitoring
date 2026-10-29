@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { RefreshCw, Info, CheckCircle2, Wifi, Lock, AlertTriangle } from "lucide-react";
+import { fetchDashboardJson } from "@/lib/client-fetch";
 
 // ── Types ──
 type SummaryResponse = {
@@ -98,9 +99,8 @@ export default function HourlyTab({ hubId, hubName }: { hubId: string; hubName: 
     if (!hubId) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/hms/summary?hubId=${hubId}`);
-      const d = await res.json();
-      if (d.success) {
+      const d = await fetchDashboardJson<any>(`/api/hms/summary?hubId=${hubId}`);
+      if (d?.success) {
         setSummary(d.summary);
         setLastUpdate(new Date());
       }
@@ -112,9 +112,8 @@ export default function HourlyTab({ hubId, hubName }: { hubId: string; hubName: 
     if (!hubId) return;
     setSubLoading(true);
     try {
-      const res = await fetch(`/api/hms/subdistrict?hubId=${hubId}`);
-      const d = await res.json();
-      if (d.success) setSubdistricts(d.subdistricts || []);
+      const d = await fetchDashboardJson<any>(`/api/hms/subdistrict?hubId=${hubId}`);
+      if (d?.success) setSubdistricts(d.subdistricts || []);
     } catch (e) { console.error("Subdistrict fetch error:", e); }
     finally { setSubLoading(false); }
   }, [hubId]);

@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   ArrowLeft,
 } from "lucide-react";
+import { fetchDashboardJson } from "@/lib/client-fetch";
 
 type AppRole = "MANAGER" | "SPV" | "HUB_LEAD";
 
@@ -203,9 +204,10 @@ export default function DashboardView({
     setLoading(true);
     try {
       const activeHubId = hubId || user.hmsHubIds?.[0] || "";
-      const res = await fetch(`/api/hms/summary${activeHubId ? `?hubId=${activeHubId}` : ""}`);
-      const d = await res.json();
-      if (d.success) {
+      const d = await fetchDashboardJson<any>(
+        `/api/hms/summary${activeHubId ? `?hubId=${activeHubId}` : ""}`
+      );
+      if (d?.success) {
         setSummary(d.summary);
         if (d.summary.clean_floor) setCleanFloor(d.summary.clean_floor);
         if (d.summary.dedicated_actual !== undefined) {
@@ -250,9 +252,10 @@ export default function DashboardView({
     setSubLoading(true);
     try {
       const activeHubId = hubId || user.hmsHubIds?.[0] || "";
-      const res = await fetch(`/api/hms/subdistrict${activeHubId ? `?hubId=${activeHubId}` : ""}`);
-      const d = await res.json();
-      if (d.success) {
+      const d = await fetchDashboardJson<any>(
+        `/api/hms/subdistrict${activeHubId ? `?hubId=${activeHubId}` : ""}`
+      );
+      if (d?.success) {
         setSubdistricts(d.subdistricts || []);
         if (d.cod) setCod(d.cod);
         if (d.urgent) setUrgent(d.urgent);

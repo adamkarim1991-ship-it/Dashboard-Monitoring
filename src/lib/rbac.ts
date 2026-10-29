@@ -7,6 +7,8 @@ export type SessionUser = {
   role: AppRole;
   hubIds: string[];
   clusterIds: string[];
+  // Carried in the JWT so hub listing still works when the DB is unreachable.
+  hubs?: { id: string; name: string; hmsHubId: string; role?: string }[];
 };
 
 export function getHubScope(user: SessionUser) {

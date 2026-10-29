@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { Lock, RefreshCw } from "lucide-react";
+import { fetchDashboardJson } from "@/lib/client-fetch";
 
 type CleanFloorData = {
   value: number;
@@ -35,9 +36,8 @@ export default function CleanFloorTab({ hubId }: { hubId: string }) {
     if (!hubId) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/hms/summary?hubId=${hubId}`);
-      const d = await res.json();
-      if (d.success && d.summary) {
+      const d = await fetchDashboardJson<any>(`/api/hms/summary?hubId=${hubId}`);
+      if (d?.success && d.summary) {
         const s = d.summary;
         setSnapshot({
           cleanFloor: s.clean_floor || null,

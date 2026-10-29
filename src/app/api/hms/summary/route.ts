@@ -1,5 +1,7 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { dbRead, dbWrite } from "@/lib/db-safe";
+import { resolveActiveHub, resolveHmsToken } from "@/lib/hms-context";
 import { buildHmsHeaders } from '@/lib/hms-headers';
 import { NextRequest, NextResponse } from "next/server";
 
@@ -279,24 +281,6 @@ async function computeC1FromInboundScan(hmsToken: string, hubName: string) {
   return { c1: uniqueFreshC1Tasks.length, deliveredBefore12 };
 }
 
-async function resolveActiveHub(
-  userId: string,
-  requestedHmsHubId: string | null
-) {
-  const userHubs = await prisma.userHub.findMany({
-    where: { userId },
-    include: { hub: true },
-  });
-  if (userHubs.length === 0) return null;
-  if (requestedHmsHubId) {
-    const match = userHubs.find(
-      (uh) => uh.hub.hmsHubId === requestedHmsHubId
-    );
-    if (match) return match.hub;
-  }
-  return userHubs[0].hub;
-}
-
 async function fetchDedicatedMerged(token: string, hubId: string) {
   const result = {
     actual: 0, totalPicked: 0, totalDelivered: 0,
@@ -385,11 +369,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
-    select: { hmsToken: true },
-  });
-  const hmsToken = user?.hmsToken || process.env.HMS_TOKEN || null;
+  const { token: hmsToken } = await resolveHmsToken(req, session.user.id, session.user);
   if (!hmsToken) {
     return NextResponse.json(
       { error: "No HMS token", message: "Buka HMS dulu." },
@@ -398,7 +378,7 @@ export async function GET(req: NextRequest) {
   }
 
   const requestedHubId = req.nextUrl.searchParams.get("hubId");
-  const activeHub = await resolveActiveHub(session.user.id, requestedHubId);
+  const activeHub = await resolveActiveHub(session.user.id, requestedHubId, session.user);
   if (!activeHub) {
     return NextResponse.json({ error: "No hub access" }, { status: 403 });
   }
@@ -582,44 +562,57 @@ const cleanFloorValue = cleanFloorTodayVolume > 0
         quality: "live" as const, captured_at: new Date().toISOString(),
       };
     } else {
-      const existing = await prisma.cleanFloorSnapshot.findUnique({
-        where: { facility_date: snapshotKey },
+      const liveCleanFloor = () => ({
+        value: parseFloat(cleanFloorValue.toFixed(2)),
+        breakdown: {
+          delivered: cleanFloorDelivered, ongoing: cleanFloorOngoing,
+          ftd: cleanFloorFtd, others: cleanFloorOthers,
+          pending: Number(main.pending_at_hub) || 0,
+          today_volume: volumeOverall, numerator: cleanFloorNumerator,
+        },
+        is_locked: false, locked_at: lockedAt,
+        quality: "live" as const, captured_at: new Date().toISOString(),
       });
+
+      const existing = await dbRead(
+        () => prisma.cleanFloorSnapshot.findUnique({ where: { facility_date: snapshotKey } }),
+        null,
+        "cleanFloorSnapshot.findUnique"
+      );
       if (existing) {
         const expectedNumerator = cleanFloorTodayVolume - cleanFloorPendingAtHub;
         const isStale = Math.abs(existing.numerator - expectedNumerator) > 1;
         if (isStale) {
-          const updated = await prisma.cleanFloorSnapshot.update({
-            where: { facility_date: snapshotKey },
-            data: { value: cleanFloorValue, numerator: expectedNumerator, denominator: cleanFloorTodayVolume },
-          });
-          cleanFloor = formatLockedSnapshot(updated);
+          const updated = await dbWrite(
+            () =>
+              prisma.cleanFloorSnapshot.update({
+                where: { facility_date: snapshotKey },
+                data: { value: cleanFloorValue, numerator: expectedNumerator, denominator: cleanFloorTodayVolume },
+              }),
+            "cleanFloorSnapshot.update"
+          );
+          cleanFloor = formatLockedSnapshot(updated.ok ? updated.value : existing);
         } else {
           cleanFloor = formatLockedSnapshot(existing);
         }
       } else {
-        try {
-          const created = await prisma.cleanFloorSnapshot.create({
-            data: {
-              ...snapshotKey,
-              value: cleanFloorValue,
-              numerator: cleanFloorNumerator,
-              denominator: cleanFloorTodayVolume,
-              delivered: cleanFloorDelivered,
-              ongoing: cleanFloorOngoing,
-              ftd: cleanFloorFtd,
-              others: cleanFloorOthers,
-            },
-          });
-          cleanFloor = formatLockedSnapshot(created);
-        } catch (error: any) {
-          if (error.code !== "P2002") throw error;
-          const winner = await prisma.cleanFloorSnapshot.findUnique({
-            where: { facility_date: snapshotKey },
-          });
-          if (!winner) throw error;
-          cleanFloor = formatLockedSnapshot(winner);
-        }
+        const created = await dbWrite(
+          () =>
+            prisma.cleanFloorSnapshot.create({
+              data: {
+                ...snapshotKey,
+                value: cleanFloorValue,
+                numerator: cleanFloorNumerator,
+                denominator: cleanFloorTodayVolume,
+                delivered: cleanFloorDelivered,
+                ongoing: cleanFloorOngoing,
+                ftd: cleanFloorFtd,
+                others: cleanFloorOthers,
+              },
+            }),
+          "cleanFloorSnapshot.create"
+        );
+        cleanFloor = created.ok ? formatLockedSnapshot(created.value) : liveCleanFloor();
       }
     }
 

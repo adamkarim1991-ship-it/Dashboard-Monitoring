@@ -1,5 +1,5 @@
 import { auth } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { resolveHmsToken } from "@/lib/hms-context";
 import { NextRequest, NextResponse } from "next/server";
 
 // Helper: hitung 00:00 WIB hari ini dalam unix timestamp (detik)
@@ -65,13 +65,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Ambil HMS token user dari DB
-  const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
-    select: { hmsToken: true },
-  });
-
-  const hmsToken = user?.hmsToken || process.env.HMS_TOKEN || null;
+  // Ambil HMS token (cookie / memory / DB / env)
+  const { token: hmsToken } = await resolveHmsToken(req, session.user.id, session.user);
   if (!hmsToken) {
     return NextResponse.json(
       {

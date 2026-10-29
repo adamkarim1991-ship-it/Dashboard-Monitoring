@@ -1,5 +1,5 @@
 import { auth } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { resolveHmsToken } from "@/lib/hms-context";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
@@ -11,12 +11,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
-    select: { hmsToken: true },
-  });
+  const { token: hmsToken } = await resolveHmsToken(req, session.user.id, session.user);
 
-  if (!user?.hmsToken) {
+  if (!hmsToken) {
     return NextResponse.json({ error: "No HMS token" }, { status: 403 });
   }
 
@@ -37,7 +34,7 @@ export async function POST(req: NextRequest) {
     const res = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${user.hmsToken}`,
+        Authorization: `Bearer ${hmsToken}`,
         "Content-Type": "application/json",
         Accept: "application/json, text/plain, */*",
         Origin: "https://gtl-id.tokgistic.com",

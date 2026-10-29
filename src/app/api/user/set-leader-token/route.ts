@@ -1,5 +1,6 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { dbWrite } from "@/lib/db-safe";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
@@ -38,14 +39,16 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  await prisma.user.update({
-    where: { id: session.user.id },
-    data: {
-      leaderHmsToken,
-    },
-  });
+  const write = await dbWrite(
+    () =>
+      prisma.user.update({
+        where: { id: session.user.id },
+        data: {
+          leaderHmsToken,
+        },
+      }),
+    "user.update.leaderHmsToken"
+  );
 
-  console.log(`[set-leader-token] Leader token saved for user ${session.user.id}`);
-
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, persisted: write.ok });
 }

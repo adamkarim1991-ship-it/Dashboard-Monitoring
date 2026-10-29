@@ -1,5 +1,5 @@
 import { auth } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { resolveHmsToken } from "@/lib/hms-context";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(req: NextRequest) {
@@ -8,13 +8,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Ambil token HMS milik user dari database
-  const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
-    select: { hmsToken: true, hmsTokenUpdatedAt: true },
-  });
+  // Ambil token HMS (cookie / memory / database / env)
+  const { token: hmsToken } = await resolveHmsToken(req, session.user.id, session.user);
 
-  if (!user?.hmsToken) {
+  if (!hmsToken) {
     return NextResponse.json(
       {
         error: "No HMS token",
@@ -45,7 +42,7 @@ export async function GET(req: NextRequest) {
 
   const hmsRes = await fetch(url.toString(), {
     headers: {
-      Authorization: `Bearer ${user.hmsToken}`,
+      Authorization: `Bearer ${hmsToken}`,
       Accept: "application/json, text/plain, */*",
       "Accept-Language": "en",
       Origin: "https://gtl-id.tokgistic.com",
