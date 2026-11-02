@@ -72,7 +72,17 @@ type SummaryResponse = {
   cod_just_arrived?: number;
   cod_backlog?: number;
   cod_total_volume?: number;
+  cod_ftd?: number;
+  cod_delivered?: number;
   cod_fd?: number;
+  urgent_ftd?: number;
+  pending_48h_pct?: number;
+  pending_48h_total?: number;
+  pending_48h_attempt_zero?: number;
+  pending_48h_attempt_one?: number;
+  pending_48h_attempt_more?: number;
+  pending_48h_volume?: number;
+  pending_72h_total?: number;
   fetched_at: string;
   clean_floor: CleanFloorData;
   dedicated_actual?: number;
@@ -107,7 +117,17 @@ type SortDirection = "asc" | "desc";
 type CodData = {
   total: number;
   ready_to_return: number;
+  ftd: number;
   fd_percentage: number;
+};
+
+type Pending48hData = {
+  pct: number;
+  total: number;
+  attempt_zero: number;
+  attempt_one: number;
+  attempt_more: number;
+  volume: number;
 };
 
 type UrgentData = {
@@ -162,7 +182,16 @@ export default function DashboardView({
   const [cod, setCod] = useState<CodData>({
     total: 0,
     ready_to_return: 0,
+    ftd: 0,
     fd_percentage: 0,
+  });
+  const [pending48h, setPending48h] = useState<Pending48hData>({
+    pct: 0,
+    total: 0,
+    attempt_zero: 0,
+    attempt_one: 0,
+    attempt_more: 0,
+    volume: 0,
   });
   const [dedicated, setDedicated] = useState<DedicatedData>({
     actual: 0,
@@ -222,22 +251,35 @@ export default function DashboardView({
             drivers: d.summary.dedicated_drivers || [],
           });
         }
-        if (!showSubdistrict) {
-          if (d.summary.cod_total_volume !== undefined) {
-            setCod({
-              total: d.summary.cod_total_volume || 0,
-              ready_to_return: d.summary.cod_ready_to_return || 0,
-              fd_percentage: d.summary.cod_fd || 0,
-            });
-          }
-          if (d.summary.urgent_total !== undefined) {
-            setUrgent({
-              total: d.summary.urgent_total || 0,
-              delivered: d.summary.urgent_delivered || 0,
-              failed: (d.summary.urgent_total || 0) - (d.summary.urgent_delivered || 0),
-              delivered_percentage: d.summary.urgent_pct || 0,
-            });
-          }
+        // Urgent / COD / Pending 48H always come straight from the summary
+        // route: it is the only source that applies the HMS OPC filters
+        // (is_urgent=yes, payment_types=[cod], aging 48h). The subdistrict
+        // route stays the source for the per-district table only.
+        if (d.summary.cod_total_volume !== undefined) {
+          setCod({
+            total: d.summary.cod_total_volume || 0,
+            ready_to_return: d.summary.cod_ready_to_return || 0,
+            ftd: d.summary.cod_ftd || 0,
+            fd_percentage: d.summary.cod_fd || 0,
+          });
+        }
+        if (d.summary.urgent_total !== undefined) {
+          setUrgent({
+            total: d.summary.urgent_total || 0,
+            delivered: d.summary.urgent_delivered || 0,
+            failed: (d.summary.urgent_total || 0) - (d.summary.urgent_delivered || 0),
+            delivered_percentage: d.summary.urgent_pct || 0,
+          });
+        }
+        if (d.summary.pending_48h_pct !== undefined) {
+          setPending48h({
+            pct: d.summary.pending_48h_pct || 0,
+            total: d.summary.pending_48h_total || 0,
+            attempt_zero: d.summary.pending_48h_attempt_zero || 0,
+            attempt_one: d.summary.pending_48h_attempt_one || 0,
+            attempt_more: d.summary.pending_48h_attempt_more || 0,
+            volume: d.summary.pending_48h_volume || 0,
+          });
         }
         setLastUpdate(new Date());
       }
@@ -591,12 +633,13 @@ export default function DashboardView({
             accent="green"
           />
           <BigPercentCard
-            label="COD FD"
+            label="COD FD %"
             value={cod.fd_percentage}
-            sub="COD Ready to Return rate"
-            subDetail={`${cod.ready_to_return.toLocaleString("id-ID")} / ${cod.total.toLocaleString("id-ID")} COD packages`}
+            sub="OPC Payment: COD"
+            subDetail={`${cod.ftd.toLocaleString("id-ID")} FTD / ${cod.total.toLocaleString("id-ID")} COD packages - RTR ${cod.ready_to_return.toLocaleString("id-ID")}`}
             accent="red"
           />
+          <Pending48hCard data={pending48h} />
         </div>
 
         {/* ROW 3 - 3 SECTIONS */}
@@ -1105,8 +1148,33 @@ function CleanFloorCard({ data }: { data: CleanFloorData | null }) {
       </p>
       <p className="text-[9px] text-gray-400 mt-0.5 leading-tight">
         {bd
-          ? `Ongoing+Delivered+FTD+Other / Today's Vol - ${bd.numerator}/${bd.today_volume}`
+          ? `${bd.numerator}/${bd.today_volume}${isLocked ? " (locked at 08:00)" : " (live volume)"}`
           : "Menunggu data"}
+      </p>
+    </div>
+  );
+}
+
+function Pending48hCard({ data }: { data: Pending48hData }) {
+  return (
+    <div className="rounded border-t-4 border-orange-400 bg-orange-50/30 px-4 py-3 shadow-sm">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] font-bold text-gray-600 tracking-wide">
+          PENDING 48H %
+        </p>
+        <AlertTriangle className="w-3 h-3 text-orange-500" />
+      </div>
+      <p className="text-3xl font-bold mt-1.5 text-orange-700">
+        {data.pct.toFixed(2)}%
+      </p>
+      <p className="text-[10px] text-gray-500 mt-1">
+        48h since first inbound, not delivered
+      </p>
+      <p className="text-[9px] text-gray-400 mt-0.5 leading-tight">
+        {`${data.total.toLocaleString("id-ID")} / ${data.volume.toLocaleString("id-ID")} paket belum terdeliver`}
+      </p>
+      <p className="text-[9px] text-gray-400 mt-0.5 leading-tight">
+        {`Attempt=0: ${data.attempt_zero.toLocaleString("id-ID")} - Attempt=1: ${data.attempt_one.toLocaleString("id-ID")} - Attempt>1: ${data.attempt_more.toLocaleString("id-ID")}`}
       </p>
     </div>
   );

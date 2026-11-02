@@ -76,15 +76,45 @@ export async function POST(req: NextRequest) {
       const backlog = Number(main.backlog) || 0
       const todayVolume = justArrived + backlog
       const numerator =
-        (Number(main.ongoing_delivery_just_arrived) || 0) +
-        (Number(main.delivered_just_arrived) || 0) +
+        (Number(main.ongoing_delivery) || 0) +
+        (Number(main.delivered) || 0) +
         (Number(main.ftd) || 0) +
         (Number(main.others) || 0)
       const cfValue = todayVolume > 0 ? Math.min((numerator / todayVolume) * 100, 100) : 0
 
-      await prisma.cleanFloorSnapshot.upsert({
+      // The 08:00 snapshot owns the denominator. A re-run may refresh the
+      // numerator but must never move the locked denominator again.
+      const existing = await prisma.cleanFloorSnapshot.findUnique({
         where: { facility_date: { facility: hub.hmsHubId, date: today } },
-        create: {
+      })
+
+      if (existing) {
+        const lockedValue =
+          existing.denominator > 0
+            ? Math.min((numerator / existing.denominator) * 100, 100)
+            : 0
+        await prisma.cleanFloorSnapshot.update({
+          where: { facility_date: { facility: hub.hmsHubId, date: today } },
+          data: {
+            value: lockedValue,
+            numerator,
+            delivered: Number(main.delivered) || 0,
+            ongoing: Number(main.ongoing_delivery) || 0,
+            ftd: Number(main.ftd) || 0,
+            others: Number(main.others) || 0,
+          },
+        })
+        results.push({
+          hub: hub.name,
+          cf: lockedValue.toFixed(2) + '%',
+          locked_denominator: existing.denominator,
+          note: 'lock kept',
+        })
+        continue
+      }
+
+      await prisma.cleanFloorSnapshot.create({
+        data: {
           facility: hub.hmsHubId,
           date: today,
           value: cfValue,
@@ -95,14 +125,14 @@ export async function POST(req: NextRequest) {
           ftd: Number(main.ftd) || 0,
           others: Number(main.others) || 0,
         },
-        update: {
-          value: cfValue,
-          numerator,
-          denominator: todayVolume,
-        },
       })
 
-      results.push({ hub: hub.name, cf: cfValue.toFixed(2) + '%' })
+      results.push({
+        hub: hub.name,
+        cf: cfValue.toFixed(2) + '%',
+        locked_denominator: todayVolume,
+        note: 'lock created',
+      })
     } catch (e: any) {
       results.push({ hub: hub.name, error: e.message })
     }

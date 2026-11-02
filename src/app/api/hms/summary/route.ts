@@ -1,11 +1,11 @@
 import { auth } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
-import { dbRead, dbWrite } from "@/lib/db-safe";
 import { resolveActiveHub, resolveHmsToken } from "@/lib/hms-context";
 import { buildHmsHeaders } from '@/lib/hms-headers';
+import { applyCleanFloorCookie, resolveCleanFloor } from "@/lib/clean-floor";
 import { NextRequest, NextResponse } from "next/server";
 
 const API_ID_MAIN = "7564027893345453074";
+const API_ID_AGING = "7588046468401988616";
 const API_ID_CYCLE1 = "7657180282079970311";
 const API_ID_OPS = "7517597334683780103";
 const API_ID_COURIER = "7514949742451868679";
@@ -404,7 +404,7 @@ export async function GET(req: NextRequest) {
     const todayDate = getTodayDate();
     const cycleList = getCycleList();
 
-    const [mainRes, codRes, cycleRes, opsRes, courierRes, urgentRes, dedicatedMerged, c1Result] =
+    const [mainRes, codRes, cycleRes, opsRes, courierRes, urgentRes, dedicatedMerged, c1Result, agingRes] =
       await Promise.all([
         callHMS(hmsToken, API_ID_MAIN, {
           hub_ids: JSON.stringify([HUB_ID]),
@@ -468,6 +468,15 @@ export async function GET(req: NextRequest) {
           console.warn("[c1c2] Gagal:", e.message);
           return { c1: 0, deliveredBefore12: 0 };
         }),
+        callHMS(hmsToken, API_ID_AGING, {
+          hub_ids: JSON.stringify([HUB_ID]),
+          curr_date: currDate,
+          payment_types: PAYMENT_TYPES,
+          service_types: SERVICE_TYPES,
+        }).catch((e) => {
+          console.warn("[aging] Gagal:", e.message);
+          return null;
+        }),
       ]);
 
     if (!mainRes) {
@@ -479,27 +488,40 @@ export async function GET(req: NextRequest) {
     const ops = opsRes ? parseCompact(opsRes.data.data, opsRes.data.fields) : null;
     const courier = courierRes ? parseCompact(courierRes.data.data, courierRes.data.fields) : null;
 
+    // COD FD = failed delivery on the COD slice / COD volume. HMS only returns
+    // the COD slice when payment_types is narrowed to ["cod"]; ready to return
+    // is kept for the card breakdown.
     let codReadyToReturn = 0, codJustArrived = 0, codBacklog = 0, codTotalVolume = 0, codFd = 0;
+    let codFtd = 0, codDelivered = 0;
 
     if (codRes) {
       const codMain = parseCompact(codRes.data.data, codRes.data.fields);
       if (codMain) {
-        codReadyToReturn = codMain.ready_to_return || 0;
-        codJustArrived = codMain.just_arrived || 0;
-        codBacklog = codMain.backlog || 0;
-        codTotalVolume = codJustArrived + codBacklog;
+        codReadyToReturn = Number(codMain.ready_to_return) || 0;
+        codJustArrived = Number(codMain.just_arrived) || 0;
+        codBacklog = Number(codMain.backlog) || 0;
+        codFtd = Number(codMain.ftd) || 0;
+        codDelivered = Number(codMain.delivered) || 0;
+        codTotalVolume =
+          Number(codMain.today_volume) || codJustArrived + codBacklog;
         codFd = codTotalVolume > 0
-          ? parseFloat(((codReadyToReturn / codTotalVolume) * 100).toFixed(2))
+          ? parseFloat(((codFtd / codTotalVolume) * 100).toFixed(2))
           : 0;
       }
     }
 
-    let urgentTotal = 0, urgentDelivered = 0, urgentPct = 0;
+    // Urgent slice: is_urgent = "true" is exactly what the Last Mile OPC page
+    // sends when its Urgent filter is set to Yes.
+    let urgentTotal = 0, urgentDelivered = 0, urgentPct = 0, urgentFtd = 0;
     if (urgentRes) {
       const urg = parseCompact(urgentRes.data.data, urgentRes.data.fields);
       if (urg) {
-        urgentTotal = (Number(urg.just_arrived) || 0) + (Number(urg.backlog) || 0);
+        const urgentJustArrived = Number(urg.just_arrived) || 0;
+        const urgentBacklog = Number(urg.backlog) || 0;
+        urgentTotal =
+          Number(urg.today_volume) || urgentJustArrived + urgentBacklog;
         urgentDelivered = Number(urg.delivered) || 0;
+        urgentFtd = Number(urg.ftd) || 0;
         urgentPct = urgentTotal > 0 ? parseFloat(((urgentDelivered / urgentTotal) * 100).toFixed(2)) : 0;
       }
     }
@@ -517,102 +539,54 @@ export async function GET(req: NextRequest) {
 
     const backlog = Number(main.backlog) || 0;
     const volumeOverall = justArrived + backlog;
-    const cleanFloorOngoing = Number(main.ongoing_delivery_just_arrived) || 0;
-const cleanFloorDelivered = Number(main.delivered_just_arrived) || 0;
-const cleanFloorFtd = Number(main.ftd) || 0;
-const cleanFloorOthers = Number(main.others) || 0;
-const cleanFloorPendingAtHub = Number(main.pending_at_hub) || 0;
-const cleanFloorTodayVolume = justArrived + backlog;
-const cleanFloorNumerator = cleanFloorTodayVolume - cleanFloorPendingAtHub;
-const cleanFloorValue = cleanFloorTodayVolume > 0
-  ? Math.min((cleanFloorNumerator / cleanFloorTodayVolume) * 100, 100)
-  : 0;
+    const cleanFloorOngoing = Number(main.ongoing_delivery) || 0;
+    const cleanFloorDelivered = Number(main.delivered) || 0;
+    const cleanFloorFtd = Number(main.ftd) || 0;
+    const cleanFloorOthers = Number(main.others) || 0;
+    const cleanFloorPendingAtHub = Number(main.pending_at_hub) || 0;
+    const cleanFloorTodayVolume = justArrived + backlog;
     const currentWibHour = new Date(Date.now() + 7 * 60 * 60 * 1000).getUTCHours();
-    const lockedAt = `${todayDate}T01:00:00.000Z`;
-    const snapshotKey = { facility: HUB_ID, date: todayDate };
 
-    const formatLockedSnapshot = (snapshot: any) => ({
-      value: parseFloat(snapshot.value.toFixed(2)),
-      breakdown: {
-        delivered: snapshot.delivered,
-        ongoing: snapshot.ongoing,
-        ftd: snapshot.ftd,
-        others: snapshot.others,
-        pending: 0,
-        today_volume: snapshot.denominator,
-        numerator: snapshot.numerator,
+    // The denominator is frozen at the 08:00 WIB Volume Overall; only the
+    // numerator keeps following live HMS data.
+    const cleanFloorResult = await resolveCleanFloor({
+      req,
+      facility: HUB_ID,
+      date: todayDate,
+      wibHour: currentWibHour,
+      live: {
+        ongoing: cleanFloorOngoing,
+        delivered: cleanFloorDelivered,
+        ftd: cleanFloorFtd,
+        others: cleanFloorOthers,
+        pending: cleanFloorPendingAtHub,
+        todayVolume: cleanFloorTodayVolume,
       },
-      is_locked: true,
-      locked_at: lockedAt,
-      quality: "accurate" as const,
-      captured_at: snapshot.capturedAt.toISOString(),
     });
+    const cleanFloor = cleanFloorResult.payload;
 
-    let cleanFloor;
-    if (currentWibHour < 8) {
-      cleanFloor = {
-        value: parseFloat(cleanFloorValue.toFixed(2)),
-        breakdown: {
-          delivered: cleanFloorDelivered, ongoing: cleanFloorOngoing,
-          ftd: cleanFloorFtd, others: cleanFloorOthers,
-          pending: Number(main.pending_at_hub) || 0,
-          today_volume: volumeOverall, numerator: cleanFloorNumerator,
-        },
-        is_locked: false, locked_at: lockedAt,
-        quality: "live" as const, captured_at: new Date().toISOString(),
-      };
-    } else {
-      const liveCleanFloor = () => ({
-        value: parseFloat(cleanFloorValue.toFixed(2)),
-        breakdown: {
-          delivered: cleanFloorDelivered, ongoing: cleanFloorOngoing,
-          ftd: cleanFloorFtd, others: cleanFloorOthers,
-          pending: Number(main.pending_at_hub) || 0,
-          today_volume: volumeOverall, numerator: cleanFloorNumerator,
-        },
-        is_locked: false, locked_at: lockedAt,
-        quality: "live" as const, captured_at: new Date().toISOString(),
-      });
-
-      const existing = await dbRead(
-        () => prisma.cleanFloorSnapshot.findUnique({ where: { facility_date: snapshotKey } }),
-        null,
-        "cleanFloorSnapshot.findUnique"
-      );
-      if (existing) {
-        const expectedNumerator = cleanFloorTodayVolume - cleanFloorPendingAtHub;
-        const isStale = Math.abs(existing.numerator - expectedNumerator) > 1;
-        if (isStale) {
-          const updated = await dbWrite(
-            () =>
-              prisma.cleanFloorSnapshot.update({
-                where: { facility_date: snapshotKey },
-                data: { value: cleanFloorValue, numerator: expectedNumerator, denominator: cleanFloorTodayVolume },
-              }),
-            "cleanFloorSnapshot.update"
-          );
-          cleanFloor = formatLockedSnapshot(updated.ok ? updated.value : existing);
-        } else {
-          cleanFloor = formatLockedSnapshot(existing);
-        }
-      } else {
-        const created = await dbWrite(
-          () =>
-            prisma.cleanFloorSnapshot.create({
-              data: {
-                ...snapshotKey,
-                value: cleanFloorValue,
-                numerator: cleanFloorNumerator,
-                denominator: cleanFloorTodayVolume,
-                delivered: cleanFloorDelivered,
-                ongoing: cleanFloorOngoing,
-                ftd: cleanFloorFtd,
-                others: cleanFloorOthers,
-              },
-            }),
-          "cleanFloorSnapshot.create"
-        );
-        cleanFloor = created.ok ? formatLockedSnapshot(created.value) : liveCleanFloor();
+    // Pending 48H: first inbound older than 48 hours and still not delivered,
+    // counted across all attempts (OPC "Need to Expedite" block).
+    let pending48h = { total: 0, attempt_zero: 0, attempt_one: 0, attempt_more: 0, pct: 0 };
+    let pending72hTotal = 0;
+    if (agingRes) {
+      const aging = parseCompact(agingRes.data.data, agingRes.data.fields);
+      if (aging) {
+        const attemptZero = Number(aging.attempt_zero_48) || 0;
+        const attemptOne = Number(aging.attempt_one_48) || 0;
+        const attemptMore = Number(aging.attempt_over_one_48) || 0;
+        const total = Number(aging.inbound_over_48) || attemptZero + attemptOne + attemptMore;
+        pending48h = {
+          total,
+          attempt_zero: attemptZero,
+          attempt_one: attemptOne,
+          attempt_more: attemptMore,
+          pct:
+            volumeOverall > 0
+              ? parseFloat(((total / volumeOverall) * 100).toFixed(2))
+              : 0,
+        };
+        pending72hTotal = Number(aging.inbound_over_72) || 0;
       }
     }
 
@@ -648,6 +622,8 @@ const cleanFloorValue = cleanFloorTodayVolume > 0
       cod_just_arrived: codJustArrived,
       cod_backlog: codBacklog,
       cod_total_volume: codTotalVolume,
+      cod_ftd: codFtd,
+      cod_delivered: codDelivered,
       cod_fd: codFd,
       delivered_just_arrived: deliveredJustArrived,
       delivered_backlog: main.delivered_backlog || 0,
@@ -678,13 +654,21 @@ const cleanFloorValue = cleanFloorTodayVolume > 0
       cycle_name: cycle?.cycle_name || "",
       urgent_total: urgentTotal,
       urgent_delivered: urgentDelivered,
+      urgent_ftd: urgentFtd,
       urgent_pct: urgentPct,
+      pending_48h_pct: pending48h.pct,
+      pending_48h_total: pending48h.total,
+      pending_48h_attempt_zero: pending48h.attempt_zero,
+      pending_48h_attempt_one: pending48h.attempt_one,
+      pending_48h_attempt_more: pending48h.attempt_more,
+      pending_48h_volume: volumeOverall,
+      pending_72h_total: pending72hTotal,
       fetched_at: new Date().toISOString(),
     };
 
     cache.set(cacheKey, { data: summary, timestamp: Date.now() });
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       success: true,
       meta: {
         cached: false,
@@ -694,6 +678,8 @@ const cleanFloorValue = cleanFloorTodayVolume > 0
       },
       summary,
     });
+    applyCleanFloorCookie(response, cleanFloorResult.cookie);
+    return response;
   } catch (e: any) {
     console.error("[summary] Error:", e.message);
     return NextResponse.json(

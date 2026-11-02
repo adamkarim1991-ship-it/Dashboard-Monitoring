@@ -1,6 +1,5 @@
 import { auth } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
-import { dbRead, dbWrite } from "@/lib/db-safe";
+import { resolveCleanFloor } from "@/lib/clean-floor";
 import { resolveActiveHub, resolveHmsToken } from "@/lib/hms-context";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -291,88 +290,33 @@ async function fetchShipmentsForAwbs(token: string, awbs: string[]) {
   return shipments;
 }
 
+// Clean Floor is resolved by the shared morning-lock helper so this route and
+// /api/hms/summary always report the same frozen 08:00 denominator.
 async function getCleanFloor(
+  req: NextRequest,
   mainAll: any,
   wib: { date: string; hour: number; minute: number },
   hmsHubId: string
 ) {
-  const lockedAt = `${wib.date}T01:00:00.000Z`;
-  const snapshotKey = { facility: hmsHubId, date: wib.date };
-
-  if (wib.hour >= 8) {
-    const existing = await dbRead(
-      () => prisma.cleanFloorSnapshot.findUnique({ where: { facility_date: snapshotKey } }),
-      null,
-      "cleanFloorSnapshot.findUnique"
-    );
-    if (existing) {
-      return {
-        value: parseFloat(existing.value.toFixed(2)),
-        breakdown: {
-          delivered: existing.delivered, ongoing: existing.ongoing,
-          ftd: existing.ftd, others: existing.others,
-          pending: 0, today_volume: existing.denominator,
-          numerator: existing.numerator,
-        },
-        is_locked: true, locked_at: lockedAt,
-        quality: "accurate" as const,
-        captured_at: existing.capturedAt.toISOString(),
-      };
-    }
-  }
-
   if (!mainAll) return null;
 
-  const delivered = toSafeNumber(mainAll.delivered);
-  const ongoing = toSafeNumber(mainAll.ongoing_delivery);
-  const ftd = toSafeNumber(mainAll.ftd);
-  const others = toSafeNumber(mainAll.others);
-  const todayVolume = toSafeNumber(mainAll.just_arrived) + toSafeNumber(mainAll.backlog);
-  const pending = toSafeNumber(mainAll.pending_at_hub);
-  const numerator = ongoing + delivered + ftd + others;
-  const value = todayVolume > 0 ? (numerator / todayVolume) * 100 : 0;
-
-  if (wib.hour < 8) {
-    return {
-      value: parseFloat(value.toFixed(2)),
-      breakdown: { delivered, ongoing, ftd, others, pending, today_volume: todayVolume, numerator },
-      is_locked: false, locked_at: lockedAt,
-      quality: "live" as const, captured_at: new Date().toISOString(),
-    };
-  }
-
-  const liveCleanFloor = {
-    value: parseFloat(value.toFixed(2)),
-    breakdown: { delivered, ongoing, ftd, others, pending, today_volume: todayVolume, numerator },
-    is_locked: false, locked_at: lockedAt,
-    quality: "live" as const, captured_at: new Date().toISOString(),
-  };
-
-  const created = await dbWrite(
-    () =>
-      prisma.cleanFloorSnapshot.create({
-        data: {
-          ...snapshotKey, value, numerator, denominator: todayVolume,
-          delivered, ongoing, ftd, others,
-        },
-      }),
-    "cleanFloorSnapshot.create"
-  );
-
-  if (!created.ok) return liveCleanFloor;
-
-  return {
-    value: parseFloat(created.value.value.toFixed(2)),
-    breakdown: {
-      delivered: created.value.delivered, ongoing: created.value.ongoing,
-      ftd: created.value.ftd, others: created.value.others,
-      pending: 0, today_volume: created.value.denominator,
-      numerator: created.value.numerator,
+  const result = await resolveCleanFloor({
+    req,
+    facility: hmsHubId,
+    date: wib.date,
+    wibHour: wib.hour,
+    live: {
+      delivered: toSafeNumber(mainAll.delivered),
+      ongoing: toSafeNumber(mainAll.ongoing_delivery),
+      ftd: toSafeNumber(mainAll.ftd),
+      others: toSafeNumber(mainAll.others),
+      pending: toSafeNumber(mainAll.pending_at_hub),
+      todayVolume:
+        toSafeNumber(mainAll.just_arrived) + toSafeNumber(mainAll.backlog),
     },
-    is_locked: true, locked_at: lockedAt,
-    quality: "accurate" as const,
-    captured_at: created.value.capturedAt.toISOString(),
-  };
+  });
+
+  return result.payload;
 }
 
 export async function GET(req: NextRequest) {
@@ -431,17 +375,19 @@ export async function GET(req: NextRequest) {
     console.warn("[subdistrict] Gagal fetch MAIN:", e.message);
   }
 
-  const cleanFloorData = await getCleanFloor(mainAll, getWIBDate(), HUB_ID);
+  const cleanFloorData = await getCleanFloor(req, mainAll, getWIBDate(), HUB_ID);
 
-  let codData = { total: 0, ready_to_return: 0, fd_percentage: 0 };
+  // COD FD = failed delivery on COD packages / COD volume.
+  let codData = { total: 0, ready_to_return: 0, ftd: 0, fd_percentage: 0 };
   if (mainCod) {
     const readyToReturn = toSafeNumber(mainCod.ready_to_return);
-    const justArrived = toSafeNumber(mainCod.just_arrived);
-    const backlog = toSafeNumber(mainCod.backlog);
-    const codTotal = justArrived + backlog;
-    const fdPercentage = codTotal > 0 ? (readyToReturn / codTotal) * 100 : 0;
+    const codFtd = toSafeNumber(mainCod.ftd);
+    const codTotal =
+      toSafeNumber(mainCod.today_volume) ||
+      toSafeNumber(mainCod.just_arrived) + toSafeNumber(mainCod.backlog);
+    const fdPercentage = codTotal > 0 ? (codFtd / codTotal) * 100 : 0;
     codData = {
-      total: codTotal, ready_to_return: readyToReturn,
+      total: codTotal, ready_to_return: readyToReturn, ftd: codFtd,
       fd_percentage: parseFloat(fdPercentage.toFixed(2)),
     };
   }
