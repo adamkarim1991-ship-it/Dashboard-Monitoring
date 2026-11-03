@@ -122,6 +122,21 @@ type CodData = {
   fd_percentage: number;
 };
 
+type CleanFloorC1Data = {
+  value: number;
+  numerator: number;
+  denominator: number;
+  fresh_c1: number;
+  backlog: number;
+  fresh_processed: number;
+  backlog_processed: number;
+  fresh_delivered: number;
+  fresh_ongoing: number;
+  fresh_ftd: number;
+  c1_scanned: number;
+  target_hour_wib: number;
+};
+
 type Pending48hData = {
   pct: number;
   total: number;
@@ -218,6 +233,7 @@ export default function DashboardView({
     delivered_percentage: 0,
   });
   const [cleanFloor, setCleanFloor] = useState<CleanFloorData | null>(null);
+  const [cleanFloorC1, setCleanFloorC1] = useState<CleanFloorC1Data | null>(null);
   const [subLoading, setSubLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
@@ -247,6 +263,7 @@ export default function DashboardView({
       if (d?.success) {
         setSummary(d.summary);
         if (d.summary.clean_floor) setCleanFloor(d.summary.clean_floor);
+        if (d.summary.clean_floor_c1) setCleanFloorC1(d.summary.clean_floor_c1);
         if (d.summary.dedicated_actual !== undefined) {
           setDedicated({
             actual: d.summary.dedicated_actual,
@@ -612,7 +629,7 @@ export default function DashboardView({
         </div>
 
         {/* ROW 2 - PERCENTAGE CARDS */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-8 gap-3">
           <BigPercentCard
             label="SUCCESS DELIVERED"
             value={successDelivered}
@@ -635,6 +652,7 @@ export default function DashboardView({
             accent="green"
           />
           <CleanFloorCard data={cleanFloor} />
+          <CleanFloorC1Card data={cleanFloorC1} />
           <BigPercentCard
             label="DELIVERED URGENT %"
             value={urgent.delivered_percentage}
@@ -1171,6 +1189,35 @@ function CleanFloorCard({ data }: { data: CleanFloorData | null }) {
           {`${data?.excluded_processed} processed excluded - ${data?.post_lock_volume} paket masuk setelah 08:00`}
         </p>
       )}
+    </div>
+  );
+}
+
+function CleanFloorC1Card({ data }: { data: CleanFloorC1Data | null }) {
+  const value = data?.value ?? 0;
+  const numerator = data?.numerator ?? 0;
+  const denominator = data?.denominator ?? 0;
+  const freshC1 = data?.fresh_c1 ?? 0;
+  const backlog = data?.backlog ?? 0;
+  return (
+    <div className="rounded border-t-4 border-teal-400 bg-teal-50/30 px-4 py-3 shadow-sm">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] font-bold text-gray-600 tracking-wide">
+          CLEAN FLOOR (Overall C1)
+        </p>
+      </div>
+      <p className="text-3xl font-bold mt-1.5 text-teal-700">
+        {value.toFixed(2)}%
+      </p>
+      <p className="text-[10px] text-gray-500 mt-1">
+        Target selesai sebelum 08:00 WIB
+      </p>
+      <p className="text-[9px] text-gray-400 mt-0.5 leading-tight">
+        {`${numerator.toLocaleString("id-ID")} / ${denominator.toLocaleString("id-ID")} (Fresh C1: ${freshC1.toLocaleString("id-ID")} + Backlog: ${backlog.toLocaleString("id-ID")})`}
+      </p>
+      <p className="text-[9px] text-gray-400 mt-0.5 leading-tight">
+        {`C1 delivered ${(data?.fresh_delivered ?? 0).toLocaleString("id-ID")} - ongoing ${(data?.fresh_ongoing ?? 0).toLocaleString("id-ID")} - FTD ${(data?.fresh_ftd ?? 0).toLocaleString("id-ID")}`}
+      </p>
     </div>
   );
 }

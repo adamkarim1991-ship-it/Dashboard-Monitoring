@@ -327,7 +327,40 @@ async function computeC1FromInboundScan(hmsToken: string, hubName: string) {
       .filter(Boolean)
   ).size;
 
-  return { c1: uniqueFreshC1Tasks.length, deliveredBefore12 };
+  // Per package status for the morning (C1) cohort. The shipments endpoint can
+  // return more than one row per AWB, so collapse to one row first.
+  const byAwb = new Map<string, any>();
+  for (const shipment of shipments) {
+    const awb = String(shipment.awb_number || "").trim();
+    if (!awb) continue;
+    const prev = byAwb.get(awb);
+    const prevDelivered = Boolean(prev?.destination_details?.delivery_time);
+    const currentDelivered = Boolean(shipment.destination_details?.delivery_time);
+    if (!prev || (currentDelivered && !prevDelivered)) byAwb.set(awb, shipment);
+  }
+
+  let c1Delivered = 0;
+  let c1Ongoing = 0;
+  let c1Ftd = 0;
+  for (const shipment of byAwb.values()) {
+    const details = shipment.destination_details || {};
+    if (details.delivery_time) {
+      c1Delivered += 1;
+    } else if (details.out_for_delivery_time) {
+      c1Ongoing += 1;
+    } else if (Number(shipment.delivery_attempts) > 0) {
+      c1Ftd += 1;
+    }
+  }
+
+  return {
+    c1: uniqueFreshC1Tasks.length,
+    deliveredBefore12,
+    delivered: c1Delivered,
+    ongoing: c1Ongoing,
+    ftd: c1Ftd,
+    scanned: byAwb.size,
+  };
 }
 
 async function fetchDedicatedMerged(token: string, hubId: string) {
@@ -515,7 +548,14 @@ export async function GET(req: NextRequest) {
         }),
         computeC1FromInboundScan(hmsToken, HUB_NAME).catch((e) => {
           console.warn("[c1c2] Gagal:", e.message);
-          return { c1: 0, deliveredBefore12: 0 };
+          return {
+            c1: 0,
+            deliveredBefore12: 0,
+            delivered: 0,
+            ongoing: 0,
+            ftd: 0,
+            scanned: 0,
+          };
         }),
         callHMSRetry(hmsToken, API_ID_AGING, {
           hub_ids: JSON.stringify([HUB_ID]),
@@ -651,6 +691,38 @@ export async function GET(req: NextRequest) {
     });
     const cleanFloor = cleanFloorResult.payload;
 
+    // Clean Floor (Overall C1): morning target metric, not a snapshot. The pool
+    // is today's C1 arrivals plus yesterday's FTD carried over as backlog. C2
+    // arrivals are excluded, so only the C1 cohort is counted on both sides.
+    const c1Pool = freshC1 + backlog;
+    const c1FreshProcessed = Math.min(
+      c1Result.delivered + c1Result.ongoing + c1Result.ftd,
+      freshC1
+    );
+    const c1BacklogProcessed = Math.min(
+      (Number(main.delivered_backlog) || 0) +
+        (Number(main.ongoing_delivery_backlog) || 0),
+      backlog
+    );
+    const c1Numerator = Math.min(c1FreshProcessed + c1BacklogProcessed, c1Pool);
+    const cleanFloorC1 = {
+      value:
+        c1Pool > 0
+          ? parseFloat(((c1Numerator / c1Pool) * 100).toFixed(2))
+          : 0,
+      numerator: c1Numerator,
+      denominator: c1Pool,
+      fresh_c1: freshC1,
+      backlog,
+      fresh_processed: c1FreshProcessed,
+      backlog_processed: c1BacklogProcessed,
+      fresh_delivered: c1Result.delivered,
+      fresh_ongoing: c1Result.ongoing,
+      fresh_ftd: c1Result.ftd,
+      c1_scanned: c1Result.scanned,
+      target_hour_wib: 8,
+    };
+
     // Pending 48H: first inbound older than 48 hours and still not delivered,
     // counted across all attempts (OPC "Need to Expedite" block).
     let pending48h = { total: 0, attempt_zero: 0, attempt_one: 0, attempt_more: 0, pct: 0 };
@@ -716,6 +788,7 @@ export async function GET(req: NextRequest) {
       today_volume: volumeOverall,
       pending_at_hub: pendingAtHub,
       clean_floor: cleanFloor,
+      clean_floor_c1: cleanFloorC1,
       fresh_c1: freshC1,
       fresh_c2: freshC2,
       fresh_total_computed: freshC1 + freshC2,
