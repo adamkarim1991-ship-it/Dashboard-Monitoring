@@ -147,7 +147,7 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
 
     const dailyTimer = setInterval(fetchDaily, 300000);
     const weekTimer = setInterval(fetchWeek, 600000);
-    const summaryTimer = setInterval(fetchSummary, 120000);
+    const summaryTimer = setInterval(fetchSummary, 60000);
     return () => {
       clearInterval(dailyTimer);
       clearInterval(weekTimer);
