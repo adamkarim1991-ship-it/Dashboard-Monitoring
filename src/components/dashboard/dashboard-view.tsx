@@ -169,6 +169,8 @@ type CleanFloorData = {
   live_processed?: number;
   post_lock_volume?: number;
   excluded_processed?: number;
+  resolved?: number;
+  resolved_pct?: number;
 };
 
 export default function DashboardView({
@@ -1159,6 +1161,11 @@ function CleanFloorCard({ data }: { data: CleanFloorData | null }) {
           ? `${bd.numerator}/${bd.today_volume}${isLocked ? " (locked at 08:00)" : " (live volume)"}`
           : "Menunggu data"}
       </p>
+      {isLocked && (data?.resolved ?? 0) > 0 && (
+        <p className="text-[9px] text-emerald-600 mt-0.5 leading-tight">
+          {`Resolved ${data?.resolved}/${bd?.today_volume} (${(data?.resolved_pct ?? 0).toFixed(2)}%)`}
+        </p>
+      )}
       {isLocked && (data?.excluded_processed ?? 0) > 0 && (
         <p className="text-[9px] text-amber-500 mt-0.5 leading-tight">
           {`${data?.excluded_processed} processed excluded - ${data?.post_lock_volume} paket masuk setelah 08:00`}

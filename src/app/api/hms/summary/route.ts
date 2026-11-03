@@ -24,6 +24,32 @@ type CacheEntry = { data: any; timestamp: number };
 const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 5 * 1000;
 
+// Last good value per hub for the slices that can lose a parallel race.
+type SliceSnapshot = {
+  urgent: { total: number; delivered: number; ftd: number; ongoing: number; pct: number };
+  cod: { total: number; ftd: number; readyToReturn: number; delivered: number; fd: number };
+  aging: { total48: number; zero48: number; one48: number; more48: number; total72: number };
+};
+const lastGood = new Map<string, Partial<SliceSnapshot>>();
+
+function rememberSlice<K extends keyof SliceSnapshot>(
+  hubId: string,
+  key: K,
+  value: SliceSnapshot[K]
+): SliceSnapshot[K] {
+  const entry = lastGood.get(hubId) || {};
+  entry[key] = value;
+  lastGood.set(hubId, entry);
+  return value;
+}
+
+function recallSlice<K extends keyof SliceSnapshot>(
+  hubId: string,
+  key: K
+): SliceSnapshot[K] | undefined {
+  return lastGood.get(hubId)?.[key];
+}
+
 function toWIB(): Date {
   return new Date(Date.now() + 7 * 60 * 60 * 1000);
 }
@@ -100,6 +126,29 @@ async function callHMS(
     );
   }
   return json;
+}
+
+// Secondary slices (urgent, COD, aging) must not flicker to zero when one
+// parallel call loses a race against the HMS rate limiter: retry once, and the
+// caller keeps the last good value when both attempts fail.
+async function callHMSRetry(
+  token: string,
+  apiId: string,
+  params: Record<string, any>,
+  attempts = 2
+) {
+  let lastError: any = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await callHMS(token, apiId, params);
+    } catch (e: any) {
+      lastError = e;
+      if (attempt < attempts) {
+        await new Promise((resolve) => setTimeout(resolve, 350 * attempt));
+      }
+    }
+  }
+  throw lastError;
 }
 
 function parseCompact(dataStr: string, fields: { name: string }[]) {
@@ -412,7 +461,7 @@ export async function GET(req: NextRequest) {
           payment_types: PAYMENT_TYPES,
           service_types: SERVICE_TYPES,
         }),
-        callHMS(hmsToken, API_ID_MAIN, {
+        callHMSRetry(hmsToken, API_ID_MAIN, {
           hub_ids: JSON.stringify([HUB_ID]),
           curr_date: currDate,
           payment_types: PAYMENT_TYPES_COD,
@@ -447,7 +496,7 @@ export async function GET(req: NextRequest) {
           console.warn("[courier] Gagal:", e.message);
           return null;
         }),
-        callHMS(hmsToken, API_ID_MAIN, {
+        callHMSRetry(hmsToken, API_ID_MAIN, {
           hub_ids: JSON.stringify([HUB_ID]),
           curr_date: currDate,
           payment_types: PAYMENT_TYPES_URGENT,
@@ -468,7 +517,7 @@ export async function GET(req: NextRequest) {
           console.warn("[c1c2] Gagal:", e.message);
           return { c1: 0, deliveredBefore12: 0 };
         }),
-        callHMS(hmsToken, API_ID_AGING, {
+        callHMSRetry(hmsToken, API_ID_AGING, {
           hub_ids: JSON.stringify([HUB_ID]),
           curr_date: currDate,
           payment_types: PAYMENT_TYPES,
@@ -507,6 +556,24 @@ export async function GET(req: NextRequest) {
         codFd = codTotalVolume > 0
           ? parseFloat(((codFtd / codTotalVolume) * 100).toFixed(2))
           : 0;
+        rememberSlice(HUB_ID, "cod", {
+          total: codTotalVolume,
+          ftd: codFtd,
+          readyToReturn: codReadyToReturn,
+          delivered: codDelivered,
+          fd: codFd,
+        });
+      }
+    }
+
+    if (codTotalVolume === 0) {
+      const cached = recallSlice(HUB_ID, "cod");
+      if (cached) {
+        codTotalVolume = cached.total;
+        codFtd = cached.ftd;
+        codReadyToReturn = cached.readyToReturn;
+        codDelivered = cached.delivered;
+        codFd = cached.fd;
       }
     }
 
@@ -524,6 +591,24 @@ export async function GET(req: NextRequest) {
         urgentFtd = Number(urg.ftd) || 0;
         urgentOngoing = Number(urg.ongoing_delivery) || 0;
         urgentPct = urgentTotal > 0 ? parseFloat(((urgentDelivered / urgentTotal) * 100).toFixed(2)) : 0;
+        rememberSlice(HUB_ID, "urgent", {
+          total: urgentTotal,
+          delivered: urgentDelivered,
+          ftd: urgentFtd,
+          ongoing: urgentOngoing,
+          pct: urgentPct,
+        });
+      }
+    }
+
+    if (urgentTotal === 0) {
+      const cached = recallSlice(HUB_ID, "urgent");
+      if (cached) {
+        urgentTotal = cached.total;
+        urgentDelivered = cached.delivered;
+        urgentFtd = cached.ftd;
+        urgentOngoing = cached.ongoing;
+        urgentPct = cached.pct;
       }
     }
 
@@ -588,6 +673,30 @@ export async function GET(req: NextRequest) {
               : 0,
         };
         pending72hTotal = Number(aging.inbound_over_72) || 0;
+        rememberSlice(HUB_ID, "aging", {
+          total48: pending48h.total,
+          zero48: pending48h.attempt_zero,
+          one48: pending48h.attempt_one,
+          more48: pending48h.attempt_more,
+          total72: pending72hTotal,
+        });
+      }
+    }
+
+    if (pending48h.total === 0) {
+      const cached = recallSlice(HUB_ID, "aging");
+      if (cached) {
+        pending48h = {
+          total: cached.total48,
+          attempt_zero: cached.zero48,
+          attempt_one: cached.one48,
+          attempt_more: cached.more48,
+          pct:
+            volumeOverall > 0
+              ? parseFloat(((cached.total48 / volumeOverall) * 100).toFixed(2))
+              : 0,
+        };
+        pending72hTotal = cached.total72;
       }
     }
 

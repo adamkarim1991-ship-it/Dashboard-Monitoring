@@ -50,6 +50,10 @@ export interface CleanFloorPayload {
   post_lock_volume: number;
   // Processed packages that were dropped because the cohort is already full.
   excluded_processed: number;
+  // Cohort packages that are fully closed (delivered + FTD + other statuses),
+  // i.e. no longer moving. This is the part of the cohort that keeps growing.
+  resolved: number;
+  resolved_pct: number;
 }
 
 export interface CleanFloorCookie {
@@ -152,6 +156,7 @@ export async function resolveCleanFloor(params: {
 }): Promise<CleanFloorResult> {
   const { req, facility, date, wibHour, live } = params;
   const processed = live.ongoing + live.delivered + live.ftd + live.others;
+  const resolvedRaw = live.delivered + live.ftd + live.others;
   const lockedAt = cleanFloorLockedAt(date);
 
   if (wibHour < LOCK_HOUR_WIB) {
@@ -168,6 +173,8 @@ export async function resolveCleanFloor(params: {
         live_processed: processed,
         post_lock_volume: 0,
         excluded_processed: Math.max(0, processed - liveNumerator),
+        resolved: Math.min(resolvedRaw, live.todayVolume),
+        resolved_pct: percentage(Math.min(resolvedRaw, live.todayVolume), live.todayVolume),
       },
     };
   }
@@ -260,6 +267,8 @@ export async function resolveCleanFloor(params: {
       live_processed: processed,
       post_lock_volume: postLockVolume,
       excluded_processed: Math.max(0, processed - numerator),
+      resolved: Math.min(resolvedRaw, lock.denominator),
+      resolved_pct: percentage(Math.min(resolvedRaw, lock.denominator), lock.denominator),
     },
     cookie: {
       name: cookieName,
