@@ -658,9 +658,8 @@ export async function GET(req: NextRequest) {
     const ops = opsRes ? parseCompact(opsRes.data.data, opsRes.data.fields) : null;
     const courier = courierRes ? parseCompact(courierRes.data.data, courierRes.data.fields) : null;
 
-    // COD FD = failed delivery on the COD slice / COD volume. HMS only returns
-    // the COD slice when payment_types is narrowed to ["cod"]; ready to return
-    // is kept for the card breakdown.
+    // COD FD % = Ready to Return (RTR) / Today's Volume, both on the COD slice.
+    // RTR is the numerator: FTD must never be used here.
     let codReadyToReturn = 0, codJustArrived = 0, codBacklog = 0, codTotalVolume = 0, codFd = 0;
     let codFtd = 0, codDelivered = 0;
 
@@ -675,7 +674,7 @@ export async function GET(req: NextRequest) {
         codTotalVolume =
           Number(codMain.today_volume) || codJustArrived + codBacklog;
         codFd = codTotalVolume > 0
-          ? parseFloat(((codFtd / codTotalVolume) * 100).toFixed(2))
+          ? parseFloat(((codReadyToReturn / codTotalVolume) * 100).toFixed(2))
           : 0;
         rememberSlice(HUB_ID, "cod", {
           total: codTotalVolume,
@@ -898,6 +897,7 @@ export async function GET(req: NextRequest) {
       cod_backlog: codBacklog,
       cod_total_volume: codTotalVolume,
       cod_ftd: codFtd,
+      cod_rtr: codReadyToReturn,
       cod_delivered: codDelivered,
       cod_fd: codFd,
       delivered_just_arrived: deliveredJustArrived,

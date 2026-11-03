@@ -74,6 +74,7 @@ type SummaryResponse = {
   cod_ftd?: number;
   cod_delivered?: number;
   cod_fd?: number;
+  cod_rtr?: number;
   urgent_ftd?: number;
   urgent_ongoing?: number;
   pending_48h_pct?: number;
@@ -282,7 +283,8 @@ export default function DashboardView({
         if (d.summary.cod_total_volume !== undefined) {
           setCod({
             total: d.summary.cod_total_volume || 0,
-            ready_to_return: d.summary.cod_ready_to_return || 0,
+            ready_to_return:
+              d.summary.cod_rtr ?? d.summary.cod_ready_to_return ?? 0,
             ftd: d.summary.cod_ftd || 0,
             fd_percentage: d.summary.cod_fd || 0,
           });
@@ -673,7 +675,7 @@ export default function DashboardView({
             label="COD FD %"
             value={cod.fd_percentage}
             sub="OPC Payment: COD"
-            subDetail={`${cod.ftd.toLocaleString("id-ID")} FTD / ${cod.total.toLocaleString("id-ID")} COD packages - RTR ${cod.ready_to_return.toLocaleString("id-ID")}`}
+            subDetail={`${cod.ready_to_return.toLocaleString("id-ID")} RTR / ${cod.total.toLocaleString("id-ID")} COD packages`}
             accent="red"
           />
           <Pending48hCard data={pending48h} />
