@@ -43,6 +43,13 @@ export interface CleanFloorPayload {
   quality: "accurate" | "approximate" | "live";
   captured_at: string;
   lock_source: "database" | "cookie" | "memory" | "observed" | "live";
+  // Every package currently processed (delivered + ongoing + FTD + others),
+  // including packages that only entered after the lock.
+  live_processed: number;
+  // Packages that entered after the 08:00 lock and are therefore excluded.
+  post_lock_volume: number;
+  // Processed packages that were dropped because the cohort is already full.
+  excluded_processed: number;
 }
 
 export interface CleanFloorCookie {
@@ -144,19 +151,23 @@ export async function resolveCleanFloor(params: {
   live: CleanFloorLive;
 }): Promise<CleanFloorResult> {
   const { req, facility, date, wibHour, live } = params;
-  const numerator = live.ongoing + live.delivered + live.ftd + live.others;
+  const processed = live.ongoing + live.delivered + live.ftd + live.others;
   const lockedAt = cleanFloorLockedAt(date);
 
   if (wibHour < LOCK_HOUR_WIB) {
+    const liveNumerator = Math.min(processed, live.todayVolume);
     return {
       payload: {
-        value: percentage(numerator, live.todayVolume),
-        breakdown: buildBreakdown(live, live.todayVolume, numerator),
+        value: percentage(liveNumerator, live.todayVolume),
+        breakdown: buildBreakdown(live, live.todayVolume, liveNumerator),
         is_locked: false,
         locked_at: lockedAt,
         quality: "live",
         captured_at: new Date().toISOString(),
         lock_source: "live",
+        live_processed: processed,
+        post_lock_volume: 0,
+        excluded_processed: Math.max(0, processed - liveNumerator),
       },
     };
   }
@@ -200,6 +211,12 @@ export async function resolveCleanFloor(params: {
   const lock: LockEntry = entry;
   lockMemory().set(key, lock);
 
+  // Cohort rule: once the 08:00 volume is locked, the numerator may only count
+  // packages that belong to that cohort. Anything processed on top of the
+  // locked size came from arrivals after 08:00 and must not be added.
+  const numerator = Math.min(processed, lock.denominator);
+  const postLockVolume = Math.max(0, live.todayVolume - lock.denominator);
+
   if (isNewLock) {
     // First observation after 08:00: persist the frozen denominator. The
     // update branch deliberately leaves denominator alone so a re-run can
@@ -240,6 +257,9 @@ export async function resolveCleanFloor(params: {
       quality: qualityOf(lock, date),
       captured_at: lock.capturedAt,
       lock_source: lock.source,
+      live_processed: processed,
+      post_lock_volume: postLockVolume,
+      excluded_processed: Math.max(0, processed - numerator),
     },
     cookie: {
       name: cookieName,

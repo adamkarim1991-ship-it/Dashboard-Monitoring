@@ -512,7 +512,7 @@ export async function GET(req: NextRequest) {
 
     // Urgent slice: is_urgent = "true" is exactly what the Last Mile OPC page
     // sends when its Urgent filter is set to Yes.
-    let urgentTotal = 0, urgentDelivered = 0, urgentPct = 0, urgentFtd = 0;
+    let urgentTotal = 0, urgentDelivered = 0, urgentPct = 0, urgentFtd = 0, urgentOngoing = 0;
     if (urgentRes) {
       const urg = parseCompact(urgentRes.data.data, urgentRes.data.fields);
       if (urg) {
@@ -522,6 +522,7 @@ export async function GET(req: NextRequest) {
           Number(urg.today_volume) || urgentJustArrived + urgentBacklog;
         urgentDelivered = Number(urg.delivered) || 0;
         urgentFtd = Number(urg.ftd) || 0;
+        urgentOngoing = Number(urg.ongoing_delivery) || 0;
         urgentPct = urgentTotal > 0 ? parseFloat(((urgentDelivered / urgentTotal) * 100).toFixed(2)) : 0;
       }
     }
@@ -655,6 +656,7 @@ export async function GET(req: NextRequest) {
       urgent_total: urgentTotal,
       urgent_delivered: urgentDelivered,
       urgent_ftd: urgentFtd,
+      urgent_ongoing: urgentOngoing,
       urgent_pct: urgentPct,
       pending_48h_pct: pending48h.pct,
       pending_48h_total: pending48h.total,

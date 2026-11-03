@@ -75,11 +75,13 @@ export async function POST(req: NextRequest) {
       const justArrived = Number(main.just_arrived) || 0
       const backlog = Number(main.backlog) || 0
       const todayVolume = justArrived + backlog
-      const numerator =
+      const processed =
         (Number(main.ongoing_delivery) || 0) +
         (Number(main.delivered) || 0) +
         (Number(main.ftd) || 0) +
         (Number(main.others) || 0)
+      // Never store a numerator bigger than the cohort captured at 08:00.
+      const numerator = Math.min(processed, todayVolume)
       const cfValue = todayVolume > 0 ? Math.min((numerator / todayVolume) * 100, 100) : 0
 
       // The 08:00 snapshot owns the denominator. A re-run may refresh the
@@ -91,7 +93,7 @@ export async function POST(req: NextRequest) {
       if (existing) {
         const lockedValue =
           existing.denominator > 0
-            ? Math.min((numerator / existing.denominator) * 100, 100)
+            ? Math.min((Math.min(processed, existing.denominator) / existing.denominator) * 100, 100)
             : 0
         await prisma.cleanFloorSnapshot.update({
           where: { facility_date: { facility: hub.hmsHubId, date: today } },

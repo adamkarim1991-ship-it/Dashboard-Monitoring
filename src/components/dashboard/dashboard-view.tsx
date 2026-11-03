@@ -76,6 +76,7 @@ type SummaryResponse = {
   cod_delivered?: number;
   cod_fd?: number;
   urgent_ftd?: number;
+  urgent_ongoing?: number;
   pending_48h_pct?: number;
   pending_48h_total?: number;
   pending_48h_attempt_zero?: number;
@@ -135,6 +136,8 @@ type UrgentData = {
   delivered: number;
   failed: number;
   delivered_percentage: number;
+  in_delivery?: number;
+  ftd?: number;
 };
 
 type DedicatedData = {
@@ -163,6 +166,9 @@ type CleanFloorData = {
   locked_at: string;
   quality: "accurate" | "approximate" | "live";
   captured_at: string;
+  live_processed?: number;
+  post_lock_volume?: number;
+  excluded_processed?: number;
 };
 
 export default function DashboardView({
@@ -269,6 +275,8 @@ export default function DashboardView({
             delivered: d.summary.urgent_delivered || 0,
             failed: (d.summary.urgent_total || 0) - (d.summary.urgent_delivered || 0),
             delivered_percentage: d.summary.urgent_pct || 0,
+            in_delivery: d.summary.urgent_ongoing || 0,
+            ftd: d.summary.urgent_ftd || 0,
           });
         }
         if (d.summary.pending_48h_pct !== undefined) {
@@ -629,7 +637,7 @@ export default function DashboardView({
             label="DELIVERED URGENT %"
             value={urgent.delivered_percentage}
             sub="OPC Urgent: Yes"
-            subDetail={`${urgent.delivered.toLocaleString("id-ID")} / ${urgent.total.toLocaleString("id-ID")} urgent packages delivered`}
+            subDetail={`${urgent.delivered.toLocaleString("id-ID")} / ${urgent.total.toLocaleString("id-ID")} urgent delivered - ${(urgent.in_delivery ?? 0).toLocaleString("id-ID")} in delivery - ${(urgent.ftd ?? 0).toLocaleString("id-ID")} FTD`}
             accent="green"
           />
           <BigPercentCard
@@ -1151,6 +1159,11 @@ function CleanFloorCard({ data }: { data: CleanFloorData | null }) {
           ? `${bd.numerator}/${bd.today_volume}${isLocked ? " (locked at 08:00)" : " (live volume)"}`
           : "Menunggu data"}
       </p>
+      {isLocked && (data?.excluded_processed ?? 0) > 0 && (
+        <p className="text-[9px] text-amber-500 mt-0.5 leading-tight">
+          {`${data?.excluded_processed} processed excluded - ${data?.post_lock_volume} paket masuk setelah 08:00`}
+        </p>
+      )}
     </div>
   );
 }
