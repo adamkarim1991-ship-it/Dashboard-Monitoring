@@ -1,5 +1,6 @@
 import { auth } from "@/lib/auth";
 import { resolveHmsToken } from "@/lib/hms-context";
+import { DEFAULT_RANGE_DAYS } from "@/lib/wib-range";
 import { NextRequest, NextResponse } from "next/server";
 
 const JATINEGARA_HUB = "GTL Jatinegara Hub";
@@ -97,8 +98,29 @@ async function fetchPage(token: string, page: number, fromTs: number, toTs: numb
 // (leg type + status + created_at range). Counting downloaded pages used to cap
 // at 30 pages (3.000 rows) and silently truncated busy days, so the headline
 // count now comes from `total_records`.
+// HMS rate limiter answers empty once too many queries run at the same time, so
+// a 30-day window (30 day-buckets x combined with the weekly call) goes through
+// a small semaphore instead of one unbounded burst.
+const MAX_CONCURRENT_HMS = 6;
+let activeHmsCalls = 0;
+const hmsWaiting: (() => void)[] = [];
+
+async function withHmsSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (activeHmsCalls >= MAX_CONCURRENT_HMS) {
+    await new Promise<void>((resolve) => hmsWaiting.push(resolve));
+  }
+  activeHmsCalls += 1;
+  try {
+    return await fn();
+  } finally {
+    activeHmsCalls -= 1;
+    const next = hmsWaiting.shift();
+    if (next) next();
+  }
+}
+
 async function fetchDay(token: string, fromTs: number, toTs: number, countOnly = false) {
-  const first = await fetchPage(token, 1, fromTs, toTs);
+  const first = await withHmsSlot(() => fetchPage(token, 1, fromTs, toTs));
   const firstPage = first?.data?.shipments || [];
   const totalRaw = Number(first?.data?.total_records);
   const total = Number.isFinite(totalRaw) && totalRaw > 0 ? totalRaw : firstPage.length;
@@ -112,7 +134,7 @@ async function fetchDay(token: string, fromTs: number, toTs: number, countOnly =
   for (let i = 0; i < pages.length; i += batchSize) {
     const batch = pages.slice(i, i + batchSize);
     const results = await Promise.all(
-      batch.map((p) => fetchPage(token, p, fromTs, toTs).catch(() => null))
+      batch.map((p) => withHmsSlot(() => fetchPage(token, p, fromTs, toTs)).catch(() => null))
     );
     for (const r of results) {
       if (r?.data?.shipments) all = all.concat(r.data.shipments);
@@ -171,7 +193,10 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const days = Math.min(Math.max(Number(req.nextUrl.searchParams.get("days") || 3), 1), 7);
+  const days = Math.min(
+    Math.max(Number(req.nextUrl.searchParams.get("days") || DEFAULT_RANGE_DAYS), 1),
+    DEFAULT_RANGE_DAYS
+  );
   const districtFilter = (req.nextUrl.searchParams.get("district") || "jatinegara").toLowerCase();
   const countOnly = req.nextUrl.searchParams.get("countOnly") === "1";
 

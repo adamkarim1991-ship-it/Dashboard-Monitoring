@@ -2,6 +2,8 @@ import { auth } from "@/lib/auth";
 import { resolveActiveHub, resolveHmsToken } from "@/lib/hms-context";
 import { buildHmsHeaders } from '@/lib/hms-headers';
 import { applyCleanFloorCookie, resolveCleanFloor } from "@/lib/clean-floor";
+import { refreshStoredHmsToken, type RefreshedHmsToken } from "@/lib/hms-token-refresh";
+import { readTokenChunkCount, writeTokenCookies } from "@/lib/hms-token-store";
 import { NextRequest, NextResponse } from "next/server";
 
 const API_ID_MAIN = "7564027893345453074";
@@ -110,8 +112,18 @@ function get8amWIBUnix(): number {
   return getTodayWIBUnix(8);
 }
 
+// The resolved HMS token can be stale (cookie pushed hours ago, expired grant).
+// Every call goes through this holder so the first 401 refreshes the token once
+// and the remaining slices of the same request reuse the fresh one.
+interface HmsTokenHolder {
+  token: string;
+  userId: string;
+  refreshed: boolean;
+  refreshResult: RefreshedHmsToken | null;
+}
+
 async function callHMS(
-  token: string,
+  holder: HmsTokenHolder,
   apiId: string,
   params: Record<string, any>
 ) {
@@ -119,12 +131,25 @@ async function callHMS(
   const res = await fetch(url, {
     method: "POST",
     headers: {
-      ...buildHmsHeaders(token),
+      ...buildHmsHeaders(holder.token),
     },
     body: JSON.stringify({ api_id: apiId, params }),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`HMS HTTP ${res.status}`);
+  if (res.status === 401 && !holder.refreshed) {
+    holder.refreshed = true;
+    const refreshed = await refreshStoredHmsToken(holder.userId, holder.token);
+    if (refreshed) {
+      holder.token = refreshed.token;
+      holder.refreshResult = refreshed;
+      console.warn("[summary] HMS token refreshed after 401");
+      return callHMS(holder, apiId, params);
+    }
+    throw new Error(
+      "HMS HTTP 401: token expired and automatic refresh failed. Re-sync the HMS token."
+    );
+  }
+  if (!res.ok) throw new Error(`HMS HTTP ${res.status}${res.status === 401 ? ": token expired" : ""}`);
   const json = await res.json();
   if (json.code !== 200) {
     throw new Error(
@@ -142,7 +167,7 @@ async function callHMS(
 // a failure and gets retried; the caller keeps the last good value when every
 // attempt stays empty.
 async function callHMSRetry(
-  token: string,
+  holder: HmsTokenHolder,
   apiId: string,
   params: Record<string, any>,
   attempts = 3
@@ -150,7 +175,7 @@ async function callHMSRetry(
   let lastError: any = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const res = await callHMS(token, apiId, params);
+      const res = await callHMS(holder, apiId, params);
       const rows = JSON.parse(res?.data?.data ?? "[]");
       if (Array.isArray(rows) && rows.length > 0) return res;
       lastError = new Error("empty slice");
@@ -376,7 +401,7 @@ async function computeC1FromInboundScan(hmsToken: string, hubName: string) {
   };
 }
 
-async function fetchDedicatedMerged(token: string, hubId: string) {
+async function fetchDedicatedMerged(holder: HmsTokenHolder, hubId: string) {
   const result = {
     actual: 0, totalPicked: 0, totalDelivered: 0,
     avgPickup: 0, avgDelivered: 0, achievementPct: 0, drivers: [] as string[],
@@ -400,7 +425,7 @@ async function fetchDedicatedMerged(token: string, hubId: string) {
         (Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cyc.endHour, cyc.endMin, 0) - 7 * 60 * 60 * 1000) / 1000
       );
 
-      const res = await callHMS(token, API_ID_DEDICATED, {
+      const res = await callHMS(holder, API_ID_DEDICATED, {
         hub_id: hubId,
         driver_name: "",
         job_roles: JOB_ROLES_DEDICATED,
@@ -472,6 +497,13 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  const tokenHolder: HmsTokenHolder = {
+    token: hmsToken,
+    userId: session.user.id,
+    refreshed: false,
+    refreshResult: null,
+  };
+
   const requestedHubId = req.nextUrl.searchParams.get("hubId");
   const activeHub = await resolveActiveHub(session.user.id, requestedHubId, session.user);
   if (!activeHub) {
@@ -501,13 +533,13 @@ export async function GET(req: NextRequest) {
 
     const [mainRes, codRes, cycleRes, opsRes, courierRes, urgentRes, dedicatedMerged, c1Result, agingRes] =
       await Promise.all([
-        callHMS(hmsToken, API_ID_MAIN, {
+        callHMS(tokenHolder, API_ID_MAIN, {
           hub_ids: JSON.stringify([HUB_ID]),
           curr_date: currDate,
           payment_types: PAYMENT_TYPES,
           service_types: SERVICE_TYPES,
         }),
-        callHMSRetry(hmsToken, API_ID_MAIN, {
+        callHMSRetry(tokenHolder, API_ID_MAIN, {
           hub_ids: JSON.stringify([HUB_ID]),
           curr_date: currDate,
           payment_types: PAYMENT_TYPES_COD,
@@ -516,7 +548,7 @@ export async function GET(req: NextRequest) {
           console.warn("[cod] Gagal:", e.message);
           return null;
         }),
-        callHMS(hmsToken, API_ID_CYCLE1, {
+        callHMS(tokenHolder, API_ID_CYCLE1, {
           hub_id: HUB_ID,
           driver_name: "",
           job_roles: JOB_ROLES_CYCLE,
@@ -525,7 +557,7 @@ export async function GET(req: NextRequest) {
           console.warn("[cycle1] Gagal:", e.message);
           return null;
         }),
-        callHMS(hmsToken, API_ID_OPS, {
+        callHMS(tokenHolder, API_ID_OPS, {
           hub_ids: JSON.stringify([HUB_ID]),
           curr_date_start: currDate,
           date: todayDate,
@@ -533,7 +565,7 @@ export async function GET(req: NextRequest) {
           console.warn("[ops] Gagal:", e.message);
           return null;
         }),
-        callHMS(hmsToken, API_ID_COURIER, {
+        callHMS(tokenHolder, API_ID_COURIER, {
           hub_ids: JSON.stringify([HUB_ID]),
           curr_date_start: currDate,
           date: todayDate,
@@ -542,7 +574,7 @@ export async function GET(req: NextRequest) {
           console.warn("[courier] Gagal:", e.message);
           return null;
         }),
-        callHMSRetry(hmsToken, API_ID_MAIN, {
+        callHMSRetry(tokenHolder, API_ID_MAIN, {
           hub_ids: JSON.stringify([HUB_ID]),
           curr_date: currDate,
           payment_types: PAYMENT_TYPES_URGENT,
@@ -552,7 +584,7 @@ export async function GET(req: NextRequest) {
           console.warn("[urgent] Gagal:", e.message);
           return null;
         }),
-        fetchDedicatedMerged(hmsToken, HUB_ID).catch((e) => {
+        fetchDedicatedMerged(tokenHolder, HUB_ID).catch((e) => {
           console.warn("[dedicated] Gagal:", e.message);
           return {
             actual: 0, totalPicked: 0, totalDelivered: 0,
@@ -570,7 +602,7 @@ export async function GET(req: NextRequest) {
             scanned: 0,
           };
         }),
-        callHMSRetry(hmsToken, API_ID_AGING, {
+        callHMSRetry(tokenHolder, API_ID_AGING, {
           hub_ids: JSON.stringify([HUB_ID]),
           curr_date: currDate,
           payment_types: PAYMENT_TYPES,
@@ -887,12 +919,47 @@ export async function GET(req: NextRequest) {
       summary,
     });
     applyCleanFloorCookie(response, cleanFloorResult.cookie);
+    applyRefreshedToken(response, req, tokenHolder);
     return response;
   } catch (e: any) {
-    console.error("[summary] Error:", e.message);
+    const message = String(e?.message ?? e);
+    const isAuth = message.includes("401");
+    console.error("[summary] Error:", message);
     return NextResponse.json(
-      { error: "HMS failed", detail: e.message },
-      { status: 502 }
+      {
+        error: isAuth ? "HMS token expired" : "HMS failed",
+        detail: message,
+        auth_error: isAuth,
+        message: isAuth
+          ? "Token HMS expired dan refresh otomatis gagal. Buka HMS di tab lain untuk sync token baru."
+          : "HMS tidak merespons dengan benar. Coba lagi sebentar.",
+      },
+      { status: isAuth ? 401 : 502 }
     );
+  }
+}
+
+// Hand the refreshed token back to the browser so the cookies used by the
+// following requests already carry a valid grant.
+function applyRefreshedToken(
+  response: NextResponse,
+  req: NextRequest,
+  holder: HmsTokenHolder
+) {
+  const refreshed = holder.refreshResult;
+  if (!refreshed) return;
+  try {
+    writeTokenCookies(
+      response,
+      {
+        token: refreshed.token,
+        refreshToken: refreshed.refreshToken,
+        expiresAt: refreshed.expiresAt,
+        updatedAt: Date.now(),
+      },
+      readTokenChunkCount(req)
+    );
+  } catch (e: any) {
+    console.warn(`[summary] cookie refresh skipped: ${e?.message ?? e}`);
   }
 }

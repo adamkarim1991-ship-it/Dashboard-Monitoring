@@ -98,7 +98,7 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
     setLoading(true);
     try {
       const res = await fetch(
-        `/api/hms/fm?hubId=${hubId}&days=3&district=jatinegara&countOnly=1`,
+        `/api/hms/fm?hubId=${hubId}&days=30&district=jatinegara&countOnly=1`,
         { cache: "no-store" }
       );
       const d: FmResponse = await res.json();

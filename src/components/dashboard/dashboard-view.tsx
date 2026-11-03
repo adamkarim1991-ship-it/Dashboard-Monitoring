@@ -10,7 +10,6 @@ import {
   Info,
   CheckCircle2,
   Wifi,
-  Lock,
   AlertTriangle,
   ArrowLeft,
 } from "lucide-react";
@@ -232,7 +231,7 @@ export default function DashboardView({
     failed: 0,
     delivered_percentage: 0,
   });
-  const [cleanFloor, setCleanFloor] = useState<CleanFloorData | null>(null);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
   const [cleanFloorC1, setCleanFloorC1] = useState<CleanFloorC1Data | null>(null);
   const [subLoading, setSubLoading] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -262,7 +261,7 @@ export default function DashboardView({
       );
       if (d?.success) {
         setSummary(d.summary);
-        if (d.summary.clean_floor) setCleanFloor(d.summary.clean_floor);
+        setSummaryError(null);
         if (d.summary.clean_floor_c1) setCleanFloorC1(d.summary.clean_floor_c1);
         if (d.summary.dedicated_actual !== undefined) {
           setDedicated({
@@ -309,8 +308,14 @@ export default function DashboardView({
           });
         }
         setLastUpdate(new Date());
+      } else {
+        const message =
+          d?.message || d?.detail || d?.error || "HMS tidak merespons";
+        setSummaryError(String(message));
+        console.error("Summary error:", message);
       }
-    } catch (e) {
+    } catch (e: any) {
+      setSummaryError(String(e?.message || e));
       console.error("Failed to load summary:", e);
     } finally {
       setLoading(false);
@@ -328,7 +333,6 @@ export default function DashboardView({
         setSubdistricts(d.subdistricts || []);
         if (d.cod) setCod(d.cod);
         if (d.urgent) setUrgent(d.urgent);
-        if (d.clean_floor) setCleanFloor(d.clean_floor);
       }
     } catch (e) {
       console.error("Failed to load subdistricts:", e);
@@ -628,6 +632,12 @@ export default function DashboardView({
           />
         </div>
 
+        {summaryError && (
+          <div className="rounded border-l-4 border-red-400 bg-red-50 px-3 py-2 text-[11px] text-red-700">
+            <span className="font-bold">HMS error:</span> {summaryError}
+          </div>
+        )}
+
         {/* ROW 2 - PERCENTAGE CARDS */}
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-8 gap-3">
           <BigPercentCard
@@ -651,8 +661,7 @@ export default function DashboardView({
             subDetail={`Live TMS event aggregate - ${(summary?.delivered_before_12 ?? 0).toLocaleString("id-ID")} / ${freshC1.toLocaleString("id-ID")}`}
             accent="green"
           />
-          <CleanFloorCard data={cleanFloor} />
-          <CleanFloorC1Card data={cleanFloorC1} />
+          <CleanFloorC1Card data={cleanFloorC1} error={summaryError} />
           <BigPercentCard
             label="DELIVERED URGENT %"
             value={urgent.delivered_percentage}
@@ -1134,67 +1143,15 @@ function BigPercentCard({
   );
 }
 
-function CleanFloorCard({ data }: { data: CleanFloorData | null }) {
+function CleanFloorC1Card({
+  data,
+  error,
+}: {
+  data: CleanFloorC1Data | null;
+  error?: string | null;
+}) {
   const value = data?.value ?? 0;
-  const isLocked = data?.is_locked ?? false;
-  const quality = data?.quality ?? "live";
-  const bd = data?.breakdown;
-
-  const isLive = quality === "live";
-  const isAccurate = quality === "accurate";
-  const borderColor = isAccurate
-    ? "border-green-400 bg-green-50/30"
-    : isLive
-    ? "border-blue-300 bg-blue-50/30"
-    : "border-amber-400 bg-amber-50/30";
-  const textColor = isAccurate ? "text-green-700" : isLive ? "text-blue-700" : "text-amber-700";
-  const lockTime = "08:00 WIB";
-
-  return (
-    <div className={`rounded border-t-4 ${borderColor} px-4 py-3 shadow-sm`}>
-      <div className="flex items-center justify-between">
-        <p className="text-[10px] font-bold text-gray-600 tracking-wide">
-            CLEAN FLOOR - MORNING LOCK (08:00)
-        </p>
-        {isAccurate ? (
-          <Lock className="w-3 h-3 text-green-600" />
-        ) : isLive ? (
-          <RefreshCw className="w-3 h-3 text-blue-500 animate-spin" />
-        ) : (
-          <AlertTriangle className="w-3 h-3 text-amber-500" />
-        )}
-      </div>
-      <p className={`text-3xl font-bold mt-1.5 ${textColor}`}>
-        {value.toFixed(2)}%
-      </p>
-      <p className="text-[10px] text-gray-500 mt-1">
-        {isAccurate
-          ? `Locked at ${lockTime}`
-          : isLive
-          ? `Live - locking at 08:00 WIB`
-          : `Approximate (locked at ${lockTime})`}
-      </p>
-      <p className="text-[9px] text-gray-400 mt-0.5 leading-tight">
-        {bd
-          ? `${bd.numerator}/${bd.today_volume}${isLocked ? " (locked at 08:00)" : " (live volume)"}`
-          : "Menunggu data"}
-      </p>
-      {isLocked && (data?.resolved ?? 0) > 0 && (
-        <p className="text-[9px] text-emerald-600 mt-0.5 leading-tight">
-          {`Resolved ${data?.resolved}/${bd?.today_volume} (${(data?.resolved_pct ?? 0).toFixed(2)}%)`}
-        </p>
-      )}
-      {isLocked && (data?.excluded_processed ?? 0) > 0 && (
-        <p className="text-[9px] text-amber-500 mt-0.5 leading-tight">
-          {`${data?.excluded_processed} processed excluded - ${data?.post_lock_volume} paket masuk setelah 08:00`}
-        </p>
-      )}
-    </div>
-  );
-}
-
-function CleanFloorC1Card({ data }: { data: CleanFloorC1Data | null }) {
-  const value = data?.value ?? 0;
+  const hasError = !data && !!error;
   const numerator = data?.numerator ?? 0;
   const denominator = data?.denominator ?? 0;
   const freshC1 = data?.fresh_c1 ?? 0;
@@ -1206,18 +1163,31 @@ function CleanFloorC1Card({ data }: { data: CleanFloorC1Data | null }) {
           CLEAN FLOOR (Overall C1)
         </p>
       </div>
-      <p className="text-3xl font-bold mt-1.5 text-teal-700">
-        {value.toFixed(2)}%
+      <p className={`text-3xl font-bold mt-1.5 ${hasError ? "text-red-600" : "text-teal-700"}`}>
+        {hasError ? "-" : `${value.toFixed(2)}%`}
       </p>
       <p className="text-[10px] text-gray-500 mt-1">
         Target selesai sebelum 08:00 WIB
       </p>
-      <p className="text-[9px] text-gray-400 mt-0.5 leading-tight">
-        {`${numerator.toLocaleString("id-ID")} / ${denominator.toLocaleString("id-ID")} (Fresh C1: ${freshC1.toLocaleString("id-ID")} + Backlog: ${backlog.toLocaleString("id-ID")})`}
-      </p>
-      <p className="text-[9px] text-gray-400 mt-0.5 leading-tight">
-        {`C1 delivered ${(data?.fresh_delivered ?? 0).toLocaleString("id-ID")} - ongoing ${(data?.fresh_ongoing ?? 0).toLocaleString("id-ID")} - FTD ${(data?.fresh_ftd ?? 0).toLocaleString("id-ID")}`}
-      </p>
+      {hasError ? (
+        <>
+          <p className="text-[9px] text-red-500 mt-0.5 leading-tight">
+            Data HMS gagal dimuat
+          </p>
+          <p className="text-[9px] text-gray-400 mt-0.5 leading-tight">
+            {String(error).slice(0, 120)}
+          </p>
+        </>
+      ) : (
+        <>
+          <p className="text-[9px] text-gray-400 mt-0.5 leading-tight">
+            {`${numerator.toLocaleString("id-ID")} / ${denominator.toLocaleString("id-ID")} (Fresh C1: ${freshC1.toLocaleString("id-ID")} + Backlog: ${backlog.toLocaleString("id-ID")})`}
+          </p>
+          <p className="text-[9px] text-gray-400 mt-0.5 leading-tight">
+            {`C1 delivered ${(data?.fresh_delivered ?? 0).toLocaleString("id-ID")} - ongoing ${(data?.fresh_ongoing ?? 0).toLocaleString("id-ID")} - FTD ${(data?.fresh_ftd ?? 0).toLocaleString("id-ID")}`}
+          </p>
+        </>
+      )}
     </div>
   );
 }
