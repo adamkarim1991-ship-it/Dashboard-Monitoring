@@ -128,8 +128,16 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
 
   const fetchSummary = useCallback(async () => {
     if (!hubId) return;
-    const d = await fetchDashboardJson<any>(`/api/hms/summary?hubId=${hubId}`);
-    if (d?.success && d.summary) setSummary(d.summary as HubSummary);
+    // The HMS summary endpoint is heavy and can answer 502 on a cold start, so
+    // retry a couple of times before leaving the FTD cards empty.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const d = await fetchDashboardJson<any>(`/api/hms/summary?hubId=${hubId}`, 1, 1500);
+      if (d?.success && d.summary) {
+        setSummary(d.summary as HubSummary);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+    }
   }, [hubId]);
 
   useEffect(() => {
@@ -154,8 +162,12 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
   const ftdInDriver = summary?.ftd ?? 0;
   const ftdReturned = summary?.ready_to_return ?? 0;
   const ftdTotal = summary?.ftd_total ?? 0;
-  const backlog = ftdTotal > 0 ? ftdTotal : ftdInDriver + ftdReturned;
+  // HMS reports the FTD widget as two buckets (in driver + returned to hub);
+  // fall back to the combined field when the split is not available.
+  const backlog = ftdInDriver + ftdReturned > 0 ? ftdInDriver + ftdReturned : ftdTotal;
   const forecastVolume = freshEstimated + backlog;
+  const backlogKnown = summary !== null;
+  const num = (value: number) => (backlogKnown ? value.toLocaleString("id-ID") : "—");
 
   const justArrived = summary?.just_arrived ?? 0;
   const rawC1Ratio =
@@ -258,26 +270,26 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
         />
         <BigCard
           label="Backlog (FTD)"
-          value={backlog.toLocaleString("id-ID")}
+          value={num(backlog)}
           sub={`In driver ${ftdInDriver.toLocaleString("id-ID")} · Returned hub ${ftdReturned.toLocaleString("id-ID")}`}
           accent="border-l-red-500"
         />
         <BigCard
           label="Forecast Volume"
-          value={forecastVolume.toLocaleString("id-ID")}
+          value={num(forecastVolume)}
           sub="Fresh est. + Backlog"
           accent="border-l-cyan-400"
           emphasis
         />
         <BigCard
           label="Estimated Volume C1"
-          value={estC1.toLocaleString("id-ID")}
+          value={num(estC1)}
           sub={`Forecast × ${(c1Ratio * 100).toFixed(0)}%`}
           accent="border-l-violet-500"
         />
         <BigCard
           label="Estimated Volume C2"
-          value={estC2.toLocaleString("id-ID")}
+          value={num(estC2)}
           sub={`Forecast × ${(100 - c1Ratio * 100).toFixed(0)}%`}
           accent="border-l-amber-500"
         />
@@ -418,8 +430,8 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
           <Row label={`Potensi gagal (${100 - rate}%)`} value={potentialGap.toLocaleString("id-ID")} danger />
           <div className="pt-2 border-t border-slate-800 space-y-2">
             <Row label="Fresh estimated" value={freshEstimated.toLocaleString("id-ID")} />
-            <Row label="Backlog (FTD)" value={backlog.toLocaleString("id-ID")} />
-            <Row label="Forecast volume" value={forecastVolume.toLocaleString("id-ID")} strong />
+            <Row label="Backlog (FTD)" value={num(backlog)} />
+            <Row label="Forecast volume" value={num(forecastVolume)} strong />
           </div>
           <div className="pt-2 border-t border-slate-800">
             <p className="text-[10px] text-gray-500 leading-relaxed">
