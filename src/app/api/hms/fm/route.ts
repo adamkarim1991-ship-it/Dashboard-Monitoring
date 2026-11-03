@@ -23,7 +23,8 @@ function dayWindowsWIB(days: number) {
   const out: { date: string; from: number; to: number }[] = [];
   for (let i = days - 1; i >= 0; i--) {
     const startMs = todayStartWIB - i * 86400000;
-    const endMs = i === 0 ? now.getTime() : startMs + 86399999;
+    // full WIB day window, so the numbers line up with the HMS filter
+    const endMs = startMs + 86399999;
     const d = new Date(startMs + wibOffsetMs);
     out.push({
       date: `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`,
@@ -51,7 +52,7 @@ function weekWindowsWIB() {
     const startMs = mondayStartWIB + i * 86400000;
     const isToday = i === mondayOffset;
     const isFuture = i > mondayOffset;
-    const endMs = isToday ? now.getTime() : startMs + 86399999;
+    const endMs = startMs + 86399999;
     const d = new Date(startMs + wibOffsetMs);
     return {
       label,
@@ -92,23 +93,29 @@ async function fetchPage(token: string, page: number, fromTs: number, toTs: numb
   return res.json();
 }
 
-async function fetchWindow(token: string, fromTs: number, toTs: number) {
+// HMS answers `total_records` for the exact filter combination the HMS UI uses
+// (leg type + status + created_at range). Counting downloaded pages used to cap
+// at 30 pages (3.000 rows) and silently truncated busy days, so the headline
+// count now comes from `total_records`.
+async function fetchDay(token: string, fromTs: number, toTs: number, countOnly = false) {
   const first = await fetchPage(token, 1, fromTs, toTs);
-  const totalRecords = first?.data?.total_records || 0;
-  const totalPages = Math.min(Math.ceil(totalRecords / 100), 30);
+  const firstPage = first?.data?.shipments || [];
+  const totalRaw = Number(first?.data?.total_records);
+  const total = Number.isFinite(totalRaw) && totalRaw > 0 ? totalRaw : firstPage.length;
 
-  let all = first?.data?.shipments || [];
-  if (totalPages > 1) {
-    const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
-    const batchSize = 5;
-    for (let i = 0; i < pages.length; i += batchSize) {
-      const batch = pages.slice(i, i + batchSize);
-      const results = await Promise.all(
-        batch.map((p) => fetchPage(token, p, fromTs, toTs).catch(() => null))
-      );
-      for (const r of results) {
-        if (r?.data?.shipments) all = all.concat(r.data.shipments);
-      }
+  if (countOnly || total <= firstPage.length) return { total, shipments: firstPage };
+
+  const totalPages = Math.min(Math.ceil(total / 100), 60);
+  let all = firstPage;
+  const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
+  const batchSize = 5;
+  for (let i = 0; i < pages.length; i += batchSize) {
+    const batch = pages.slice(i, i + batchSize);
+    const results = await Promise.all(
+      batch.map((p) => fetchPage(token, p, fromTs, toTs).catch(() => null))
+    );
+    for (const r of results) {
+      if (r?.data?.shipments) all = all.concat(r.data.shipments);
     }
   }
 
@@ -121,7 +128,22 @@ async function fetchWindow(token: string, fromTs: number, toTs: number) {
       unique.push(s);
     }
   }
-  return unique;
+  return { total, shipments: unique };
+}
+
+// The shipments endpoint is scoped to the logged-in hub, so `total_records`
+// already equals the hub-wide volume. The district share is measured on the
+// downloaded sample and applied to the authoritative total.
+function splitCounts(shipments: any[], total: number, districtFilter: string) {
+  const hubMatched = shipments.filter((s: any) => s.actual_hub === JATINEGARA_HUB);
+  const districtMatched = hubMatched.filter((s: any) => districtOf(s).includes(districtFilter));
+  const sample = hubMatched.length || shipments.length;
+  const ratio = sample > 0 && districtMatched.length > 0 ? districtMatched.length / sample : 1;
+  return {
+    received: Math.round(total * ratio),
+    receivedHubWide: total,
+    districtMatched: districtMatched.length,
+  };
 }
 
 function districtOf(s: any): string {
@@ -151,6 +173,7 @@ export async function GET(req: NextRequest) {
 
   const days = Math.min(Math.max(Number(req.nextUrl.searchParams.get("days") || 3), 1), 7);
   const districtFilter = (req.nextUrl.searchParams.get("district") || "jatinegara").toLowerCase();
+  const countOnly = req.nextUrl.searchParams.get("countOnly") === "1";
 
   if (req.nextUrl.searchParams.get("range") === "week") {
     const cacheKey = `week:${districtFilter}`;
@@ -172,22 +195,20 @@ export async function GET(req: NextRequest) {
               label: w.label,
               received: 0,
               receivedHubWide: 0,
+              totalRecords: 0,
               isToday: w.isToday,
               isFuture: true,
             };
           }
           try {
-            const shipments = await fetchWindow(hmsToken, w.from, w.to);
-            const hubMatched = shipments.filter((s) => s.actual_hub === JATINEGARA_HUB);
-            const districtMatched = hubMatched.filter((s) =>
-              districtOf(s).includes(districtFilter)
-            );
-            const pool = districtMatched.length > 0 ? districtMatched : hubMatched;
+            const { total, shipments } = await fetchDay(hmsToken, w.from, w.to, countOnly);
+            const counts = splitCounts(shipments, total, districtFilter);
             return {
               date: w.date,
               label: w.label,
-              received: pool.length,
-              receivedHubWide: hubMatched.length,
+              received: counts.received,
+              receivedHubWide: counts.receivedHubWide,
+              totalRecords: total,
               isToday: w.isToday,
               isFuture: false,
             };
@@ -197,6 +218,7 @@ export async function GET(req: NextRequest) {
               label: w.label,
               received: 0,
               receivedHubWide: 0,
+              totalRecords: 0,
               isToday: w.isToday,
               isFuture: false,
               error: e.message,
@@ -218,7 +240,7 @@ export async function GET(req: NextRequest) {
         district: "Jatinegara",
         week,
         ado,
-        meta: { fetchedAt: new Date().toISOString(), days: week.length },
+        meta: { fetchedAt: new Date().toISOString(), days: week.length, countSource: "hms_total_records" },
       };
 
       weekCache.set(cacheKey, { data: payload, timestamp: Date.now() });
@@ -237,9 +259,10 @@ export async function GET(req: NextRequest) {
     const results = await Promise.all(
       windows.map(async (w) => {
         try {
-          const shipments = await fetchWindow(hmsToken, w.from, w.to);
-          const hubMatched = shipments.filter((s) => s.actual_hub === JATINEGARA_HUB);
-          const districtMatched = hubMatched.filter((s) => districtOf(s).includes(districtFilter));
+          const { total, shipments } = await fetchDay(hmsToken, w.from, w.to, countOnly);
+          const counts = splitCounts(shipments, total, districtFilter);
+          const hubMatched = shipments.filter((s: any) => s.actual_hub === JATINEGARA_HUB);
+          const districtMatched = hubMatched.filter((s: any) => districtOf(s).includes(districtFilter));
           const pool = districtMatched.length > 0 ? districtMatched : hubMatched;
           const hourly = new Array(24).fill(0);
           for (const s of pool) {
@@ -250,13 +273,22 @@ export async function GET(req: NextRequest) {
           }
           return {
             date: w.date,
-            received: pool.length,
-            receivedHubWide: hubMatched.length,
-            districtMatched: districtMatched.length,
+            received: counts.received,
+            receivedHubWide: counts.receivedHubWide,
+            districtMatched: counts.districtMatched,
+            totalRecords: total,
             hourly,
           };
         } catch (e: any) {
-          return { date: w.date, received: 0, receivedHubWide: 0, districtMatched: 0, hourly: new Array(24).fill(0), error: e.message };
+          return {
+            date: w.date,
+            received: 0,
+            receivedHubWide: 0,
+            districtMatched: 0,
+            totalRecords: 0,
+            hourly: new Array(24).fill(0),
+            error: e.message,
+          };
         }
       })
     );
@@ -281,6 +313,7 @@ export async function GET(req: NextRequest) {
       meta: {
         days,
         fetchedAt: new Date().toISOString(),
+        countSource: "hms_total_records",
         windows,
       },
     });

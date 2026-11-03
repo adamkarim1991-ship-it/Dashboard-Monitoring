@@ -16,11 +16,17 @@ import {
 } from "recharts";
 import { fetchDashboardJson } from "@/lib/client-fetch";
 
+// Fixed historical assumption for the top cards. The slider below is a planning
+// knob that only drives "Target Delivered" / "Target FTD".
+const HISTORICAL_RATE = 97;
+const DEFAULT_C1_RATIO = 0.7;
+
 type DayResult = {
   date: string;
   received: number;
   receivedHubWide: number;
   districtMatched: number;
+  totalRecords?: number;
   hourly: number[];
   error?: string;
 };
@@ -40,6 +46,7 @@ type WeekDay = {
   label: string;
   received: number;
   receivedHubWide: number;
+  totalRecords?: number;
   isToday: boolean;
   isFuture: boolean;
   error?: string;
@@ -76,8 +83,6 @@ type ChartRow = {
   isAdo: boolean;
 };
 
-const DEFAULT_C1_RATIO = 0.7;
-
 export default function ForecastTab({ hubId }: { hubId: string }) {
   const [data, setData] = useState<FmResponse | null>(null);
   const [week, setWeek] = useState<WeekDay[]>([]);
@@ -85,16 +90,17 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
   const [summary, setSummary] = useState<HubSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [rate, setRate] = useState(97);
+  const [targetRate, setTargetRate] = useState(HISTORICAL_RATE);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
   const fetchDaily = useCallback(async () => {
     if (!hubId) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/hms/fm?hubId=${hubId}&days=3&district=jatinegara`, {
-        cache: "no-store",
-      });
+      const res = await fetch(
+        `/api/hms/fm?hubId=${hubId}&days=3&district=jatinegara&countOnly=1`,
+        { cache: "no-store" }
+      );
       const d: FmResponse = await res.json();
       if (d.success && d.today) {
         setData(d);
@@ -113,16 +119,17 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
   const fetchWeek = useCallback(async () => {
     if (!hubId) return;
     try {
-      const res = await fetch(`/api/hms/fm?hubId=${hubId}&range=week&district=jatinegara`, {
-        cache: "no-store",
-      });
+      const res = await fetch(
+        `/api/hms/fm?hubId=${hubId}&range=week&district=jatinegara&countOnly=1`,
+        { cache: "no-store" }
+      );
       const d: WeekResponse = await res.json();
       if (d.success && Array.isArray(d.week)) {
         setWeek(d.week);
         setWeekAdo(d.ado ?? null);
       }
     } catch {
-      // weekly chart falls back to whatever was loaded before
+      // keep the previous weekly chart on transient failures
     }
   }, [hubId]);
 
@@ -145,8 +152,8 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
     fetchWeek();
     fetchSummary();
 
-    const dailyTimer = setInterval(fetchDaily, 300000);
-    const weekTimer = setInterval(fetchWeek, 600000);
+    const dailyTimer = setInterval(fetchDaily, 120000);
+    const weekTimer = setInterval(fetchWeek, 300000);
     const summaryTimer = setInterval(fetchSummary, 60000);
     return () => {
       clearInterval(dailyTimer);
@@ -158,16 +165,14 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
   const received = data?.today?.received || 0;
   const avgHistory = data?.avgHistory ?? null;
 
-  const freshEstimated = Math.round((received * rate) / 100);
+  // ── top cards: driven by the actual HMS received volume only ──
+  const freshEstimated = Math.round((received * HISTORICAL_RATE) / 100);
   const ftdInDriver = summary?.ftd ?? 0;
   const ftdReturned = summary?.ready_to_return ?? 0;
   const ftdTotal = summary?.ftd_total ?? 0;
-  // HMS reports the FTD widget as two buckets (in driver + returned to hub);
-  // fall back to the combined field when the split is not available.
   const backlog = ftdInDriver + ftdReturned > 0 ? ftdInDriver + ftdReturned : ftdTotal;
   const forecastVolume = freshEstimated + backlog;
   const backlogKnown = summary !== null;
-  const num = (value: number) => (backlogKnown ? value.toLocaleString("id-ID") : "—");
 
   const justArrived = summary?.just_arrived ?? 0;
   const rawC1Ratio =
@@ -178,11 +183,15 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
   const estC1 = Math.round(forecastVolume * c1Ratio);
   const estC2 = Math.max(forecastVolume - estC1, 0);
 
+  // ── bottom row: the only numbers the slider is allowed to move ──
+  const targetDelivered = Math.round((forecastVolume * targetRate) / 100);
+  const targetFtd = Math.max(forecastVolume - targetDelivered, 0);
+
+  const num = (value: number) => (backlogKnown ? value.toLocaleString("id-ID") : "—");
+
   const potentialGap = received - freshEstimated;
   const vsAvg = avgHistory && avgHistory > 0 ? ((received - avgHistory) / avgHistory) * 100 : null;
-  const nowHour = Number(
-    new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(11, 13)
-  );
+  const nowHour = Number(new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(11, 13));
   const remainingHours = Math.max(24 - nowHour, 0);
   const pacePerHour = nowHour > 0 ? received / nowHour : 0;
   const projectedEod = Math.round(received + pacePerHour * remainingHours);
@@ -240,7 +249,7 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
         <FilterChip label="Leg type" value="Last Mile" />
         <FilterChip label="Status" value="Received" />
         <FilterChip label="District" value="Jatinegara" />
-        <FilterChip label="Date" value={data?.filters?.date || "today"} />
+        <FilterChip label="Date" value={`${data?.filters?.date || "today"} (hari ini)`} />
         <button
           onClick={() => {
             fetchDaily();
@@ -255,88 +264,59 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
         </button>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-        <BigCard
+      {/* Row 1 */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <MetricCard
           label="Volume Received"
           value={received.toLocaleString("id-ID")}
           sub="HMS · hari ini, status Received"
           accent="border-l-blue-500"
         />
-        <BigCard
-          label="Fresh Estimated"
-          value={freshEstimated.toLocaleString("id-ID")}
-          sub={`Received × ${rate}%`}
-          accent="border-l-green-500"
-        />
-        <BigCard
-          label="Backlog (FTD)"
+        <MetricCard
+          label="Backlog FTD"
           value={num(backlog)}
           sub={`In driver ${ftdInDriver.toLocaleString("id-ID")} · Returned hub ${ftdReturned.toLocaleString("id-ID")}`}
           accent="border-l-red-500"
         />
-        <BigCard
+        <MetricCard
           label="Forecast Volume"
           value={num(forecastVolume)}
-          sub="Fresh est. + Backlog"
+          sub="Fresh Estimated + Backlog"
           accent="border-l-cyan-400"
           emphasis
         />
-        <BigCard
+      </div>
+
+      {/* Row 2 */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <MetricCard
+          label="Fresh Estimated"
+          value={freshEstimated.toLocaleString("id-ID")}
+          sub={`Received × ${HISTORICAL_RATE}%`}
+          accent="border-l-green-500"
+        />
+        <MetricCard
           label="Estimated Volume C1"
           value={num(estC1)}
           sub={`Forecast × ${(c1Ratio * 100).toFixed(0)}%`}
           accent="border-l-violet-500"
         />
-        <BigCard
+        <MetricCard
           label="Estimated Volume C2"
           value={num(estC2)}
           sub={`Forecast × ${(100 - c1Ratio * 100).toFixed(0)}%`}
-          accent="border-l-amber-500"
+          accent="border-l-yellow-500"
         />
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div className="bg-slate-800/60 rounded border border-slate-700 border-l-4 border-l-purple-500 px-4 py-3">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-[10px] font-bold text-gray-400 tracking-wide">Delivery Rate</p>
-              <p className="text-2xl font-bold text-white mt-1.5">{rate}%</p>
-            </div>
-            <span className="text-[10px] text-gray-500 text-right max-w-[45%] leading-relaxed">
-              Historical assumption. Fresh Estimated = Received × rate.
-            </span>
-          </div>
-          <input
-            type="range"
-            min={80}
-            max={100}
-            step={0.5}
-            value={rate}
-            onChange={(e) => setRate(Number(e.target.value))}
-            className="w-full mt-3 accent-purple-500"
-          />
-          <div className="flex justify-between text-[9px] text-gray-600 mt-1">
-            <span>80%</span>
-            <span>90%</span>
-            <span>100%</span>
-          </div>
-        </div>
-
-        <BigCard
-          label="vs Rata-rata 3 Hari"
-          value={vsAvg === null ? "-" : `${vsAvg >= 0 ? "+" : ""}${vsAvg.toFixed(1)}%`}
-          sub={avgHistory ? `Avg: ${avgHistory.toLocaleString("id-ID")} paket/hari` : "Belum ada histori"}
-          accent="border-l-emerald-500"
-        />
-      </div>
-
+      {/* Chart + projection */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         <div className="lg:col-span-2 rounded-lg border border-slate-700 bg-slate-900 p-4">
           <div className="flex items-start justify-between mb-3">
             <div>
-              <p className="text-xs font-bold text-white">Volume Harian Minggu Ini (Sen–Sab)</p>
+              <p className="text-xs font-bold text-white">Volume Harian Minggu Ini</p>
               <p className="text-[10px] text-gray-500 mt-0.5">
-                Actual received per day + ADO (Average Daily Order)
+                Sen–Sab · actual received per day + ADO (Average Daily Order)
               </p>
             </div>
             <div className="text-right">
@@ -427,19 +407,76 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
           <Row label="Pace per jam" value={pacePerHour ? pacePerHour.toFixed(1) : "0"} />
           <Row label="Sisa jam operasional" value={`${remainingHours} jam`} />
           <Row label="Proyeksi EOD (pace)" value={projectedEod.toLocaleString("id-ID")} strong />
-          <Row label={`Potensi gagal (${100 - rate}%)`} value={potentialGap.toLocaleString("id-ID")} danger />
+          <Row label={`Potensi gagal (${100 - HISTORICAL_RATE}%)`} value={potentialGap.toLocaleString("id-ID")} danger />
           <div className="pt-2 border-t border-slate-800 space-y-2">
             <Row label="Fresh estimated" value={freshEstimated.toLocaleString("id-ID")} />
-            <Row label="Backlog (FTD)" value={num(backlog)} />
+            <Row label="Backlog FTD" value={num(backlog)} />
             <Row label="Forecast volume" value={num(forecastVolume)} strong />
           </div>
-          <div className="pt-2 border-t border-slate-800">
-            <p className="text-[10px] text-gray-500 leading-relaxed">
-              Forecast = (Volume Received × delivery rate) + Backlog FTD. Split C1/C2 mengikuti
-              rasio inbound C1 (arrive sebelum 08:00 WIB) terhadap fresh volume.
-            </p>
-          </div>
+          {vsAvg !== null && (
+            <div className="pt-2 border-t border-slate-800">
+              <Row
+                label="vs rata-rata 3 hari"
+                value={`${vsAvg >= 0 ? "+" : ""}${vsAvg.toFixed(1)}%`}
+                strong={vsAvg >= 0}
+                danger={vsAvg < 0}
+              />
+            </div>
+          )}
         </div>
+      </div>
+
+      {/* Delivery rate slider — full width, only drives the target cards */}
+      <div className="rounded-lg border border-slate-700 border-l-4 border-l-purple-500 bg-slate-800/60 px-5 py-4">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <p className="text-xs font-bold text-white">Delivery Rate: {targetRate}%</p>
+            <p className="text-[10px] text-gray-500 mt-0.5">Fresh Estimated = Received × rate</p>
+          </div>
+          <p className="text-[10px] text-gray-500 max-w-md text-right leading-relaxed">
+            Slider hanya mengubah <span className="text-blue-300">Target Delivered</span> dan{" "}
+            <span className="text-red-300">Target FTD</span>. Kartu di atas memakai rate historis{" "}
+            {HISTORICAL_RATE}% dari HMS.
+          </p>
+        </div>
+        <input
+          type="range"
+          min={80}
+          max={100}
+          step={0.5}
+          value={targetRate}
+          onChange={(e) => setTargetRate(Number(e.target.value))}
+          className="w-full mt-3 accent-purple-500"
+        />
+        <div className="flex justify-between text-[9px] text-gray-600 mt-1">
+          <span>80%</span>
+          <span>85%</span>
+          <span>90%</span>
+          <span>95%</span>
+          <span>100%</span>
+        </div>
+      </div>
+
+      {/* Bottom row — target cards, only these move with the slider */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <TargetCard
+          label="Forecast Volume"
+          value={num(forecastVolume)}
+          sub="Static · Fresh Estimated + Backlog"
+          tone="text-cyan-300"
+        />
+        <TargetCard
+          label="Target Delivered"
+          value={num(targetDelivered)}
+          sub={`Forecast × ${targetRate}%`}
+          tone="text-blue-300"
+        />
+        <TargetCard
+          label="Target FTD"
+          value={num(targetFtd)}
+          sub={`Forecast × ${(100 - targetRate).toFixed(0)}%`}
+          tone="text-red-300"
+        />
       </div>
 
       <div className="rounded-lg border border-slate-700 bg-slate-900 overflow-hidden">
@@ -487,7 +524,7 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
                       {(d.receivedHubWide ?? d.received).toLocaleString("id-ID")}
                     </td>
                     <td className="px-4 py-2 text-right tabular-nums text-green-400">
-                      {Math.round((d.received * rate) / 100).toLocaleString("id-ID")}
+                      {Math.round((d.received * HISTORICAL_RATE) / 100).toLocaleString("id-ID")}
                     </td>
                     <td
                       className={`px-4 py-2 text-right tabular-nums ${
@@ -508,19 +545,18 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
         <Info className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-blue-400" />
         <div className="space-y-1">
           <p>
-            Sumber: HMS FM Volume - Leg type <span className="text-gray-200">Last Mile</span>, Status{" "}
-            <span className="text-gray-200">Received</span>, District{" "}
-            <span className="text-gray-200">Jatinegara</span>, tanggal hari ini (WIB). Backlog/FTD
-            diambil dari HMS summary (<span className="text-gray-200">in driver</span> +{" "}
-            <span className="text-gray-200">returned to hub</span>).
+            Sumber: HMS FM Volume = Last Mile · Status{" "}
+            <span className="text-gray-200">Received</span> · District{" "}
+            <span className="text-gray-200">Jatinegara</span> ·{" "}
+            <span className="text-gray-200">tanggal hari ini saja</span> (00:00–23:59 WIB, hub
+            460450593288). Angka volume diambil dari <span className="text-gray-200">total_records</span>{" "}
+            HMS untuk filter tersebut, bukan hasil hitung halaman, supaya sama dengan yang tampil di
+            HMS.
           </p>
           <p>
-            Metodologi forecast mengacu pada Wiki Forecast; bila data histori belum tersedia dipakai
-            standar{" "}
-            <span className="text-gray-200">
-              Received × historical delivery rate + Backlog
-            </span>
-            . ADO = rata-rata volume harian Sen–Sab minggu berjalan.
+            Backlog FTD = FTD in driver + returned to hub (HMS summary). Forecast Volume = Fresh
+            Estimated ({HISTORICAL_RATE}% historis) + Backlog. Slider delivery rate hanya dipakai
+            untuk Target Delivered dan Target FTD.
             {lastUpdate && ` Terakhir update: ${lastUpdate.toLocaleTimeString("id-ID")}.`}
           </p>
         </div>
@@ -547,7 +583,7 @@ function FilterChip({ label, value }: { label: string; value: string }) {
   );
 }
 
-function BigCard({
+function MetricCard({
   label,
   value,
   sub,
@@ -569,6 +605,30 @@ function BigCard({
       <p className="text-[10px] font-bold text-gray-400 tracking-wide">{label}</p>
       <p className="text-2xl font-bold text-white mt-1.5 tabular-nums">{value}</p>
       <p className="text-[10px] text-gray-500 mt-1 leading-snug">{sub}</p>
+    </div>
+  );
+}
+
+function TargetCard({
+  label,
+  value,
+  sub,
+  tone,
+}: {
+  label: string;
+  value: string;
+  sub: string;
+  tone: string;
+}) {
+  return (
+    <div className="rounded border border-slate-700 overflow-hidden">
+      <div className="bg-slate-700/70 px-4 py-2">
+        <p className="text-[10px] font-bold uppercase tracking-wide text-gray-300">{label}</p>
+      </div>
+      <div className="bg-slate-800/60 px-4 py-3">
+        <p className={`text-2xl font-bold tabular-nums ${tone}`}>{value}</p>
+        <p className="text-[10px] text-gray-500 mt-1 leading-snug">{sub}</p>
+      </div>
     </div>
   );
 }
