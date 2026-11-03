@@ -1,19 +1,20 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshCw, TrendingUp, AlertTriangle, Info } from "lucide-react";
+import { RefreshCw, AlertTriangle, Info } from "lucide-react";
 import {
-  Area,
-  AreaChart,
+  Bar,
   CartesianGrid,
+  Cell,
+  ComposedChart,
   Legend,
   Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
+import { fetchDashboardJson } from "@/lib/client-fetch";
 
 type DayResult = {
   date: string;
@@ -34,18 +35,66 @@ type FmResponse = {
   avgHistory?: number | null;
 };
 
+type WeekDay = {
+  date: string;
+  label: string;
+  received: number;
+  receivedHubWide: number;
+  isToday: boolean;
+  isFuture: boolean;
+  error?: string;
+};
+
+type WeekResponse = {
+  success?: boolean;
+  error?: string;
+  message?: string;
+  weekStart?: string;
+  weekEnd?: string;
+  week?: WeekDay[];
+  ado?: number | null;
+};
+
+type HubSummary = {
+  ftd?: number;
+  ftd_total?: number;
+  ready_to_return?: number;
+  just_arrived?: number;
+  backlog?: number;
+  today_volume?: number;
+  fresh_c1?: number;
+  fresh_c2?: number;
+};
+
+type ChartRow = {
+  label: string;
+  date: string;
+  volume: number;
+  cumulative: number | null;
+  isToday: boolean;
+  isFuture: boolean;
+  isAdo: boolean;
+};
+
+const DEFAULT_C1_RATIO = 0.7;
+
 export default function ForecastTab({ hubId }: { hubId: string }) {
   const [data, setData] = useState<FmResponse | null>(null);
+  const [week, setWeek] = useState<WeekDay[]>([]);
+  const [weekAdo, setWeekAdo] = useState<number | null>(null);
+  const [summary, setSummary] = useState<HubSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rate, setRate] = useState(97);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
-  const fetchData = useCallback(async () => {
+  const fetchDaily = useCallback(async () => {
     if (!hubId) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/hms/fm?hubId=${hubId}&days=3&district=jatinegara`);
+      const res = await fetch(`/api/hms/fm?hubId=${hubId}&days=3&district=jatinegara`, {
+        cache: "no-store",
+      });
       const d: FmResponse = await res.json();
       if (d.success && d.today) {
         setData(d);
@@ -61,26 +110,63 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
     }
   }, [hubId]);
 
+  const fetchWeek = useCallback(async () => {
+    if (!hubId) return;
+    try {
+      const res = await fetch(`/api/hms/fm?hubId=${hubId}&range=week&district=jatinegara`, {
+        cache: "no-store",
+      });
+      const d: WeekResponse = await res.json();
+      if (d.success && Array.isArray(d.week)) {
+        setWeek(d.week);
+        setWeekAdo(d.ado ?? null);
+      }
+    } catch {
+      // weekly chart falls back to whatever was loaded before
+    }
+  }, [hubId]);
+
+  const fetchSummary = useCallback(async () => {
+    if (!hubId) return;
+    const d = await fetchDashboardJson<any>(`/api/hms/summary?hubId=${hubId}`);
+    if (d?.success && d.summary) setSummary(d.summary as HubSummary);
+  }, [hubId]);
+
   useEffect(() => {
-    fetchData();
-    const t = setInterval(fetchData, 300000);
-    return () => clearInterval(t);
-  }, [fetchData]);
+    fetchDaily();
+    fetchWeek();
+    fetchSummary();
+
+    const dailyTimer = setInterval(fetchDaily, 300000);
+    const weekTimer = setInterval(fetchWeek, 600000);
+    const summaryTimer = setInterval(fetchSummary, 120000);
+    return () => {
+      clearInterval(dailyTimer);
+      clearInterval(weekTimer);
+      clearInterval(summaryTimer);
+    };
+  }, [fetchDaily, fetchWeek, fetchSummary]);
 
   const received = data?.today?.received || 0;
-  const hourly = data?.today?.hourly || new Array(24).fill(0);
   const avgHistory = data?.avgHistory ?? null;
 
-  const cumulative = useMemo(() => {
-    let acc = 0;
-    return hourly.map((v, h) => {
-      acc += v;
-      return { hour: `${String(h).padStart(2, "0")}:00`, received: v, cumulative: acc };
-    });
-  }, [hourly]);
+  const freshEstimated = Math.round((received * rate) / 100);
+  const ftdInDriver = summary?.ftd ?? 0;
+  const ftdReturned = summary?.ready_to_return ?? 0;
+  const ftdTotal = summary?.ftd_total ?? 0;
+  const backlog = ftdTotal > 0 ? ftdTotal : ftdInDriver + ftdReturned;
+  const forecastVolume = freshEstimated + backlog;
 
-  const forecastDelivered = Math.round((received * rate) / 100);
-  const potentialGap = received - forecastDelivered;
+  const justArrived = summary?.just_arrived ?? 0;
+  const rawC1Ratio =
+    justArrived > 0 && (summary?.fresh_c1 ?? 0) > 0
+      ? (summary?.fresh_c1 ?? 0) / justArrived
+      : DEFAULT_C1_RATIO;
+  const c1Ratio = Math.min(Math.max(rawC1Ratio, 0.05), 0.95);
+  const estC1 = Math.round(forecastVolume * c1Ratio);
+  const estC2 = Math.max(forecastVolume - estC1, 0);
+
+  const potentialGap = received - freshEstimated;
   const vsAvg = avgHistory && avgHistory > 0 ? ((received - avgHistory) / avgHistory) * 100 : null;
   const nowHour = Number(
     new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(11, 13)
@@ -88,6 +174,43 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
   const remainingHours = Math.max(24 - nowHour, 0);
   const pacePerHour = nowHour > 0 ? received / nowHour : 0;
   const projectedEod = Math.round(received + pacePerHour * remainingHours);
+
+  const chartRows: ChartRow[] = useMemo(() => {
+    let acc = 0;
+    const rows: ChartRow[] = week.map((d) => {
+      const volume = d.isFuture ? 0 : d.received;
+      acc += volume;
+      return {
+        label: d.label,
+        date: d.date,
+        volume,
+        cumulative: d.isFuture ? null : acc,
+        isToday: d.isToday,
+        isFuture: d.isFuture,
+        isAdo: false,
+      };
+    });
+
+    const activeDays = rows.filter((r) => !r.isFuture);
+    const fallbackAdo = activeDays.length
+      ? Math.round(activeDays.reduce((sum, r) => sum + r.volume, 0) / activeDays.length)
+      : 0;
+    const ado = weekAdo ?? fallbackAdo;
+
+    rows.push({
+      label: "ADO",
+      date: "",
+      volume: ado,
+      cumulative: null,
+      isToday: false,
+      isFuture: false,
+      isAdo: true,
+    });
+    return rows;
+  }, [week, weekAdo]);
+
+  const adoValue = chartRows.length ? chartRows[chartRows.length - 1].volume : 0;
+  const hasWeekData = week.some((d) => !d.isFuture);
 
   return (
     <div className="px-6 py-4 space-y-4">
@@ -107,7 +230,11 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
         <FilterChip label="District" value="Jatinegara" />
         <FilterChip label="Date" value={data?.filters?.date || "today"} />
         <button
-          onClick={fetchData}
+          onClick={() => {
+            fetchDaily();
+            fetchWeek();
+            fetchSummary();
+          }}
           disabled={loading}
           className="ml-auto flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300"
         >
@@ -116,59 +243,169 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
         </button>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <BigCard label="Volume Received (FM)" value={received.toLocaleString("id-ID")} sub="Hari ini, status Received" accent="border-l-blue-500" />
-        <BigCard label="Forecast Delivered" value={forecastDelivered.toLocaleString("id-ID")} sub={`Received x ${rate}%`} accent="border-l-green-500" />
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
         <BigCard
-          label="Delivery Rate"
-          value={`${rate}%`}
-          sub="Historical assumption"
-          accent="border-l-purple-500"
-          input={
-            <input
-              type="range"
-              min={80}
-              max={100}
-              step={0.5}
-              value={rate}
-              onChange={(e) => setRate(Number(e.target.value))}
-              className="w-full mt-2 accent-purple-500"
-            />
-          }
+          label="Volume Received"
+          value={received.toLocaleString("id-ID")}
+          sub="HMS · hari ini, status Received"
+          accent="border-l-blue-500"
         />
+        <BigCard
+          label="Fresh Estimated"
+          value={freshEstimated.toLocaleString("id-ID")}
+          sub={`Received × ${rate}%`}
+          accent="border-l-green-500"
+        />
+        <BigCard
+          label="Backlog (FTD)"
+          value={backlog.toLocaleString("id-ID")}
+          sub={`In driver ${ftdInDriver.toLocaleString("id-ID")} · Returned hub ${ftdReturned.toLocaleString("id-ID")}`}
+          accent="border-l-red-500"
+        />
+        <BigCard
+          label="Forecast Volume"
+          value={forecastVolume.toLocaleString("id-ID")}
+          sub="Fresh est. + Backlog"
+          accent="border-l-cyan-400"
+          emphasis
+        />
+        <BigCard
+          label="Estimated Volume C1"
+          value={estC1.toLocaleString("id-ID")}
+          sub={`Forecast × ${(c1Ratio * 100).toFixed(0)}%`}
+          accent="border-l-violet-500"
+        />
+        <BigCard
+          label="Estimated Volume C2"
+          value={estC2.toLocaleString("id-ID")}
+          sub={`Forecast × ${(100 - c1Ratio * 100).toFixed(0)}%`}
+          accent="border-l-amber-500"
+        />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="bg-slate-800/60 rounded border border-slate-700 border-l-4 border-l-purple-500 px-4 py-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-bold text-gray-400 tracking-wide">Delivery Rate</p>
+              <p className="text-2xl font-bold text-white mt-1.5">{rate}%</p>
+            </div>
+            <span className="text-[10px] text-gray-500 text-right max-w-[45%] leading-relaxed">
+              Historical assumption. Fresh Estimated = Received × rate.
+            </span>
+          </div>
+          <input
+            type="range"
+            min={80}
+            max={100}
+            step={0.5}
+            value={rate}
+            onChange={(e) => setRate(Number(e.target.value))}
+            className="w-full mt-3 accent-purple-500"
+          />
+          <div className="flex justify-between text-[9px] text-gray-600 mt-1">
+            <span>80%</span>
+            <span>90%</span>
+            <span>100%</span>
+          </div>
+        </div>
+
         <BigCard
           label="vs Rata-rata 3 Hari"
           value={vsAvg === null ? "-" : `${vsAvg >= 0 ? "+" : ""}${vsAvg.toFixed(1)}%`}
           sub={avgHistory ? `Avg: ${avgHistory.toLocaleString("id-ID")} paket/hari` : "Belum ada histori"}
-          accent="border-l-amber-500"
+          accent="border-l-emerald-500"
         />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         <div className="lg:col-span-2 rounded-lg border border-slate-700 bg-slate-900 p-4">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-xs font-bold text-white">Volume Received per Jam (WIB)</p>
-            <p className="text-[10px] text-gray-500">Cumulative today</p>
+          <div className="flex items-start justify-between mb-3">
+            <div>
+              <p className="text-xs font-bold text-white">Volume Harian Minggu Ini (Sen–Sab)</p>
+              <p className="text-[10px] text-gray-500 mt-0.5">
+                Actual received per day + ADO (Average Daily Order)
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-[10px] text-gray-500">ADO</p>
+              <p className="text-lg font-bold text-amber-400 tabular-nums">
+                {adoValue.toLocaleString("id-ID")}
+              </p>
+            </div>
           </div>
+
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={cumulative}>
-                <defs>
-                  <linearGradient id="fmGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.5} />
-                    <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.03} />
-                  </linearGradient>
-                </defs>
+              <ComposedChart data={chartRows} margin={{ top: 6, right: 4, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                <XAxis dataKey="hour" tick={{ fontSize: 9, fill: "#64748b" }} interval={2} />
-                <YAxis tick={{ fontSize: 9, fill: "#64748b" }} width={32} />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fontSize: 10, fill: "#94a3b8" }}
+                  axisLine={{ stroke: "#1e293b" }}
+                  tickLine={false}
+                />
+                <YAxis
+                  yAxisId="vol"
+                  tick={{ fontSize: 9, fill: "#64748b" }}
+                  width={40}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <YAxis
+                  yAxisId="cum"
+                  orientation="right"
+                  tick={{ fontSize: 9, fill: "#475569" }}
+                  width={44}
+                  axisLine={false}
+                  tickLine={false}
+                />
                 <Tooltip
                   contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", fontSize: 11 }}
-                  formatter={(v: any, n: any) => [Number(v).toLocaleString("id-ID"), n === "cumulative" ? "Kumulatif" : "Per jam"]}
+                  labelStyle={{ color: "#e2e8f0" }}
+                  formatter={(v: any, n: any) => [Number(v).toLocaleString("id-ID"), n]}
                 />
-                <Area type="monotone" dataKey="cumulative" stroke="#3b82f6" strokeWidth={2} fill="url(#fmGrad)" name="cumulative" />
-              </AreaChart>
+                <Bar yAxisId="vol" dataKey="volume" name="Volume" radius={[3, 3, 0, 0]} maxBarSize={54}>
+                  {chartRows.map((row) => (
+                    <Cell
+                      key={row.label}
+                      fill={
+                        row.isAdo
+                          ? "#f59e0b"
+                          : row.isToday
+                          ? "#3b82f6"
+                          : row.isFuture
+                          ? "#1e293b"
+                          : "#334155"
+                      }
+                    />
+                  ))}
+                </Bar>
+                <Line
+                  yAxisId="cum"
+                  type="monotone"
+                  dataKey="cumulative"
+                  name="Kumulatif"
+                  stroke="#22d3ee"
+                  strokeWidth={1.5}
+                  strokeDasharray="4 3"
+                  dot={false}
+                />
+                <Legend
+                  wrapperStyle={{ fontSize: 10, color: "#94a3b8" }}
+                  iconType="circle"
+                  iconSize={7}
+                />
+              </ComposedChart>
             </ResponsiveContainer>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 mt-2 text-[9px] text-gray-500">
+            <LegendDot color="#3b82f6" label="Hari ini" />
+            <LegendDot color="#334155" label="Hari sebelumnya" />
+            <LegendDot color="#f59e0b" label="ADO" />
+            <LegendDot color="#22d3ee" label="Kumulatif (sumbu kanan)" />
+            {!hasWeekData && <span className="text-amber-500">Menunggu data minggu ini…</span>}
           </div>
         </div>
 
@@ -179,18 +416,24 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
           <Row label="Sisa jam operasional" value={`${remainingHours} jam`} />
           <Row label="Proyeksi EOD (pace)" value={projectedEod.toLocaleString("id-ID")} strong />
           <Row label={`Potensi gagal (${100 - rate}%)`} value={potentialGap.toLocaleString("id-ID")} danger />
+          <div className="pt-2 border-t border-slate-800 space-y-2">
+            <Row label="Fresh estimated" value={freshEstimated.toLocaleString("id-ID")} />
+            <Row label="Backlog (FTD)" value={backlog.toLocaleString("id-ID")} />
+            <Row label="Forecast volume" value={forecastVolume.toLocaleString("id-ID")} strong />
+          </div>
           <div className="pt-2 border-t border-slate-800">
             <p className="text-[10px] text-gray-500 leading-relaxed">
-              Forecast = Volume Received (FM) x historical delivery rate. Rate bisa disesuaikan
-              sesuai performa aktual hub.
+              Forecast = (Volume Received × delivery rate) + Backlog FTD. Split C1/C2 mengikuti
+              rasio inbound C1 (arrive sebelum 08:00 WIB) terhadap fresh volume.
             </p>
           </div>
         </div>
       </div>
 
       <div className="rounded-lg border border-slate-700 bg-slate-900 overflow-hidden">
-        <div className="px-4 py-3 border-b border-slate-800">
+        <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
           <p className="text-xs font-bold text-white">Volume Received Harian</p>
+          <p className="text-[10px] text-gray-500">Jatinegara · 3 hari terakhir</p>
         </div>
         <table className="w-full text-xs">
           <thead className="bg-[#0f1e3d] text-white">
@@ -198,28 +441,52 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
               <th className="px-4 py-2.5 text-left font-semibold">Tanggal</th>
               <th className="px-4 py-2.5 text-right font-semibold">Received (Jatinegara)</th>
               <th className="px-4 py-2.5 text-right font-semibold">Hub-wide</th>
-              <th className="px-4 py-2.5 text-right font-semibold">Forecast Delivered</th>
+              <th className="px-4 py-2.5 text-right font-semibold">Fresh Estimated</th>
+              <th className="px-4 py-2.5 text-right font-semibold">vs ADO</th>
             </tr>
           </thead>
           <tbody>
             {[...(data?.history || []), ...(data?.today ? [data.today] : [])].length === 0 ? (
               <tr>
-                <td colSpan={4} className="py-8 text-center text-slate-500">
+                <td colSpan={5} className="py-8 text-center text-slate-500">
                   {loading ? "Loading..." : "Belum ada data FM"}
                 </td>
               </tr>
             ) : (
-              [...(data?.history || []), ...(data?.today ? [data.today] : [])].map((d, i, arr) => (
-                <tr key={d.date} className={`border-b border-slate-800 ${i === arr.length - 1 ? "bg-blue-950/20 font-semibold" : ""}`}>
-                  <td className="px-4 py-2 text-white">
-                    {d.date}
-                    {i === arr.length - 1 && <span className="ml-2 text-[10px] text-blue-400">TODAY</span>}
-                  </td>
-                  <td className="px-4 py-2 text-right tabular-nums">{d.received.toLocaleString("id-ID")}</td>
-                  <td className="px-4 py-2 text-right tabular-nums text-gray-400">{(d.receivedHubWide ?? d.received).toLocaleString("id-ID")}</td>
-                  <td className="px-4 py-2 text-right tabular-nums text-green-400">{Math.round((d.received * rate) / 100).toLocaleString("id-ID")}</td>
-                </tr>
-              ))
+              [...(data?.history || []), ...(data?.today ? [data.today] : [])].map((d, i, arr) => {
+                const diff = adoValue > 0 ? ((d.received - adoValue) / adoValue) * 100 : null;
+                return (
+                  <tr
+                    key={d.date}
+                    className={`border-b border-slate-800 ${
+                      i === arr.length - 1 ? "bg-blue-950/20 font-semibold" : ""
+                    }`}
+                  >
+                    <td className="px-4 py-2 text-white">
+                      {d.date}
+                      {i === arr.length - 1 && (
+                        <span className="ml-2 text-[10px] text-blue-400">TODAY</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums">
+                      {d.received.toLocaleString("id-ID")}
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums text-gray-400">
+                      {(d.receivedHubWide ?? d.received).toLocaleString("id-ID")}
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums text-green-400">
+                      {Math.round((d.received * rate) / 100).toLocaleString("id-ID")}
+                    </td>
+                    <td
+                      className={`px-4 py-2 text-right tabular-nums ${
+                        diff === null ? "text-gray-500" : diff >= 0 ? "text-green-400" : "text-red-400"
+                      }`}
+                    >
+                      {diff === null ? "-" : `${diff >= 0 ? "+" : ""}${diff.toFixed(1)}%`}
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
@@ -227,16 +494,35 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
 
       <div className="flex items-start gap-2 rounded border border-slate-700 bg-slate-800/40 px-4 py-3 text-[10px] text-gray-400">
         <Info className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-blue-400" />
-        <p>
-          Sumber: HMS FM Volume - Leg type <span className="text-gray-200">Last Mile</span>, Status{" "}
-          <span className="text-gray-200">Received</span>, District{" "}
-          <span className="text-gray-200">Jatinegara</span>, tanggal hari ini (WIB). Metodologi forecast
-          mengacu pada Wiki Forecast; bila data histori belum tersedia dipakai standar{" "}
-          <span className="text-gray-200">Received x historical delivery rate</span>.
-          {lastUpdate && ` Terakhir update: ${lastUpdate.toLocaleTimeString("id-ID")}.`}
-        </p>
+        <div className="space-y-1">
+          <p>
+            Sumber: HMS FM Volume - Leg type <span className="text-gray-200">Last Mile</span>, Status{" "}
+            <span className="text-gray-200">Received</span>, District{" "}
+            <span className="text-gray-200">Jatinegara</span>, tanggal hari ini (WIB). Backlog/FTD
+            diambil dari HMS summary (<span className="text-gray-200">in driver</span> +{" "}
+            <span className="text-gray-200">returned to hub</span>).
+          </p>
+          <p>
+            Metodologi forecast mengacu pada Wiki Forecast; bila data histori belum tersedia dipakai
+            standar{" "}
+            <span className="text-gray-200">
+              Received × historical delivery rate + Backlog
+            </span>
+            . ADO = rata-rata volume harian Sen–Sab minggu berjalan.
+            {lastUpdate && ` Terakhir update: ${lastUpdate.toLocaleTimeString("id-ID")}.`}
+          </p>
+        </div>
       </div>
     </div>
+  );
+}
+
+function LegendDot({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="w-2 h-2 rounded-full" style={{ background: color }} />
+      {label}
+    </span>
   );
 }
 
@@ -254,29 +540,48 @@ function BigCard({
   value,
   sub,
   accent,
-  input,
+  emphasis,
 }: {
   label: string;
   value: string;
   sub: string;
   accent: string;
-  input?: React.ReactNode;
+  emphasis?: boolean;
 }) {
   return (
-    <div className={`bg-slate-800/60 rounded border border-slate-700 border-l-4 ${accent} px-4 py-3`}>
+    <div
+      className={`bg-slate-800/60 rounded border ${
+        emphasis ? "border-cyan-500/60" : "border-slate-700"
+      } border-l-4 ${accent} px-4 py-3`}
+    >
       <p className="text-[10px] font-bold text-gray-400 tracking-wide">{label}</p>
-      <p className="text-2xl font-bold text-white mt-1.5">{value}</p>
-      <p className="text-[10px] text-gray-500 mt-1">{sub}</p>
-      {input}
+      <p className="text-2xl font-bold text-white mt-1.5 tabular-nums">{value}</p>
+      <p className="text-[10px] text-gray-500 mt-1 leading-snug">{sub}</p>
     </div>
   );
 }
 
-function Row({ label, value, strong, danger }: { label: string; value: string; strong?: boolean; danger?: boolean }) {
+function Row({
+  label,
+  value,
+  strong,
+  danger,
+}: {
+  label: string;
+  value: string;
+  strong?: boolean;
+  danger?: boolean;
+}) {
   return (
     <div className="flex items-center justify-between text-xs">
       <span className="text-gray-400">{label}</span>
-      <span className={`tabular-nums ${danger ? "text-red-400" : strong ? "text-white font-bold" : "text-gray-200"}`}>{value}</span>
+      <span
+        className={`tabular-nums ${
+          danger ? "text-red-400" : strong ? "text-white font-bold" : "text-gray-200"
+        }`}
+      >
+        {value}
+      </span>
     </div>
   );
 }

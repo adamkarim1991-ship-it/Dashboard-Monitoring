@@ -3,6 +3,9 @@ import { resolveHmsToken } from "@/lib/hms-context";
 import { NextRequest, NextResponse } from "next/server";
 
 const JATINEGARA_HUB = "GTL Jatinegara Hub";
+const WEEK_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const WEEK_CACHE_TTL_MS = 5 * 60 * 1000;
+const weekCache = new Map<string, { data: any; timestamp: number }>();
 
 function dayWindowsWIB(days: number) {
   const now = new Date();
@@ -29,6 +32,38 @@ function dayWindowsWIB(days: number) {
     });
   }
   return out;
+}
+
+// Monday..Saturday of the current WIB week. Future days are flagged so the UI
+// can render them as empty slots instead of fetching HMS for nothing.
+function weekWindowsWIB() {
+  const now = new Date();
+  const wibOffsetMs = 7 * 60 * 60 * 1000;
+  const nowWIB = new Date(now.getTime() + wibOffsetMs);
+  const dow = nowWIB.getUTCDay();
+  const mondayOffset = (dow + 6) % 7;
+  const todayStartWIB =
+    Date.UTC(nowWIB.getUTCFullYear(), nowWIB.getUTCMonth(), nowWIB.getUTCDate(), 0, 0, 0) -
+    wibOffsetMs;
+  const mondayStartWIB = todayStartWIB - mondayOffset * 86400000;
+
+  return WEEK_LABELS.map((label, i) => {
+    const startMs = mondayStartWIB + i * 86400000;
+    const isToday = i === mondayOffset;
+    const isFuture = i > mondayOffset;
+    const endMs = isToday ? now.getTime() : startMs + 86399999;
+    const d = new Date(startMs + wibOffsetMs);
+    return {
+      label,
+      date: `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
+        d.getUTCDate()
+      ).padStart(2, "0")}`,
+      from: Math.floor(startMs / 1000),
+      to: Math.floor(endMs / 1000),
+      isToday,
+      isFuture,
+    };
+  });
 }
 
 async function fetchPage(token: string, page: number, fromTs: number, toTs: number) {
@@ -116,6 +151,86 @@ export async function GET(req: NextRequest) {
 
   const days = Math.min(Math.max(Number(req.nextUrl.searchParams.get("days") || 3), 1), 7);
   const districtFilter = (req.nextUrl.searchParams.get("district") || "jatinegara").toLowerCase();
+
+  if (req.nextUrl.searchParams.get("range") === "week") {
+    const cacheKey = `week:${districtFilter}`;
+    const cached = weekCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < WEEK_CACHE_TTL_MS) {
+      return NextResponse.json({
+        ...cached.data,
+        meta: { ...cached.data.meta, cached: true },
+      });
+    }
+
+    const windows = weekWindowsWIB();
+    try {
+      const week = await Promise.all(
+        windows.map(async (w) => {
+          if (w.isFuture) {
+            return {
+              date: w.date,
+              label: w.label,
+              received: 0,
+              receivedHubWide: 0,
+              isToday: w.isToday,
+              isFuture: true,
+            };
+          }
+          try {
+            const shipments = await fetchWindow(hmsToken, w.from, w.to);
+            const hubMatched = shipments.filter((s) => s.actual_hub === JATINEGARA_HUB);
+            const districtMatched = hubMatched.filter((s) =>
+              districtOf(s).includes(districtFilter)
+            );
+            const pool = districtMatched.length > 0 ? districtMatched : hubMatched;
+            return {
+              date: w.date,
+              label: w.label,
+              received: pool.length,
+              receivedHubWide: hubMatched.length,
+              isToday: w.isToday,
+              isFuture: false,
+            };
+          } catch (e: any) {
+            return {
+              date: w.date,
+              label: w.label,
+              received: 0,
+              receivedHubWide: 0,
+              isToday: w.isToday,
+              isFuture: false,
+              error: e.message,
+            };
+          }
+        })
+      );
+
+      const withData = week.filter((d) => !d.isFuture && d.received > 0);
+      const ado = withData.length
+        ? Math.round(withData.reduce((sum, d) => sum + d.received, 0) / withData.length)
+        : 0;
+
+      const payload = {
+        success: true,
+        range: "week",
+        weekStart: week[0]?.date,
+        weekEnd: week[week.length - 1]?.date,
+        district: "Jatinegara",
+        week,
+        ado,
+        meta: { fetchedAt: new Date().toISOString(), days: week.length },
+      };
+
+      weekCache.set(cacheKey, { data: payload, timestamp: Date.now() });
+      return NextResponse.json(payload);
+    } catch (e: any) {
+      return NextResponse.json(
+        { error: "HMS FM week fetch failed", detail: e.message },
+        { status: 502 }
+      );
+    }
+  }
+
   const windows = dayWindowsWIB(days);
 
   try {
