@@ -29,6 +29,14 @@ type SliceSnapshot = {
   urgent: { total: number; delivered: number; ftd: number; ongoing: number; pct: number };
   cod: { total: number; ftd: number; readyToReturn: number; delivered: number; fd: number };
   aging: { total48: number; zero48: number; one48: number; more48: number; total72: number };
+  c1: {
+    c1: number;
+    deliveredBefore12: number;
+    delivered: number;
+    ongoing: number;
+    ftd: number;
+    scanned: number;
+  };
 };
 const lastGood = new Map<string, Partial<SliceSnapshot>>();
 
@@ -129,23 +137,28 @@ async function callHMS(
 }
 
 // Secondary slices (urgent, COD, aging) must not flicker to zero when one
-// parallel call loses a race against the HMS rate limiter: retry once, and the
-// caller keeps the last good value when both attempts fail.
+// parallel call loses a race against the HMS rate limiter. HMS signals that
+// case with an HTTP 200 plus an empty row array, so an empty payload counts as
+// a failure and gets retried; the caller keeps the last good value when every
+// attempt stays empty.
 async function callHMSRetry(
   token: string,
   apiId: string,
   params: Record<string, any>,
-  attempts = 2
+  attempts = 3
 ) {
   let lastError: any = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      return await callHMS(token, apiId, params);
+      const res = await callHMS(token, apiId, params);
+      const rows = JSON.parse(res?.data?.data ?? "[]");
+      if (Array.isArray(rows) && rows.length > 0) return res;
+      lastError = new Error("empty slice");
     } catch (e: any) {
       lastError = e;
-      if (attempt < attempts) {
-        await new Promise((resolve) => setTimeout(resolve, 350 * attempt));
-      }
+    }
+    if (attempt < attempts) {
+      await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
     }
   }
   throw lastError;
@@ -654,9 +667,20 @@ export async function GET(req: NextRequest) {
 
     const deliveredJustArrived = main.delivered_just_arrived || 0;
     const justArrived = Number(main.just_arrived) || 0;
-    const freshC1 = Math.min(c1Result.c1, justArrived);
+
+    // The C1 scan needs ~50 paginated calls, so it is the slice most likely to
+    // come back empty. Keep the last good scan instead of reporting 0 C1.
+    let c1Scan = c1Result;
+    if (!c1Scan || !c1Scan.c1) {
+      const cachedC1 = recallSlice(HUB_ID, "c1");
+      if (cachedC1) c1Scan = cachedC1;
+    } else {
+      rememberSlice(HUB_ID, "c1", c1Scan);
+    }
+
+    const freshC1 = Math.min(c1Scan.c1, justArrived);
     const freshC2 = Math.max(justArrived - freshC1, 0);
-    const deliveredBefore12 = c1Result.deliveredBefore12;
+    const deliveredBefore12 = c1Scan.deliveredBefore12;
     const sdBefore12 = freshC1 > 0 ? (deliveredBefore12 / freshC1) * 100 : 0;
     const freshSuccess =
       justArrived > 0
@@ -696,7 +720,7 @@ export async function GET(req: NextRequest) {
     // arrivals are excluded, so only the C1 cohort is counted on both sides.
     const c1Pool = freshC1 + backlog;
     const c1FreshProcessed = Math.min(
-      c1Result.delivered + c1Result.ongoing + c1Result.ftd,
+      c1Scan.delivered + c1Scan.ongoing + c1Scan.ftd,
       freshC1
     );
     const c1BacklogProcessed = Math.min(
@@ -716,10 +740,10 @@ export async function GET(req: NextRequest) {
       backlog,
       fresh_processed: c1FreshProcessed,
       backlog_processed: c1BacklogProcessed,
-      fresh_delivered: c1Result.delivered,
-      fresh_ongoing: c1Result.ongoing,
-      fresh_ftd: c1Result.ftd,
-      c1_scanned: c1Result.scanned,
+      fresh_delivered: c1Scan.delivered,
+      fresh_ongoing: c1Scan.ongoing,
+      fresh_ftd: c1Scan.ftd,
+      c1_scanned: c1Scan.scanned,
       target_hour_wib: 8,
     };
 
