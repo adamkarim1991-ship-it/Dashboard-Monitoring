@@ -3,6 +3,7 @@ import { resolveActiveHub, resolveHmsToken } from "@/lib/hms-context";
 import { buildHmsHeaders } from '@/lib/hms-headers';
 import { applyCleanFloorCookie, resolveCleanFloor } from "@/lib/clean-floor";
 import { refreshStoredHmsToken, type RefreshedHmsToken } from "@/lib/hms-token-refresh";
+import { prisma } from "@/lib/prisma";
 import { readTokenChunkCount, writeTokenCookies } from "@/lib/hms-token-store";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -118,8 +119,25 @@ function get8amWIBUnix(): number {
 interface HmsTokenHolder {
   token: string;
   userId: string;
+  hubId: string;
   refreshed: boolean;
+  triedHubToken: boolean;
   refreshResult: RefreshedHmsToken | null;
+}
+
+// The hub row is the second token source in the system (the browser extension
+// pushes one token per hub). It keeps serving the dashboard when the per-user
+// grant can no longer be refreshed.
+async function readHubToken(hmsHubId: string): Promise<string | null> {
+  try {
+    const hub = await prisma.hub.findUnique({
+      where: { hmsHubId },
+      select: { hmsToken: true },
+    });
+    return hub?.hmsToken ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function callHMS(
@@ -136,14 +154,25 @@ async function callHMS(
     body: JSON.stringify({ api_id: apiId, params }),
     cache: "no-store",
   });
-  if (res.status === 401 && !holder.refreshed) {
-    holder.refreshed = true;
-    const refreshed = await refreshStoredHmsToken(holder.userId, holder.token);
-    if (refreshed) {
-      holder.token = refreshed.token;
-      holder.refreshResult = refreshed;
-      console.warn("[summary] HMS token refreshed after 401");
-      return callHMS(holder, apiId, params);
+  if (res.status === 401) {
+    if (!holder.refreshed) {
+      holder.refreshed = true;
+      const refreshed = await refreshStoredHmsToken(holder.userId, holder.token);
+      if (refreshed) {
+        holder.token = refreshed.token;
+        holder.refreshResult = refreshed;
+        console.warn("[summary] HMS token refreshed after 401");
+        return callHMS(holder, apiId, params);
+      }
+    }
+    if (!holder.triedHubToken) {
+      holder.triedHubToken = true;
+      const hubToken = await readHubToken(holder.hubId);
+      if (hubToken && hubToken !== holder.token) {
+        holder.token = hubToken;
+        console.warn("[summary] falling back to hub token after 401");
+        return callHMS(holder, apiId, params);
+      }
     }
     throw new Error(
       "HMS HTTP 401: token expired and automatic refresh failed. Re-sync the HMS token."
@@ -489,26 +518,33 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { token: hmsToken } = await resolveHmsToken(req, session.user.id, session.user);
+  const resolvedToken = await resolveHmsToken(req, session.user.id, session.user);
+  const hmsToken = resolvedToken.token;
   if (!hmsToken) {
     return NextResponse.json(
-      { error: "No HMS token", message: "Buka HMS dulu." },
+      {
+        error: "No HMS token",
+        message: "Buka HMS dulu.",
+        auth_error: true,
+      },
       { status: 403 }
     );
   }
-
-  const tokenHolder: HmsTokenHolder = {
-    token: hmsToken,
-    userId: session.user.id,
-    refreshed: false,
-    refreshResult: null,
-  };
 
   const requestedHubId = req.nextUrl.searchParams.get("hubId");
   const activeHub = await resolveActiveHub(session.user.id, requestedHubId, session.user);
   if (!activeHub) {
     return NextResponse.json({ error: "No hub access" }, { status: 403 });
   }
+
+  const tokenHolder: HmsTokenHolder = {
+    token: hmsToken,
+    userId: session.user.id,
+    hubId: activeHub.hmsHubId,
+    refreshed: false,
+    triedHubToken: false,
+    refreshResult: null,
+  };
 
   const HUB_ID = activeHub.hmsHubId;
   const HUB_NAME = activeHub.name;
