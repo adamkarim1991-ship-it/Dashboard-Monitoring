@@ -4,7 +4,7 @@ import { buildHmsHeaders } from '@/lib/hms-headers';
 import { applyCleanFloorCookie, resolveCleanFloor } from "@/lib/clean-floor";
 import { refreshStoredHmsToken, type RefreshedHmsToken } from "@/lib/hms-token-refresh";
 import { prisma } from "@/lib/prisma";
-import { readTokenChunkCount, readTokenFromCookies, writeTokenCookies } from "@/lib/hms-token-store";
+import { readTokenChunkCount, writeTokenCookies } from "@/lib/hms-token-store";
 import { NextRequest, NextResponse } from "next/server";
 
 const API_ID_MAIN = "7564027893345453074";
@@ -128,34 +128,6 @@ interface HmsTokenHolder {
 // The hub row is the second token source in the system (the browser extension
 // pushes one token per hub). It keeps serving the dashboard when the per-user
 // grant can no longer be refreshed.
-// A token is only usable when HMS actually answers 200 for it; the stored ones
-// can be revoked long before their expiry timestamp. Validate before spending
-// the whole request budget on a dead token.
-async function isTokenUsable(token: string, hmsHubId: string): Promise<boolean> {
-  try {
-    const res = await fetch(`${process.env.HMS_BASE_URL}/dc/v1/oneservice`, {
-      method: "POST",
-      headers: buildHmsHeaders(token),
-      body: JSON.stringify({
-        api_id: API_ID_MAIN,
-        params: {
-          hub_ids: JSON.stringify([hmsHubId]),
-          curr_date: getMainCurrDate(),
-          payment_types: PAYMENT_TYPES,
-          service_types: SERVICE_TYPES,
-        },
-      }),
-      cache: "no-store",
-    });
-    if (res.status === 401) return false;
-    if (!res.ok) return true;
-    const json = await res.json();
-    return json?.code === 200;
-  } catch {
-    return false;
-  }
-}
-
 async function readHubToken(hmsHubId: string): Promise<string | null> {
   try {
     const hub = await prisma.hub.findUnique({
@@ -166,44 +138,6 @@ async function readHubToken(hmsHubId: string): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-// HMS rejects a valid token now and then (burst / limiter), so a rejected probe
-// is not proof that the token is dead: remember the last accepted one for a few
-// minutes and fall back to the best candidate instead of failing the request.
-const WORKING_TOKEN_TTL_MS = 5 * 60 * 1000;
-const workingTokens = new Map<string, { token: string; timestamp: number }>();
-
-async function selectWorkingToken(
-  cacheKey: string,
-  hmsHubId: string,
-  candidates: (string | null | undefined)[]
-): Promise<{ token: string; source: "memory" | "probe" | "fallback" } | null> {
-  const unique = Array.from(
-    new Set(candidates.filter((value): value is string => Boolean(value)))
-  );
-  if (unique.length === 0) return null;
-
-  const remembered = workingTokens.get(cacheKey);
-  if (
-    remembered &&
-    Date.now() - remembered.timestamp < WORKING_TOKEN_TTL_MS &&
-    unique.includes(remembered.token)
-  ) {
-    return { token: remembered.token, source: "memory" };
-  }
-
-  for (const candidate of unique) {
-    if (await isTokenUsable(candidate, hmsHubId)) {
-      workingTokens.set(cacheKey, { token: candidate, timestamp: Date.now() });
-      return { token: candidate, source: "probe" };
-    }
-  }
-
-  console.warn(
-    `[summary] all ${unique.length} candidate token(s) rejected by probe, trying the hub token anyway`
-  );
-  return { token: unique[0], source: "fallback" };
 }
 
 async function callHMS(
@@ -619,26 +553,10 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  // Pick the token HMS accepts: hub push first (the extension keeps it fresh),
-  // then the per-user cookie, then whatever the session resolved.
-  const hubToken = await readHubToken(HUB_ID);
-  const cookieToken = readTokenFromCookies(req)?.token ?? null;
-  const selection = await selectWorkingToken(
-    `${session.user.id}:${HUB_ID}`,
-    HUB_ID,
-    [hubToken, cookieToken, resolvedToken.token]
-  );
-  if (!selection) {
-    return NextResponse.json({
-      error: "HMS token expired",
-      auth_error: true,
-      message:
-        "Token HMS belum tersedia. Buka HMS di tab lain supaya extension mengirim token baru.",
-    }, { status: 401 });
-  }
-
+  // resolveHmsToken already validated the candidates against HMS (cookie, hub
+  // push, database), so the first accepted one is what we use here.
   const tokenHolder: HmsTokenHolder = {
-    token: selection.token,
+    token: resolvedToken.token,
     userId: session.user.id,
     hubId: HUB_ID,
     refreshed: false,
@@ -713,7 +631,7 @@ export async function GET(req: NextRequest) {
             avgPickup: 0, avgDelivered: 0, achievementPct: 0, drivers: [],
           };
         }),
-        computeC1FromInboundScan(selection.token, HUB_NAME).catch((e) => {
+        computeC1FromInboundScan(resolvedToken.token, HUB_NAME).catch((e) => {
           console.warn("[c1c2] Gagal:", e.message);
           return {
             c1: 0,

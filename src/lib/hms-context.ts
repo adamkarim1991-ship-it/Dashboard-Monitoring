@@ -56,6 +56,64 @@ function newest(candidates: TokenCandidate[]): TokenCandidate | null {
   );
 }
 
+// A stored token can be revoked long before its expiry timestamp, and picking
+// the "newest" one used to hand every route a dead token (401 everywhere).
+// Validate candidates against HMS instead, cheapest endpoint first, and cache
+// the accepted token so the probe cost is paid once per instance.
+const TOKEN_CACHE_TTL_MS = 5 * 60 * 1000;
+const acceptedTokens = new Map<string, { token: string; timestamp: number }>();
+
+async function hmsAcceptsToken(token: string): Promise<boolean> {
+  const base = process.env.HMS_BASE_URL;
+  if (!base) return true;
+  try {
+    const url =
+      `${base}/tms/api/lms/v1/shipments?type=order_management` +
+      "&leg_type=last_mile&per_page=1&page=1";
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+    if (res.status === 401) return false;
+    return true;
+  } catch {
+    // Network hiccup: do not reject a token we cannot test.
+    return true;
+  }
+}
+
+async function pickAcceptedToken(
+  userId: string,
+  candidates: TokenCandidate[]
+): Promise<TokenCandidate | null> {
+  const ordered = candidates.filter((c) => c.token && c.token.length > 50);
+  if (ordered.length === 0) return null;
+
+  const remembered = acceptedTokens.get(userId);
+  if (
+    remembered &&
+    Date.now() - remembered.timestamp < TOKEN_CACHE_TTL_MS &&
+    ordered.some((c) => c.token === remembered.token)
+  ) {
+    return ordered.find((c) => c.token === remembered.token) ?? null;
+  }
+
+  for (const candidate of ordered) {
+    if (await hmsAcceptsToken(candidate.token)) {
+      acceptedTokens.set(userId, { token: candidate.token, timestamp: Date.now() });
+      if (candidate.source !== ordered[0].source) {
+        console.warn(
+          `[hms] using ${candidate.source} token, HMS rejected the newer one`
+        );
+      }
+      return candidate;
+    }
+  }
+
+  console.warn("[hms] every stored token was rejected by HMS");
+  return ordered[0];
+}
+
 /**
  * Resolve the HMS access token for a request.
  * cookie (fresh extension push) > instance memory > database > session JWT > env.
@@ -119,8 +177,35 @@ export async function resolveHmsToken(
     });
   }
 
-  const best = newest(candidates);
-  return best ? { token: best.token, source: best.source } : { token: null, source: "none" };
+  // The hub row carries the token pushed by the GTL Bridge extension. It stays
+  // valid after the per-user grant is revoked, so try it before the older ones.
+  const hubRows = await dbRead(
+    () =>
+      prisma.hub.findMany({
+        where: { hmsToken: { not: null } },
+        select: { hmsToken: true },
+      }),
+    [] as Array<{ hmsToken: string | null }>,
+    "hub.hmsToken"
+  );
+  for (const row of hubRows) {
+    if (row.hmsToken) {
+      candidates.push({
+        token: row.hmsToken,
+        source: "hub",
+        expiresAt: Number.MAX_SAFE_INTEGER,
+      });
+    }
+  }
+
+  const picked = await pickAcceptedToken(userId, candidates);
+  if (!picked) {
+    const best = newest(candidates);
+    return best
+      ? { token: best.token, source: best.source }
+      : { token: null, source: "none" };
+  }
+  return { token: picked.token, source: picked.source };
 }
 
 /** Keep a pushed token available to this instance even if the DB write fails. */
