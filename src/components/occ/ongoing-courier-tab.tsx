@@ -106,54 +106,148 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
   const totalDelivered = totals?.delivered ?? 0;
   const ongoingCouriers = scoped.filter((c) => c.ongoing > 0).length;
 
-  const downloadPNG = async () => {
-    const node = tableRef.current;
-    if (!node) return;
-    const scroller = node.querySelector<HTMLElement>("[data-table-scroll]") ?? node;
+  const downloadPNG = () => {
+    // Drawn straight onto a canvas from the rows already on screen. The DOM
+    // capture libraries both fail here (html2canvas 1.4 cannot parse the oklch()
+    // colours Tailwind v4 emits, html-to-image hangs on the SVG pass), and a
+    // canvas render also guarantees the file carries every row and column no
+    // matter how narrow the screen is.
+    const rows = displayList;
+    const scale = 2;
+    const columns: {
+      label: string;
+      align: "left" | "right";
+      value: (c: CourierRow) => string;
+    }[] = [
+      { label: "Nama Kurir", align: "left", value: (c) => c.name },
+      { label: "Fresh C1", align: "right", value: (c) => c.freshC1.toLocaleString("id-ID") },
+      { label: "SD <12PM %", align: "right", value: (c) => `${c.sd12Pct.toFixed(1)}%` },
+      { label: "Total Pembawaan", align: "right", value: (c) => c.totalCarried.toLocaleString("id-ID") },
+      { label: "Total FTD", align: "right", value: (c) => c.totalFtd.toLocaleString("id-ID") },
+      { label: "Delivered", align: "right", value: (c) => c.delivered.toLocaleString("id-ID") },
+      { label: "% Delivered", align: "right", value: (c) => `${c.deliveredPct.toFixed(1)}%` },
+    ];
 
-    // The table sits inside an overflow-x container. Widen it for the capture so
-    // the PNG always carries every column, even when the screen is a phone.
-    const prevOverflow = scroller.style.overflow;
-    const prevWidth = scroller.style.width;
-    scroller.style.overflow = "visible";
-    scroller.style.width = "max-content";
+    const family = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif';
+    const fontTitle = `700 ${20 * scale}px ${family}`;
+    const fontSub = `500 ${12 * scale}px ${family}`;
+    const fontHead = `700 ${12 * scale}px ${family}`;
+    const fontBody = `600 ${14 * scale}px ${family}`;
+
+    const measure = document.createElement("canvas").getContext("2d");
+    if (!measure) return;
+    const padX = 16 * scale;
+    const widths = columns.map((c) => {
+      measure.font = fontHead;
+      return measure.measureText(c.label).width;
+    });
+    measure.font = fontBody;
+    for (const row of rows) {
+      columns.forEach((c, i) => {
+        widths[i] = Math.max(widths[i], measure.measureText(c.value(row)).width);
+      });
+    }
+    const colWidths = widths.map((w) => Math.ceil(w + padX * 2));
+    const tableWidth = colWidths.reduce((a, b) => a + b, 0);
+
+    const rowHeight = 34 * scale;
+    const headHeight = 42 * scale;
+    const titleBlock = 92 * scale;
+    const footerHeight = 46 * scale;
+    const canvasWidth = tableWidth + padX * 2;
+    const canvasHeight = titleBlock + headHeight + rows.length * rowHeight + footerHeight;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    ctx.fillStyle = "#0f172a";
+    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+    const now = new Date();
+    const dateLabel = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Jakarta",
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    }).format(now);
+    const timeLabel = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Jakarta",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(now);
+
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = fontTitle;
+    ctx.fillText("OCC COURIER REPORT", padX, titleBlock * 0.34);
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = fontSub;
+    ctx.fillText(
+      `GTL Jatinegara Hub  ·  ${dateLabel} ${timeLabel} WIB  ·  ${rows.length} kurir`,
+      padX,
+      titleBlock * 0.66
+    );
+    ctx.textAlign = "right";
+    ctx.fillStyle = "#cbd5e1";
+    ctx.fillText(
+      `Total ${totalCarried.toLocaleString("id-ID")} · Delivered ${totalDelivered.toLocaleString("id-ID")} · FTD ${(totals?.total_ftd ?? 0).toLocaleString("id-ID")} · ${overallDeliveredPct.toFixed(1)}%`,
+      canvasWidth - padX,
+      titleBlock * 0.66
+    );
+
+    ctx.fillStyle = "#0f1e3d";
+    ctx.fillRect(0, titleBlock, canvasWidth, headHeight);
+    ctx.font = fontHead;
+    ctx.fillStyle = "#ffffff";
+    let x = padX;
+    columns.forEach((c, i) => {
+      ctx.textAlign = c.align === "right" ? "right" : "left";
+      const cx = c.align === "right" ? x + colWidths[i] - padX : x;
+      ctx.fillText(c.label.toUpperCase(), cx, titleBlock + headHeight / 2);
+      x += colWidths[i];
+    });
+
+    ctx.font = fontBody;
+    rows.forEach((row, rowIndex) => {
+      const top = titleBlock + headHeight + rowIndex * rowHeight;
+      ctx.fillStyle = rowIndex % 2 === 0 ? "#111c33" : "#0f172a";
+      ctx.fillRect(0, top, canvasWidth, rowHeight);
+      let cellX = padX;
+      columns.forEach((c, i) => {
+        ctx.textAlign = c.align === "right" ? "right" : "left";
+        const cx = c.align === "right" ? cellX + colWidths[i] - padX : cellX;
+        if (c.label === "Nama Kurir") ctx.fillStyle = "#ffffff";
+        else if (c.label === "Total FTD") ctx.fillStyle = row.totalFtd > 0 ? "#f87171" : "#64748b";
+        else if (c.label === "Delivered") ctx.fillStyle = row.delivered > 0 ? "#34d399" : "#64748b";
+        else if (c.label === "% Delivered")
+          ctx.fillStyle =
+            row.deliveredPct >= 97 ? "#4ade80" : row.deliveredPct >= 90 ? "#fbbf24" : "#f87171";
+        else ctx.fillStyle = "#cbd5e1";
+        ctx.fillText(c.value(row), cx, top + rowHeight / 2);
+        cellX += colWidths[i];
+      });
+    });
+
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#64748b";
+    ctx.font = fontSub;
+    ctx.fillText(
+      "Sumber: HMS driver productivity (cycle 1-3) · filter Ongoing Courier",
+      padX,
+      canvasHeight - footerHeight / 2
+    );
 
     const dateWib = new Intl.DateTimeFormat("en-CA", {
       timeZone: "Asia/Jakarta",
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
-    }).format(new Date());
-    const filename = `courier-report-${dateWib}.png`;
-
-    try {
-      // html-to-image renders through SVG foreignObject, so it survives the
-      // oklch() colours Tailwind v4 emits; html2canvas 1.4 cannot parse them.
-      const { toPng } = await import("html-to-image");
-      const dataUrl = await toPng(scroller, {
-        backgroundColor: "#0f172a",
-        pixelRatio: 2,
-        cacheBust: true,
-      });
-      saveDataUrl(dataUrl, filename);
-    } catch (primaryError) {
-      console.error("PNG export (html-to-image) failed", primaryError);
-      try {
-        const html2canvas = (await import("html2canvas")).default;
-        const canvas = await html2canvas(scroller, {
-          backgroundColor: "#0f172a",
-          scale: 2,
-          useCORS: true,
-        });
-        saveDataUrl(canvas.toDataURL("image/png"), filename);
-      } catch (fallbackError) {
-        console.error("PNG export (html2canvas) failed", fallbackError);
-        alert("PNG export gagal di browser ini. Coba refresh halaman lalu ulangi.");
-      }
-    } finally {
-      scroller.style.overflow = prevOverflow;
-      scroller.style.width = prevWidth;
-    }
+    }).format(now);
+    saveDataUrl(canvas.toDataURL("image/png"), `courier-report-${dateWib}.png`);
   };
 
   return (
