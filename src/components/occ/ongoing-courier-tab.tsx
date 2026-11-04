@@ -107,64 +107,73 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
   const ongoingCouriers = scoped.filter((c) => c.ongoing > 0).length;
 
   const downloadPNG = () => {
-    // Drawn straight onto a canvas from the rows already on screen. The DOM
-    // capture libraries both fail here (html2canvas 1.4 cannot parse the oklch()
-    // colours Tailwind v4 emits, html-to-image hangs on the SVG pass), and a
-    // canvas render also guarantees the file carries every row and column no
-    // matter how narrow the screen is.
+    // Light-theme canvas render, drawn from the rows already on screen. DOM
+    // screenshot libraries either choke on the Tailwind oklch() colours
+    // (html2canvas) or hang on the SVG pass (html-to-image), and a hand drawn
+    // canvas also guarantees every row and column lands in the file. Large type
+    // and a 4x pixel ratio keep it readable on a phone without zooming.
     const rows = displayList;
-    const scale = 2;
+    const SCALE = 4;
+    const MAX_PIXELS = 100_000_000;
+    const family = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif';
+
     const columns: {
       label: string;
       align: "left" | "right";
+      baseWidth: number;
       value: (c: CourierRow) => string;
     }[] = [
-      { label: "Nama Kurir", align: "left", value: (c) => c.name },
-      { label: "Fresh C1", align: "right", value: (c) => c.freshC1.toLocaleString("id-ID") },
-      { label: "SD <12PM %", align: "right", value: (c) => `${c.sd12Pct.toFixed(1)}%` },
-      { label: "Total Pembawaan", align: "right", value: (c) => c.totalCarried.toLocaleString("id-ID") },
-      { label: "Total FTD", align: "right", value: (c) => c.totalFtd.toLocaleString("id-ID") },
-      { label: "Delivered", align: "right", value: (c) => c.delivered.toLocaleString("id-ID") },
-      { label: "% Delivered", align: "right", value: (c) => `${c.deliveredPct.toFixed(1)}%` },
+      { label: "Nama Kurir", align: "left", baseWidth: 280, value: (c) => c.name },
+      { label: "Pembawaan Fresh C1", align: "right", baseWidth: 160, value: (c) => c.freshC1.toLocaleString("id-ID") },
+      { label: "SD <12PM %", align: "right", baseWidth: 130, value: (c) => `${c.sd12Pct.toFixed(1)}%` },
+      { label: "Total Pembawaan", align: "right", baseWidth: 150, value: (c) => c.totalCarried.toLocaleString("id-ID") },
+      { label: "Total FTD", align: "right", baseWidth: 120, value: (c) => c.totalFtd.toLocaleString("id-ID") },
+      { label: "Delivered", align: "right", baseWidth: 120, value: (c) => c.delivered.toLocaleString("id-ID") },
+      { label: "% Delivered", align: "right", baseWidth: 130, value: (c) => `${c.deliveredPct.toFixed(1)}%` },
     ];
 
-    const family = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif';
-    const fontTitle = `700 ${20 * scale}px ${family}`;
-    const fontSub = `500 ${12 * scale}px ${family}`;
-    const fontHead = `700 ${12 * scale}px ${family}`;
-    const fontBody = `600 ${14 * scale}px ${family}`;
+    // Logical layout (multiplied by SCALE when drawn).
+    const padX = 28;
+    const titleBlock = 156;
+    const headHeight = 68;
+    const rowHeight = 56;
+    const footerHeight = 66;
+    const minTableWidth = 1600;
 
     const measure = document.createElement("canvas").getContext("2d");
     if (!measure) return;
-    const padX = 16 * scale;
-    const widths = columns.map((c) => {
-      measure.font = fontHead;
-      return measure.measureText(c.label).width;
-    });
-    measure.font = fontBody;
-    for (const row of rows) {
-      columns.forEach((c, i) => {
-        widths[i] = Math.max(widths[i], measure.measureText(c.value(row)).width);
-      });
+    measure.font = `700 20px ${family}`;
+    const colWidths = columns.map((c) => Math.max(c.baseWidth, measure.measureText(c.label).width + 24));
+    let tableWidth = colWidths.reduce((a, b) => a + b, 0);
+    // Widen every column evenly instead of leaving a big empty gutter.
+    while (tableWidth < minTableWidth) {
+      const bump = Math.min(40, Math.ceil((minTableWidth - tableWidth) / colWidths.length));
+      colWidths.forEach((w, i) => (colWidths[i] = w + bump));
+      tableWidth = colWidths.reduce((a, b) => a + b, 0);
     }
-    const colWidths = widths.map((w) => Math.ceil(w + padX * 2));
-    const tableWidth = colWidths.reduce((a, b) => a + b, 0);
 
-    const rowHeight = 34 * scale;
-    const headHeight = 42 * scale;
-    const titleBlock = 92 * scale;
-    const footerHeight = 46 * scale;
-    const canvasWidth = tableWidth + padX * 2;
-    const canvasHeight = titleBlock + headHeight + rows.length * rowHeight + footerHeight;
+    const logicalWidth = tableWidth + padX * 2;
+    const logicalHeight = titleBlock + headHeight + rows.length * rowHeight + footerHeight;
+    const scale = Math.min(SCALE, Math.sqrt(MAX_PIXELS / (logicalWidth * logicalHeight)));
+    const S = Math.max(scale, 1);
+    const px = (value: number) => Math.round(value * S);
 
     const canvas = document.createElement("canvas");
-    canvas.width = canvasWidth;
-    canvas.height = canvasHeight;
+    canvas.width = px(logicalWidth);
+    canvas.height = px(logicalHeight);
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    ctx.fillStyle = "#0f172a";
-    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    const fontTitle = `800 ${px(28)}px ${family}`;
+    const fontSub = `500 ${px(20)}px ${family}`;
+    const fontHead = `700 ${px(20)}px ${family}`;
+    const fontName = `700 ${px(18)}px ${family}`;
+    const fontBody = `600 ${px(18)}px ${family}`;
+    const fontFooter = `500 ${px(16)}px ${family}`;
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.textBaseline = "middle";
 
     const now = new Date();
     const dateLabel = new Intl.DateTimeFormat("en-GB", {
@@ -179,66 +188,136 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
       minute: "2-digit",
     }).format(now);
 
-    ctx.textBaseline = "middle";
     ctx.textAlign = "left";
-    ctx.fillStyle = "#ffffff";
+    ctx.fillStyle = "#111111";
     ctx.font = fontTitle;
-    ctx.fillText("OCC COURIER REPORT", padX, titleBlock * 0.34);
-    ctx.fillStyle = "#94a3b8";
+    ctx.fillText("OCC COURIER REPORT", px(padX), px(titleBlock * 0.3));
+    ctx.fillStyle = "#4b5563";
     ctx.font = fontSub;
     ctx.fillText(
-      `GTL Jatinegara Hub  ·  ${dateLabel} ${timeLabel} WIB  ·  ${rows.length} kurir`,
-      padX,
-      titleBlock * 0.66
+      `GTL Jatinegara Hub  |  ${dateLabel} ${timeLabel} WIB  |  ${rows.length} kurir`,
+      px(padX),
+      px(titleBlock * 0.62)
     );
     ctx.textAlign = "right";
-    ctx.fillStyle = "#cbd5e1";
+    ctx.fillStyle = "#111827";
     ctx.fillText(
-      `Total ${totalCarried.toLocaleString("id-ID")} · Delivered ${totalDelivered.toLocaleString("id-ID")} · FTD ${(totals?.total_ftd ?? 0).toLocaleString("id-ID")} · ${overallDeliveredPct.toFixed(1)}%`,
-      canvasWidth - padX,
-      titleBlock * 0.66
+      `Total ${totalCarried.toLocaleString("id-ID")} | Delivered ${totalDelivered.toLocaleString("id-ID")} | FTD ${(totals?.total_ftd ?? 0).toLocaleString("id-ID")} | ${overallDeliveredPct.toFixed(1)}%`,
+      px(logicalWidth - padX),
+      px(titleBlock * 0.62)
     );
 
-    ctx.fillStyle = "#0f1e3d";
-    ctx.fillRect(0, titleBlock, canvasWidth, headHeight);
+    // Header band
+    ctx.fillStyle = "#1a1a2e";
+    ctx.fillRect(0, px(titleBlock), canvas.width, px(headHeight));
     ctx.font = fontHead;
     ctx.fillStyle = "#ffffff";
-    let x = padX;
+    let headX = px(padX);
     columns.forEach((c, i) => {
       ctx.textAlign = c.align === "right" ? "right" : "left";
-      const cx = c.align === "right" ? x + colWidths[i] - padX : x;
-      ctx.fillText(c.label.toUpperCase(), cx, titleBlock + headHeight / 2);
-      x += colWidths[i];
+      const cx = c.align === "right" ? headX + px(colWidths[i]) - px(padX) : headX;
+      ctx.fillText(c.label.toUpperCase(), cx, px(titleBlock + headHeight / 2));
+      headX += px(colWidths[i]);
     });
 
-    ctx.font = fontBody;
+    const roundRect = (x: number, y: number, w: number, h: number, r: number) => {
+      ctx.beginPath();
+      if (typeof ctx.roundRect === "function") {
+        ctx.roundRect(x, y, w, h, r);
+        return;
+      }
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+    };
+
+    const drawBadge = (
+      text: string,
+      rightEdge: number,
+      centerY: number,
+      background: string,
+      foreground = "#ffffff"
+    ) => {
+      ctx.font = fontBody;
+      const textWidth = ctx.measureText(text).width;
+      const badgeW = textWidth + px(26);
+      const badgeH = px(34);
+      const badgeX = rightEdge - badgeW;
+      ctx.fillStyle = background;
+      roundRect(badgeX, centerY - badgeH / 2, badgeW, badgeH, px(7));
+      ctx.fill();
+      ctx.fillStyle = foreground;
+      ctx.textAlign = "center";
+      ctx.fillText(text, badgeX + badgeW / 2, centerY);
+    };
+
+    const bodyTop = titleBlock + headHeight;
     rows.forEach((row, rowIndex) => {
-      const top = titleBlock + headHeight + rowIndex * rowHeight;
-      ctx.fillStyle = rowIndex % 2 === 0 ? "#111c33" : "#0f172a";
-      ctx.fillRect(0, top, canvasWidth, rowHeight);
+      const top = bodyTop + rowIndex * rowHeight;
+      ctx.fillStyle = rowIndex % 2 === 0 ? "#f8f9fa" : "#ffffff";
+      ctx.fillRect(0, px(top), canvas.width, px(rowHeight));
+      ctx.strokeStyle = "#e5e7eb";
+      ctx.lineWidth = Math.max(1, px(1));
+      ctx.beginPath();
+      ctx.moveTo(0, px(top + rowHeight));
+      ctx.lineTo(canvas.width, px(top + rowHeight));
+      ctx.stroke();
+
+      const centerY = px(top + rowHeight / 2);
       let cellX = padX;
       columns.forEach((c, i) => {
-        ctx.textAlign = c.align === "right" ? "right" : "left";
-        const cx = c.align === "right" ? cellX + colWidths[i] - padX : cellX;
-        if (c.label === "Nama Kurir") ctx.fillStyle = "#ffffff";
-        else if (c.label === "Total FTD") ctx.fillStyle = row.totalFtd > 0 ? "#f87171" : "#64748b";
-        else if (c.label === "Delivered") ctx.fillStyle = row.delivered > 0 ? "#34d399" : "#64748b";
-        else if (c.label === "% Delivered")
+        const columnRight = cellX + colWidths[i] - padX;
+        if (c.label === "Nama Kurir") {
+          ctx.textAlign = "left";
+          ctx.font = fontName;
+          ctx.fillStyle = "#111111";
+          ctx.fillText(c.value(row), px(cellX), centerY);
+        } else if (c.label === "Total FTD") {
+          if (row.totalFtd > 0) drawBadge(c.value(row), px(columnRight), centerY, "#dc2626");
+          else {
+            ctx.textAlign = "right";
+            ctx.font = fontBody;
+            ctx.fillStyle = "#9ca3af";
+            ctx.fillText(c.value(row), px(columnRight), centerY);
+          }
+        } else if (c.label === "Delivered") {
+          if (row.delivered > 0) drawBadge(c.value(row), px(columnRight), centerY, "#16a34a");
+          else {
+            ctx.textAlign = "right";
+            ctx.font = fontBody;
+            ctx.fillStyle = "#9ca3af";
+            ctx.fillText(c.value(row), px(columnRight), centerY);
+          }
+        } else if (c.label === "% Delivered") {
+          ctx.textAlign = "right";
+          ctx.font = fontBody;
           ctx.fillStyle =
-            row.deliveredPct >= 97 ? "#4ade80" : row.deliveredPct >= 90 ? "#fbbf24" : "#f87171";
-        else ctx.fillStyle = "#cbd5e1";
-        ctx.fillText(c.value(row), cx, top + rowHeight / 2);
+            row.deliveredPct >= 97 ? "#16a34a" : row.deliveredPct >= 90 ? "#b45309" : "#dc2626";
+          ctx.fillText(c.value(row), px(columnRight), centerY);
+        } else {
+          ctx.textAlign = "right";
+          ctx.font = fontBody;
+          ctx.fillStyle = "#374151";
+          ctx.fillText(c.value(row), px(columnRight), centerY);
+        }
         cellX += colWidths[i];
       });
     });
 
     ctx.textAlign = "left";
-    ctx.fillStyle = "#64748b";
-    ctx.font = fontSub;
+    ctx.font = fontFooter;
+    ctx.fillStyle = "#6b7280";
     ctx.fillText(
-      "Sumber: HMS driver productivity (cycle 1-3) · filter Ongoing Courier",
-      padX,
-      canvasHeight - footerHeight / 2
+      "Sumber: HMS driver productivity (cycle 1-3) - filter Ongoing Courier",
+      px(padX),
+      px(logicalHeight - footerHeight / 2)
     );
 
     const dateWib = new Intl.DateTimeFormat("en-CA", {
