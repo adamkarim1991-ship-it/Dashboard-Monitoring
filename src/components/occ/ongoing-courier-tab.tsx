@@ -198,13 +198,14 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
                 <th className="whitespace-nowrap px-4 py-3 font-semibold text-right">SD &lt;12PM %</th>
                 <th className="whitespace-nowrap px-4 py-3 font-semibold text-right">Total Pembawaan</th>
                 <th className="whitespace-nowrap px-4 py-3 font-semibold text-right">Total FTD</th>
+                <th className="whitespace-nowrap px-4 py-3 font-semibold text-right">Delivered</th>
                 <th className="whitespace-nowrap px-4 py-3 font-semibold text-right">% Delivered</th>
               </tr>
             </thead>
             <tbody>
               {displayList.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-8 text-center text-slate-500">
+                  <td colSpan={7} className="py-8 text-center text-slate-500">
                     {loading ? "Loading..." : "Tidak ada data kurir untuk periode ini"}
                   </td>
                 </tr>
@@ -228,6 +229,11 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
                     <td className="px-4 py-2.5 text-right tabular-nums">
                       <span className="inline-flex min-w-12 justify-end rounded bg-red-950/30 px-2 py-1 font-bold text-red-400 ring-1 ring-inset ring-red-900/50">
                         {c.totalFtd}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 text-right tabular-nums">
+                      <span className="inline-flex min-w-12 justify-end rounded bg-emerald-950/30 px-2 py-1 font-bold text-emerald-400 ring-1 ring-inset ring-emerald-900/50">
+                        {c.delivered.toLocaleString("id-ID")}
                       </span>
                     </td>
                     <td className="px-4 py-2.5 text-right">
