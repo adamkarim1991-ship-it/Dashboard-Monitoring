@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { auth } from "@/lib/auth";
 import { readTokenChunkCount, readTokenFromCookies } from "@/lib/hms-token-store";
 import { buildHmsHeaders } from "@/lib/hms-headers";
 
@@ -74,6 +75,16 @@ export async function GET(req: NextRequest) {
 
   const cookieToken = readTokenFromCookies(req)?.token ?? null;
 
+  const sessionUser = await auth();
+  const userRow = sessionUser?.user?.id
+    ? await prisma.user
+        .findUnique({
+          where: { id: sessionUser.user.id },
+          select: { hmsToken: true, hmsTokenExpiresAt: true },
+        })
+        .catch(() => null)
+    : null;
+
   return NextResponse.json({
     hub_id: hubId,
     hub_name: hub?.name ?? null,
@@ -87,6 +98,11 @@ export async function GET(req: NextRequest) {
     curr_date: wibCurrDate(),
     probe_hub_token: await probe(hub?.hmsToken, hubId, "auth-only"),
     probe_hub_token_build_headers: await probe(hub?.hmsToken, hubId, "build-headers"),
+    has_user_token: Boolean(userRow?.hmsToken),
+    user_token_length: userRow?.hmsToken?.length ?? 0,
+    user_token_expires_at: userRow?.hmsTokenExpiresAt ?? null,
+    same_as_hub: Boolean(userRow?.hmsToken && hub?.hmsToken && userRow.hmsToken === hub.hmsToken),
+    probe_user_token: await probe(userRow?.hmsToken, hubId, "build-headers"),
     probe_cookie_token: await probe(cookieToken, hubId, "auth-only"),
     probe_cookie_token_build_headers: await probe(cookieToken, hubId, "build-headers"),
     now: new Date().toISOString(),
