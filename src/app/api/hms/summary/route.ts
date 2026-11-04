@@ -966,6 +966,13 @@ export async function GET(req: NextRequest) {
         error: isAuth ? "HMS token expired" : "HMS failed",
         detail: message,
         auth_error: isAuth,
+        debug: {
+          hub: tokenHolder.hubId,
+          token_len: tokenHolder.token.length,
+          refreshed: tokenHolder.refreshed,
+          tried_hub: tokenHolder.triedHubToken,
+          token_source: resolvedToken.source,
+        },
         message: isAuth
           ? "Token HMS expired dan refresh otomatis gagal. Buka HMS di tab lain untuk sync token baru."
           : "HMS tidak merespons dengan benar. Coba lagi sebentar.",
