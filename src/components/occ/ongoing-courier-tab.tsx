@@ -114,7 +114,13 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
     // and a 4x pixel ratio keep it readable on a phone without zooming.
     const rows = displayList;
     const SCALE = 4;
-    const MAX_PIXELS = 100_000_000;
+    // A 52-row table at 4x lands around 85 MP. Desktop browsers handle that,
+    // phones can silently fail the toDataURL pass and hand back an empty PNG,
+    // so a narrow viewport keeps a smaller cap and still exports at ~3x.
+    const MAX_PIXELS =
+      typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches
+        ? 45_000_000
+        : 100_000_000;
     const family = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif';
 
     const columns: {
@@ -326,7 +332,12 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
       month: "2-digit",
       day: "2-digit",
     }).format(now);
-    saveDataUrl(canvas.toDataURL("image/png"), `courier-report-${dateWib}.png`);
+    const dataUrl = canvas.toDataURL("image/png");
+    if (dataUrl.length < 200) {
+      alert("PNG terlalu besar untuk browser ini. Coba lagi di layar yang lebih lebar.");
+      return;
+    }
+    saveDataUrl(dataUrl, `courier-report-${dateWib}.png`);
   };
 
   return (
