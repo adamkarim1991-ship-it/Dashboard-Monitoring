@@ -787,19 +787,49 @@ export async function GET(req: NextRequest) {
     const cleanFloor = cleanFloorResult.payload;
 
     // Clean Floor (Overall C1): morning target metric, not a snapshot. The pool
-    // is today's C1 arrivals plus yesterday's FTD carried over as backlog. C2
-    // arrivals are excluded, so only the C1 cohort is counted on both sides.
+    // is today's C1 arrivals plus yesterday's FTD carried over as backlog, and
+    // the numerator is the processed part of that same pool.
+    //
+    // Delivered / ongoing / FTD come from the SAME HMS OPC call that feeds the
+    // top-row DELIVERED and DELIVERING cards. The old version counted the C1
+    // paginated inbound scan instead, so the card could disagree with the cards
+    // right next to it (87 + 2.868 next to delivered 85 / delivering 3.145).
     const c1Pool = freshC1 + backlog;
-    const c1FreshProcessed = Math.min(
-      c1Scan.delivered + c1Scan.ongoing + c1Scan.ftd,
-      freshC1
+    const deliveredBacklog = Number(main.delivered_backlog) || 0;
+    const ongoingBacklog = Number(main.ongoing_delivery_backlog) || 0;
+    const c2Share = justArrived > 0 ? Math.max(1 - freshC1 / justArrived, 0) : 0;
+    const freshDeliveredRaw = Number(main.delivered_just_arrived) || 0;
+    const freshOngoingRaw =
+      Number(main.ongoing_delivery_just_arrived) ||
+      Math.max(cleanFloorOngoing - ongoingBacklog, 0);
+    const freshDeliveredC1 = Math.max(
+      Math.round(freshDeliveredRaw * (1 - c2Share)),
+      0
     );
-    const c1BacklogProcessed = Math.min(
-      (Number(main.delivered_backlog) || 0) +
-        (Number(main.ongoing_delivery_backlog) || 0),
-      backlog
+    const freshOngoingC1 = Math.max(
+      Math.round(freshOngoingRaw * (1 - c2Share)),
+      0
     );
-    const c1Numerator = Math.min(c1FreshProcessed + c1BacklogProcessed, c1Pool);
+    const freshFtdC1 = Math.max(Math.round(cleanFloorFtd * (1 - c2Share)), 0);
+
+    const deliveredComponent = freshDeliveredC1 + deliveredBacklog;
+    const ongoingComponent = freshOngoingC1 + ongoingBacklog;
+    const ftdComponent = freshFtdC1;
+    const processedRaw = deliveredComponent + ongoingComponent + ftdComponent;
+    const c1Numerator = Math.min(processedRaw, c1Pool);
+
+    // Keep the breakdown line exact: whatever the pool cap trims has to leave
+    // one of the components, so delivered + ongoing + FTD always equals the
+    // numerator printed above it.
+    const components = [deliveredComponent, ongoingComponent, ftdComponent];
+    let overflow = processedRaw - c1Numerator;
+    for (let i = 0; i < components.length && overflow > 0; i += 1) {
+      const take = Math.min(overflow, components[i]);
+      components[i] -= take;
+      overflow -= take;
+    }
+    const [deliveredShown, ongoingShown, ftdShown] = components;
+
     const cleanFloorC1 = {
       value:
         c1Pool > 0
@@ -809,13 +839,14 @@ export async function GET(req: NextRequest) {
       denominator: c1Pool,
       fresh_c1: freshC1,
       backlog,
-      fresh_processed: c1FreshProcessed,
-      backlog_processed: c1BacklogProcessed,
-      fresh_delivered: c1Scan.delivered,
-      fresh_ongoing: c1Scan.ongoing,
-      fresh_ftd: c1Scan.ftd,
+      delivered: deliveredShown,
+      ongoing: ongoingShown,
+      ftd: ftdShown,
+      fresh_processed: freshDeliveredC1 + freshOngoingC1 + freshFtdC1,
+      backlog_processed: deliveredBacklog + ongoingBacklog,
       c1_scanned: c1Scan.scanned,
       target_hour_wib: 8,
+      source: "opc_main",
     };
 
     // Pending 48H: first inbound older than 48 hours and still not delivered,

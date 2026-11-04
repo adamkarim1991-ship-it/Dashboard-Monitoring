@@ -128,11 +128,11 @@ type CleanFloorC1Data = {
   denominator: number;
   fresh_c1: number;
   backlog: number;
+  delivered: number;
+  ongoing: number;
+  ftd: number;
   fresh_processed: number;
   backlog_processed: number;
-  fresh_delivered: number;
-  fresh_ongoing: number;
-  fresh_ftd: number;
   c1_scanned: number;
   target_hour_wib: number;
 };
@@ -1187,7 +1187,7 @@ function CleanFloorC1Card({
             {`${numerator.toLocaleString("id-ID")} / ${denominator.toLocaleString("id-ID")} (Fresh C1: ${freshC1.toLocaleString("id-ID")} + Backlog: ${backlog.toLocaleString("id-ID")})`}
           </p>
           <p className="text-[9px] text-gray-400 mt-0.5 leading-tight">
-            {`C1 delivered ${(data?.fresh_delivered ?? 0).toLocaleString("id-ID")} - ongoing ${(data?.fresh_ongoing ?? 0).toLocaleString("id-ID")} - FTD ${(data?.fresh_ftd ?? 0).toLocaleString("id-ID")}`}
+            {`C1 delivered ${(data?.delivered ?? 0).toLocaleString("id-ID")} - ongoing ${(data?.ongoing ?? 0).toLocaleString("id-ID")} - FTD ${(data?.ftd ?? 0).toLocaleString("id-ID")}`}
           </p>
         </>
       )}
