@@ -661,7 +661,7 @@ export default function DashboardView({
             label="SD < 12 PM"
             value={sdBefore12}
             sub="Fresh delivered before 12:00 WIB / Fresh C1"
-            subDetail={`Live TMS event aggregate - ${(summary?.delivered_before_12 ?? 0).toLocaleString("id-ID")} / ${freshC1.toLocaleString("id-ID")}`}
+            subDetail={`HMS delivered fresh C1 - ${(summary?.delivered_before_12 ?? 0).toLocaleString("id-ID")} / ${freshC1.toLocaleString("id-ID")}`}
             accent="green"
           />
           <CleanFloorC1Card data={cleanFloorC1} error={summaryError} />
