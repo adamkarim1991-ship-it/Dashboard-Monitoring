@@ -751,7 +751,15 @@ export async function GET(req: NextRequest) {
 
     const freshC1 = Math.min(c1Scan.c1, justArrived);
     const freshC2 = Math.max(justArrived - freshC1, 0);
-    const deliveredBefore12 = c1Scan.deliveredBefore12;
+    // The paginated TMS scan only sees arrivals recorded before 08:00, so it
+    // missed ~120 deliveries versus HMS. HMS OPC reports the delivered fresh C1
+    // count directly; on a hub whose cutoff is 12:00 that is the SD<12PM
+    // numerator, and it keeps the card on the same source as the top row.
+    const deliveredFreshOpc = Math.min(
+      Number(main.delivered_just_arrived) || 0,
+      freshC1
+    );
+    const deliveredBefore12 = Math.max(c1Scan.deliveredBefore12, deliveredFreshOpc);
     const sdBefore12 = freshC1 > 0 ? (deliveredBefore12 / freshC1) * 100 : 0;
     const freshSuccess =
       justArrived > 0
@@ -794,33 +802,24 @@ export async function GET(req: NextRequest) {
     // top-row DELIVERED and DELIVERING cards. The old version counted the C1
     // paginated inbound scan instead, so the card could disagree with the cards
     // right next to it (87 + 2.868 next to delivered 85 / delivering 3.145).
+    // Strictly C1: the numerator and the denominator both come from the C1
+    // cohort only. The OPC summary aggregates C1+C2 per status (today C2 is
+    // 2.826 of 5.850 arrivals), so using its delivered/ongoing/FTD totals would
+    // leak C2 into the floor and drag it to ~53%. The per-AWB C1 scan is the
+    // only C1-only source: delivered / ongoing / FTD are counted per package of
+    // the C1 cohort, and the backlog side uses the OPC backlog split.
     const c1Pool = freshC1 + backlog;
     const deliveredBacklog = Number(main.delivered_backlog) || 0;
     const ongoingBacklog = Number(main.ongoing_delivery_backlog) || 0;
-    const c2Share = justArrived > 0 ? Math.max(1 - freshC1 / justArrived, 0) : 0;
-    const freshDeliveredRaw = Number(main.delivered_just_arrived) || 0;
-    const freshOngoingRaw =
-      Number(main.ongoing_delivery_just_arrived) ||
-      Math.max(cleanFloorOngoing - ongoingBacklog, 0);
-    const freshDeliveredC1 = Math.max(
-      Math.round(freshDeliveredRaw * (1 - c2Share)),
-      0
-    );
-    const freshOngoingC1 = Math.max(
-      Math.round(freshOngoingRaw * (1 - c2Share)),
-      0
-    );
-    const freshFtdC1 = Math.max(Math.round(cleanFloorFtd * (1 - c2Share)), 0);
 
-    const deliveredComponent = freshDeliveredC1 + deliveredBacklog;
-    const ongoingComponent = freshOngoingC1 + ongoingBacklog;
-    const ftdComponent = freshFtdC1;
+    const deliveredComponent = Math.min(c1Scan.delivered, freshC1) + deliveredBacklog;
+    const ongoingComponent = Math.min(c1Scan.ongoing, freshC1) + ongoingBacklog;
+    const ftdComponent = Math.min(c1Scan.ftd, freshC1);
     const processedRaw = deliveredComponent + ongoingComponent + ftdComponent;
     const c1Numerator = Math.min(processedRaw, c1Pool);
 
-    // Keep the breakdown line exact: whatever the pool cap trims has to leave
-    // one of the components, so delivered + ongoing + FTD always equals the
-    // numerator printed above it.
+    // Whatever the pool cap trims has to leave one of the components, so the
+    // breakdown line always adds up to the numerator printed above it.
     const components = [deliveredComponent, ongoingComponent, ftdComponent];
     let overflow = processedRaw - c1Numerator;
     for (let i = 0; i < components.length && overflow > 0; i += 1) {
@@ -829,6 +828,9 @@ export async function GET(req: NextRequest) {
       overflow -= take;
     }
     const [deliveredShown, ongoingShown, ftdShown] = components;
+    const freshDeliveredC1 = c1Scan.delivered;
+    const freshOngoingC1 = c1Scan.ongoing;
+    const freshFtdC1 = c1Scan.ftd;
 
     const cleanFloorC1 = {
       value:
