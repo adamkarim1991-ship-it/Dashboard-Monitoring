@@ -168,6 +168,44 @@ async function readHubToken(hmsHubId: string): Promise<string | null> {
   }
 }
 
+// HMS rejects a valid token now and then (burst / limiter), so a rejected probe
+// is not proof that the token is dead: remember the last accepted one for a few
+// minutes and fall back to the best candidate instead of failing the request.
+const WORKING_TOKEN_TTL_MS = 5 * 60 * 1000;
+const workingTokens = new Map<string, { token: string; timestamp: number }>();
+
+async function selectWorkingToken(
+  cacheKey: string,
+  hmsHubId: string,
+  candidates: (string | null | undefined)[]
+): Promise<{ token: string; source: "memory" | "probe" | "fallback" } | null> {
+  const unique = Array.from(
+    new Set(candidates.filter((value): value is string => Boolean(value)))
+  );
+  if (unique.length === 0) return null;
+
+  const remembered = workingTokens.get(cacheKey);
+  if (
+    remembered &&
+    Date.now() - remembered.timestamp < WORKING_TOKEN_TTL_MS &&
+    unique.includes(remembered.token)
+  ) {
+    return { token: remembered.token, source: "memory" };
+  }
+
+  for (const candidate of unique) {
+    if (await isTokenUsable(candidate, hmsHubId)) {
+      workingTokens.set(cacheKey, { token: candidate, timestamp: Date.now() });
+      return { token: candidate, source: "probe" };
+    }
+  }
+
+  console.warn(
+    `[summary] all ${unique.length} candidate token(s) rejected by probe, trying the hub token anyway`
+  );
+  return { token: unique[0], source: "fallback" };
+}
+
 async function callHMS(
   holder: HmsTokenHolder,
   apiId: string,
@@ -546,75 +584,18 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const resolvedToken = await resolveHmsToken(req, session.user.id, session.user);
-  const hmsToken = resolvedToken.token;
-  if (!hmsToken) {
-    return NextResponse.json(
-      {
-        error: "No HMS token",
-        message: "Buka HMS dulu.",
-        auth_error: true,
-      },
-      { status: 403 }
-    );
-  }
-
   const requestedHubId = req.nextUrl.searchParams.get("hubId");
   const activeHub = await resolveActiveHub(session.user.id, requestedHubId, session.user);
   if (!activeHub) {
     return NextResponse.json({ error: "No hub access" }, { status: 403 });
   }
 
-  // Pick the first token HMS accepts: hub push first (the extension refreshes
-  // it), then the per-user cookie, then whatever the session resolved.
-  const hubToken = await readHubToken(activeHub.hmsHubId);
-  const cookieToken = readTokenFromCookies(req)?.token ?? null;
-  const candidateTokens = [hubToken, cookieToken, hmsToken].filter(
-    (value): value is string => Boolean(value)
-  );
-  const uniqueTokens = Array.from(new Set(candidateTokens));
-
-  let workingToken: string | null = null;
-  let rejectedTokens = 0;
-  for (const candidate of uniqueTokens) {
-    if (await isTokenUsable(candidate, activeHub.hmsHubId)) {
-      workingToken = candidate;
-      break;
-    }
-    rejectedTokens += 1;
-  }
-
-  if (!workingToken) {
-    return NextResponse.json(
-      {
-        error: "HMS token expired",
-        detail: `All ${uniqueTokens.length} stored HMS tokens were rejected by HMS.`,
-        auth_error: true,
-        message:
-          "Semua token HMS ditolak. Buka HMS di tab lain supaya extension mengirim token baru.",
-      },
-      { status: 401 }
-    );
-  }
-
-  if (rejectedTokens > 0) {
-    console.warn(
-      `[summary] skipped ${rejectedTokens} rejected HMS token(s), using a working one`
-    );
-  }
-
-  const tokenHolder: HmsTokenHolder = {
-    token: workingToken,
-    userId: session.user.id,
-    hubId: activeHub.hmsHubId,
-    refreshed: false,
-    triedHubToken: false,
-    refreshResult: null,
-  };
-
   const HUB_ID = activeHub.hmsHubId;
   const HUB_NAME = activeHub.name;
 
+  // Answer from the in-memory snapshot first: a cached response must never wait
+  // for token resolution, otherwise a flaky token probe turns a warm cache into
+  // an empty dashboard.
   const cacheKey = HUB_ID;
   const now = Date.now();
   const cached = cache.get(cacheKey);
@@ -625,6 +606,45 @@ export async function GET(req: NextRequest) {
       summary: cached.data,
     });
   }
+
+  const resolvedToken = await resolveHmsToken(req, session.user.id, session.user);
+  if (!resolvedToken.token) {
+    return NextResponse.json(
+      {
+        error: "No HMS token",
+        message: "Buka HMS dulu.",
+        auth_error: true,
+      },
+      { status: 403 }
+    );
+  }
+
+  // Pick the token HMS accepts: hub push first (the extension keeps it fresh),
+  // then the per-user cookie, then whatever the session resolved.
+  const hubToken = await readHubToken(HUB_ID);
+  const cookieToken = readTokenFromCookies(req)?.token ?? null;
+  const selection = await selectWorkingToken(
+    `${session.user.id}:${HUB_ID}`,
+    HUB_ID,
+    [hubToken, cookieToken, resolvedToken.token]
+  );
+  if (!selection) {
+    return NextResponse.json({
+      error: "HMS token expired",
+      auth_error: true,
+      message:
+        "Token HMS belum tersedia. Buka HMS di tab lain supaya extension mengirim token baru.",
+    }, { status: 401 });
+  }
+
+  const tokenHolder: HmsTokenHolder = {
+    token: selection.token,
+    userId: session.user.id,
+    hubId: HUB_ID,
+    refreshed: false,
+    triedHubToken: false,
+    refreshResult: null,
+  };
 
   console.log(`[summary] Cache MISS - fetch HMS for ${HUB_NAME} (${HUB_ID})`);
 
@@ -693,7 +713,7 @@ export async function GET(req: NextRequest) {
             avgPickup: 0, avgDelivered: 0, achievementPct: 0, drivers: [],
           };
         }),
-        computeC1FromInboundScan(workingToken, HUB_NAME).catch((e) => {
+        computeC1FromInboundScan(selection.token, HUB_NAME).catch((e) => {
           console.warn("[c1c2] Gagal:", e.message);
           return {
             c1: 0,
@@ -1032,13 +1052,6 @@ export async function GET(req: NextRequest) {
         error: isAuth ? "HMS token expired" : "HMS failed",
         detail: message,
         auth_error: isAuth,
-        debug: {
-          hub: tokenHolder.hubId,
-          token_len: tokenHolder.token.length,
-          refreshed: tokenHolder.refreshed,
-          tried_hub: tokenHolder.triedHubToken,
-          token_source: resolvedToken.source,
-        },
         message: isAuth
           ? "Token HMS expired dan refresh otomatis gagal. Buka HMS di tab lain untuk sync token baru."
           : "HMS tidak merespons dengan benar. Coba lagi sebentar.",

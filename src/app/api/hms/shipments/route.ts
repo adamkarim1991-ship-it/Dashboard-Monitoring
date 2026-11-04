@@ -1,6 +1,6 @@
 import { auth } from "@/lib/auth";
 import { resolveHmsToken } from "@/lib/hms-context";
-import { DEFAULT_RANGE_DAYS, getWibRangeUnix } from "@/lib/wib-range";
+import { getWibRangeUnix } from "@/lib/wib-range";
 import { refreshStoredHmsToken } from "@/lib/hms-token-refresh";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -27,9 +27,10 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const page = searchParams.get("page") ?? "1";
 
-  // Default window is the full operational month (D-29 .. D0), never a rolling
-  // 24h slice: the daily table and every card must see the same 30 days.
-  const defaultRange = getWibRangeUnix(DEFAULT_RANGE_DAYS);
+  // Default window is the full operational month (one calendar month back ..
+  // today), never a rolling 24h slice: the daily table and every card must see
+  // the same window.
+  const defaultRange = getWibRangeUnix();
   const fromTs = searchParams.get("from") ?? String(defaultRange.from);
   const toTs = searchParams.get("to") ?? String(defaultRange.to);
 

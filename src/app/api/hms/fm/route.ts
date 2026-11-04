@@ -1,6 +1,6 @@
 import { auth } from "@/lib/auth";
 import { resolveHmsToken } from "@/lib/hms-context";
-import { DEFAULT_RANGE_DAYS } from "@/lib/wib-range";
+import { getWibRangeDayCount } from "@/lib/wib-range";
 import { NextRequest, NextResponse } from "next/server";
 
 const JATINEGARA_HUB = "GTL Jatinegara Hub";
@@ -193,9 +193,12 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  // Default to the exact window used by the HMS created_at filters (one
+  // calendar month back .. today) so the daily table and the filters agree.
+  const rangeDays = getWibRangeDayCount();
   const days = Math.min(
-    Math.max(Number(req.nextUrl.searchParams.get("days") || DEFAULT_RANGE_DAYS), 1),
-    DEFAULT_RANGE_DAYS
+    Math.max(Number(req.nextUrl.searchParams.get("days") || rangeDays), 1),
+    rangeDays
   );
   const districtFilter = (req.nextUrl.searchParams.get("district") || "jatinegara").toLowerCase();
   const countOnly = req.nextUrl.searchParams.get("countOnly") === "1";
