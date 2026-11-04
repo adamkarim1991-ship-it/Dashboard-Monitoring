@@ -72,11 +72,15 @@ function formatDateYMD(d: Date): string {
   return `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
-// Operating day = today 00:00:00 WIB .. today 23:59:59 WIB. It used to point at
-// "yesterday 17:00", which is the UTC render of 00:00 WIB and made every HMS
-// query straddle two calendar days.
+// HMS anchors the operational day at 17:00 of the previous WIB day. Passing
+// "today 00:00" is accepted by the API but it changes the meaning of every
+// field (just_arrived collapses to the 00:00-now slice, backlog absorbs the
+// whole previous day: delivered fresh dropped to 17, COD volume to 3.827), so
+// the anchor stays at the HMS convention.
 function getMainCurrDate(): string {
-  return `${formatDateYMD(toWIB())} 00:00:00`;
+  const d = toWIB();
+  d.setUTCDate(d.getUTCDate() - 1);
+  return `${formatDateYMD(d)} 17:00:00`;
 }
 
 function getTodayDate(): string {
@@ -84,10 +88,17 @@ function getTodayDate(): string {
 }
 
 function getCycleList(): string {
-  // Whole WIB operating day, 00:00:00 .. 23:59:59.
-  const startUnix = getTodayWIBUnix(0);
-  const endUnix = getTodayWIBUnix(23) + 3599;
-  return JSON.stringify([`${startUnix}-${endUnix}`]);
+  // Whole HMS operational day, 17:00 WIB yesterday .. 17:00 WIB today.
+  const start = toWIB();
+  start.setUTCDate(start.getUTCDate() - 1);
+  start.setUTCHours(17, 0, 0, 0);
+  const end = toWIB();
+  end.setUTCHours(17, 0, 0, 0);
+  const startMs = start.getTime() - 7 * 60 * 60 * 1000;
+  const endMs = end.getTime() - 7 * 60 * 60 * 1000;
+  return JSON.stringify([
+    `${Math.floor(startMs / 1000)}-${Math.floor(endMs / 1000)}`,
+  ]);
 }
 
 function getTodayWIBUnix(hour: number): number {
