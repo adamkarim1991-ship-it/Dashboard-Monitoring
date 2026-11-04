@@ -377,7 +377,7 @@ export async function GET(req: NextRequest) {
 
   const cleanFloorData = await getCleanFloor(req, mainAll, getWIBDate(), HUB_ID);
 
-  // COD FD = failed delivery on COD packages / COD volume.
+  // COD FD = Ready To Return on COD packages / COD volume.
   let codData = { total: 0, ready_to_return: 0, ftd: 0, fd_percentage: 0 };
   if (mainCod) {
     const readyToReturn = toSafeNumber(mainCod.ready_to_return);
@@ -385,7 +385,7 @@ export async function GET(req: NextRequest) {
     const codTotal =
       toSafeNumber(mainCod.today_volume) ||
       toSafeNumber(mainCod.just_arrived) + toSafeNumber(mainCod.backlog);
-    const fdPercentage = codTotal > 0 ? (codFtd / codTotal) * 100 : 0;
+    const fdPercentage = codTotal > 0 ? (readyToReturn / codTotal) * 100 : 0;
     codData = {
       total: codTotal, ready_to_return: readyToReturn, ftd: codFtd,
       fd_percentage: parseFloat(fdPercentage.toFixed(2)),

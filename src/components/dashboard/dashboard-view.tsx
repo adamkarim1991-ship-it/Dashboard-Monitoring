@@ -332,9 +332,10 @@ export default function DashboardView({
         `/api/hms/subdistrict${activeHubId ? `?hubId=${activeHubId}` : ""}`
       );
       if (d?.success) {
+        // Only the per-district rows come from here. COD / urgent stay on the
+        // summary payload: it is the single place that applies the HMS OPC
+        // filters, and mixing both used to flip the cards to a different ratio.
         setSubdistricts(d.subdistricts || []);
-        if (d.cod) setCod(d.cod);
-        if (d.urgent) setUrgent(d.urgent);
       }
     } catch (e) {
       console.error("Failed to load subdistricts:", e);
