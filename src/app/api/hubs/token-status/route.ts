@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { readTokenChunkCount, readTokenFromCookies } from "@/lib/hms-token-store";
+import { buildHmsHeaders } from "@/lib/hms-headers";
 
 // Diagnostic only: reports whether a hub token exists and whether HMS accepts
 // it. Never returns the token itself.
@@ -15,17 +16,25 @@ function wibCurrDate(): string {
   return `${y}-${m}-${d} 17:00:00`;
 }
 
-async function probe(token: string | null | undefined, hubId: string) {
+async function probe(
+  token: string | null | undefined,
+  hubId: string,
+  mode: "auth-only" | "build-headers" = "auth-only"
+) {
   if (!token) return { sent: false };
   try {
+    const headers =
+      mode === "build-headers"
+        ? buildHmsHeaders(token)
+        : {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            Accept: "application/json",
+            Origin: "https://gtl-id.tokgistic.com",
+          };
     const res = await fetch(`${process.env.HMS_BASE_URL}/dc/v1/oneservice`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        Origin: "https://gtl-id.tokgistic.com",
-      },
+      headers,
       body: JSON.stringify({
         api_id: API_ID_MAIN,
         params: {
@@ -76,8 +85,10 @@ export async function GET(req: NextRequest) {
     has_cookie_token: Boolean(cookieToken),
     same_token: Boolean(cookieToken && hub?.hmsToken && cookieToken === hub.hmsToken),
     curr_date: wibCurrDate(),
-    probe_hub_token: await probe(hub?.hmsToken, hubId),
-    probe_cookie_token: await probe(cookieToken, hubId),
+    probe_hub_token: await probe(hub?.hmsToken, hubId, "auth-only"),
+    probe_hub_token_build_headers: await probe(hub?.hmsToken, hubId, "build-headers"),
+    probe_cookie_token: await probe(cookieToken, hubId, "auth-only"),
+    probe_cookie_token_build_headers: await probe(cookieToken, hubId, "build-headers"),
     now: new Date().toISOString(),
   });
 }
