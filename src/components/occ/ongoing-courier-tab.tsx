@@ -29,6 +29,15 @@ type FilterMode = "all" | "below97" | "above97";
 type TabMode = "ongoing" | "top10";
 type SubTabMode = "c1" | "overall";
 
+function saveDataUrl(dataUrl: string, filename: string) {
+  const link = document.createElement("a");
+  link.download = filename;
+  link.href = dataUrl;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
 export default function OngoingCourierTab({ hubId }: { hubId: string }) {
   const [couriers, setCouriers] = useState<CourierRow[]>([]);
   const [totals, setTotals] = useState<Totals | null>(null);
@@ -98,21 +107,57 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
   const ongoingCouriers = scoped.filter((c) => c.ongoing > 0).length;
 
   const downloadPNG = async () => {
-    if (!tableRef.current) return;
+    const node = tableRef.current;
+    if (!node) return;
+    const scroller = node.querySelector<HTMLElement>("[data-table-scroll]") ?? node;
+
+    // The table sits inside an overflow-x container. Widen it for the capture so
+    // the PNG always carries every column, even when the screen is a phone.
+    const prevOverflow = scroller.style.overflow;
+    const prevWidth = scroller.style.width;
+    scroller.style.overflow = "visible";
+    scroller.style.width = "max-content";
+
+    const dateWib = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Jakarta",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+    const filename = `courier-report-${dateWib}.png`;
+
     try {
-      const html2canvas = (await import("html2canvas")).default;
-      const canvas = await html2canvas(tableRef.current, { backgroundColor: "#0f172a" });
-      const link = document.createElement("a");
-      link.download = "ongoing-courier.png";
-      link.href = canvas.toDataURL();
-      link.click();
-    } catch {
-      alert("html2canvas not available for PNG export.");
+      // html-to-image renders through SVG foreignObject, so it survives the
+      // oklch() colours Tailwind v4 emits; html2canvas 1.4 cannot parse them.
+      const { toPng } = await import("html-to-image");
+      const dataUrl = await toPng(scroller, {
+        backgroundColor: "#0f172a",
+        pixelRatio: 2,
+        cacheBust: true,
+      });
+      saveDataUrl(dataUrl, filename);
+    } catch (primaryError) {
+      console.error("PNG export (html-to-image) failed", primaryError);
+      try {
+        const html2canvas = (await import("html2canvas")).default;
+        const canvas = await html2canvas(scroller, {
+          backgroundColor: "#0f172a",
+          scale: 2,
+          useCORS: true,
+        });
+        saveDataUrl(canvas.toDataURL("image/png"), filename);
+      } catch (fallbackError) {
+        console.error("PNG export (html2canvas) failed", fallbackError);
+        alert("PNG export gagal di browser ini. Coba refresh halaman lalu ulangi.");
+      }
+    } finally {
+      scroller.style.overflow = prevOverflow;
+      scroller.style.width = prevWidth;
     }
   };
 
   return (
-    <div className="px-6 py-4 space-y-4">
+    <div className="px-3 py-4 space-y-4 sm:px-6">
       {error && (
         <div className="flex items-start gap-2 rounded border border-red-800 bg-red-950/40 px-4 py-3 text-xs text-red-300">
           <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
@@ -189,17 +234,17 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
       </div>
 
       <div ref={tableRef} className="overflow-hidden rounded-lg border border-slate-700 bg-slate-900">
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs text-slate-200">
+        <div data-table-scroll className="overflow-x-auto">
+          <table className="w-full min-w-[760px] text-[15px] leading-relaxed md:min-w-0 md:text-xs md:leading-normal text-slate-200">
             <thead className="bg-[#0f1e3d] text-white">
               <tr>
-                <th className="whitespace-nowrap px-4 py-3 font-semibold text-left">Nama Kurir</th>
-                <th className="whitespace-nowrap px-4 py-3 font-semibold text-right">Pembawaan Fresh C1</th>
-                <th className="whitespace-nowrap px-4 py-3 font-semibold text-right">SD &lt;12PM %</th>
-                <th className="whitespace-nowrap px-4 py-3 font-semibold text-right">Total Pembawaan</th>
-                <th className="whitespace-nowrap px-4 py-3 font-semibold text-right">Total FTD</th>
-                <th className="whitespace-nowrap px-4 py-3 font-semibold text-right">Delivered</th>
-                <th className="whitespace-nowrap px-4 py-3 font-semibold text-right">% Delivered</th>
+                <th className="whitespace-nowrap px-3 py-3.5 md:px-4 md:py-3 text-[12px] md:text-xs font-semibold text-left">Nama Kurir</th>
+                <th className="whitespace-nowrap px-3 py-3.5 md:px-4 md:py-3 text-[12px] md:text-xs font-semibold text-right">Pembawaan Fresh C1</th>
+                <th className="whitespace-nowrap px-3 py-3.5 md:px-4 md:py-3 text-[12px] md:text-xs font-semibold text-right">SD &lt;12PM %</th>
+                <th className="whitespace-nowrap px-3 py-3.5 md:px-4 md:py-3 text-[12px] md:text-xs font-semibold text-right">Total Pembawaan</th>
+                <th className="whitespace-nowrap px-3 py-3.5 md:px-4 md:py-3 text-[12px] md:text-xs font-semibold text-right">Total FTD</th>
+                <th className="whitespace-nowrap px-3 py-3.5 md:px-4 md:py-3 text-[12px] md:text-xs font-semibold text-right">Delivered</th>
+                <th className="whitespace-nowrap px-3 py-3.5 md:px-4 md:py-3 text-[12px] md:text-xs font-semibold text-right">% Delivered</th>
               </tr>
             </thead>
             <tbody>
@@ -212,9 +257,9 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
               ) : (
                 displayList.map((c) => (
                   <tr key={c.name} className="border-b border-slate-800 hover:bg-slate-800/50">
-                    <td className="px-4 py-2.5 font-semibold text-white">{c.name}</td>
-                    <td className="px-4 py-2.5 text-right tabular-nums">{c.freshC1.toLocaleString("id-ID")}</td>
-                    <td className="px-4 py-2.5 text-right">
+                    <td className="whitespace-nowrap px-3 py-3.5 md:px-4 md:py-2.5 font-semibold text-white">{c.name}</td>
+                    <td className="px-3 py-3.5 md:px-4 md:py-2.5 text-right tabular-nums">{c.freshC1.toLocaleString("id-ID")}</td>
+                    <td className="px-3 py-3.5 md:px-4 md:py-2.5 text-right">
                       <span
                         className={`font-bold ${
                           c.sd12Pct >= 80 ? "text-green-400" : c.sd12Pct >= 50 ? "text-amber-400" : "text-red-400"
@@ -223,20 +268,20 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
                         {c.sd12Pct.toFixed(1)}%
                       </span>
                     </td>
-                    <td className="px-4 py-2.5 text-right tabular-nums font-bold text-white">
+                    <td className="px-3 py-3.5 md:px-4 md:py-2.5 text-right tabular-nums font-bold text-white">
                       {c.totalCarried.toLocaleString("id-ID")}
                     </td>
-                    <td className="px-4 py-2.5 text-right tabular-nums">
-                      <span className="inline-flex min-w-12 justify-end rounded bg-red-950/30 px-2 py-1 font-bold text-red-400 ring-1 ring-inset ring-red-900/50">
+                    <td className="px-3 py-3.5 md:px-4 md:py-2.5 text-right tabular-nums">
+                      <span className="inline-flex min-w-14 justify-end rounded bg-red-950/30 px-2 py-1 font-bold text-red-400 ring-1 ring-inset ring-red-900/50">
                         {c.totalFtd}
                       </span>
                     </td>
-                    <td className="px-4 py-2.5 text-right tabular-nums">
-                      <span className="inline-flex min-w-12 justify-end rounded bg-emerald-950/30 px-2 py-1 font-bold text-emerald-400 ring-1 ring-inset ring-emerald-900/50">
+                    <td className="px-3 py-3.5 md:px-4 md:py-2.5 text-right tabular-nums">
+                      <span className="inline-flex min-w-14 justify-end rounded bg-emerald-950/30 px-2 py-1 font-bold text-emerald-400 ring-1 ring-inset ring-emerald-900/50">
                         {c.delivered.toLocaleString("id-ID")}
                       </span>
                     </td>
-                    <td className="px-4 py-2.5 text-right">
+                    <td className="px-3 py-3.5 md:px-4 md:py-2.5 text-right">
                       <span
                         className={`font-bold ${
                           c.deliveredPct >= 97 ? "text-green-400" : c.deliveredPct >= 90 ? "text-amber-400" : "text-red-400"
