@@ -72,10 +72,11 @@ function formatDateYMD(d: Date): string {
   return `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
+// Operating day = today 00:00:00 WIB .. today 23:59:59 WIB. It used to point at
+// "yesterday 17:00", which is the UTC render of 00:00 WIB and made every HMS
+// query straddle two calendar days.
 function getMainCurrDate(): string {
-  const d = toWIB();
-  d.setUTCDate(d.getUTCDate() - 1);
-  return `${formatDateYMD(d)} 17:00:00`;
+  return `${formatDateYMD(toWIB())} 00:00:00`;
 }
 
 function getTodayDate(): string {
@@ -83,16 +84,10 @@ function getTodayDate(): string {
 }
 
 function getCycleList(): string {
-  const start = toWIB();
-  start.setUTCDate(start.getUTCDate() - 1);
-  start.setUTCHours(17, 0, 0, 0);
-  const end = toWIB();
-  end.setUTCHours(17, 0, 0, 0);
-  const startMs = start.getTime() - 7 * 60 * 60 * 1000;
-  const endMs = end.getTime() - 7 * 60 * 60 * 1000;
-  return JSON.stringify([
-    `${Math.floor(startMs / 1000)}-${Math.floor(endMs / 1000)}`,
-  ]);
+  // Whole WIB operating day, 00:00:00 .. 23:59:59.
+  const startUnix = getTodayWIBUnix(0);
+  const endUnix = getTodayWIBUnix(23) + 3599;
+  return JSON.stringify([`${startUnix}-${endUnix}`]);
 }
 
 function getTodayWIBUnix(hour: number): number {
@@ -372,8 +367,16 @@ async function computeC1FromInboundScan(hmsToken: string, hubName: string) {
       ])
     ).values()
   );
-  const deliveredFromTs = getTodayWIBUnix(0);
-  const deliveredBeforeTs = getTodayWIBUnix(12);
+  // 12:00 WIB cutoff. Epoch comparisons are timezone free, but the delivery
+  // timestamp is rendered explicitly in WIB so an UTC host can never shift the
+  // boundary by 7 hours (12:00 WIB == 05:00 UTC).
+  const todayWibDate = formatDateYMD(toWIB());
+  const isDeliveredBeforeNoonWib = (shipment: any) => {
+    const deliveredAt = toUnixSeconds(shipment.destination_details?.delivery_time);
+    if (!deliveredAt) return false;
+    const wib = new Date((deliveredAt + 7 * 60 * 60) * 1000);
+    return formatDateYMD(wib) === todayWibDate && wib.getUTCHours() < 12;
+  };
   const freshC1Awbs = uniqueFreshC1Tasks
     .map((task) =>
       String(task.awb_number || task.tracking_number || "").trim()
@@ -382,14 +385,7 @@ async function computeC1FromInboundScan(hmsToken: string, hubName: string) {
   const shipments = await fetchShipmentsForAwbs(hmsToken, freshC1Awbs);
   const deliveredBefore12 = new Set(
     shipments
-      .filter((shipment) => {
-        const deliveredAt = toUnixSeconds(
-          shipment.destination_details?.delivery_time
-        );
-        return (
-          deliveredAt >= deliveredFromTs && deliveredAt < deliveredBeforeTs
-        );
-      })
+      .filter(isDeliveredBeforeNoonWib)
       .map((shipment) => String(shipment.awb_number || "").trim())
       .filter(Boolean)
   ).size;

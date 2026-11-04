@@ -34,7 +34,7 @@ function getMainCurrDate(): string {
   const y = nowWIB.getUTCFullYear();
   const m = nowWIB.getUTCMonth();
   const d = nowWIB.getUTCDate() - 1;
-  return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")} 17:00:00`;
+  return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")} 00:00:00`;
 }
 
 function getCycleStartUnix(): number {
@@ -44,7 +44,7 @@ function getCycleStartUnix(): number {
   const y = nowWIB.getUTCFullYear();
   const m = nowWIB.getUTCMonth();
   const d = nowWIB.getUTCDate() - 1;
-  const startMs = Date.UTC(y, m, d, 17, 0, 0) - wibOffsetMs;
+  const startMs = Date.UTC(y, m, d, 0, 0, 0) - wibOffsetMs;
   return Math.floor(startMs / 1000);
 }
 

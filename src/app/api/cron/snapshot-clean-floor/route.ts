@@ -11,7 +11,7 @@ function formatDateYMD(d: Date) {
 }
 function getMainCurrDate() {
   const d = toWIB(); d.setUTCDate(d.getUTCDate() - 1)
-  return `${formatDateYMD(d)} 17:00:00`
+  return `${formatDateYMD(d)} 00:00:00`
 }
 function getTodayDate() { return formatDateYMD(toWIB()) }
 
