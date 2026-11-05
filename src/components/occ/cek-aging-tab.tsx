@@ -19,9 +19,9 @@ type AgingRow = {
   aging: number | null;
   agingLabel: string;
   awb: string;
-  // HMS OPC display name (Pending at Hub / Ongoing Delivery / ...).
+  // Actual HMS status shown in the table (Received / Arrived at Hub / On Delivery / ...).
   status: string;
-  // Raw HMS events the status was derived from, kept as a secondary line.
+  // Readable HMS context kept as a secondary line.
   statusDetail: string;
   remarks: string;
 };
@@ -118,6 +118,9 @@ const RAW_TO_OPC: Record<string, string> = {
 const STATUS_KEYS = ["status", "status package", "status paket", "current status", "last status", "status akhir"];
 const OPC_STATUS_KEYS = ["opc status", "status opc", "opc performance status"];
 const LM_STATUS_KEYS = ["tms lm status", "lm status", "last mile status"];
+const FM_STATUS_KEYS = ["tms fm status", "fm status", "first mile status"];
+const LOG_TYPE_KEYS = ["log type", "logtype", "mile type", "delivery log type"];
+const ACTUAL_HUB_KEYS = ["actual hub", "hub", "hub name", "current hub", "last hub"];
 const WMS_STATUS_KEYS = ["wms | oms status", "wms oms status", "wms"];
 const DELIVERED_AT_KEYS = ["lm delivered", "delivered at", "delivery time", "pod time"];
 const AGING_KEYS = ["aging", "aging group", "aging days", "aging day", "umur", "aging (day)", "grim aging"];
@@ -142,6 +145,26 @@ function findColumn(headers: string[], aliases: string[]): string | null {
     if (partial) return partial.raw;
   }
   return null;
+}
+
+
+function titleCaseStatus(raw: string): string {
+  const text = String(raw || "").trim();
+  if (!text) return EMPTY_STATUS;
+  return text
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function normalizeLogType(raw: string, lm: string, fm: string): string {
+  const text = String(raw || "").trim();
+  if (/^lm$/i.test(text) || /last\s*mile/i.test(text)) return "Last Mile";
+  if (/^fm$/i.test(text) || /first\s*mile/i.test(text)) return "First Mile";
+  if (isFilled(lm)) return "Last Mile";
+  if (isFilled(fm)) return "First Mile";
+  return text || "-";
 }
 
 function normRawStatus(raw: string): string {
@@ -171,50 +194,43 @@ function isFilled(value: unknown): boolean {
   return !!text && !/^null$/i.test(text);
 }
 
-// Derive one HMS OPC status per row. Primary signals are the TMS/OMS event
-// columns; the generic Status column is only a fallback. The returned detail
-// keeps the raw events visible underneath the OPC label.
-function resolveOpcStatus(
+// Derive one actual HMS status per row. Primary signals are the TMS LM/FM
+// status columns; the generic Status column is only a fallback. The returned
+// detail keeps log type, actual hub, and WMS context visible underneath.
+function resolveHmsStatus(
   row: Record<string, unknown>,
   cols: {
     opc: string | null;
     lm: string | null;
+    fm: string | null;
     wms: string | null;
     deliveredAt: string | null;
     fallback: string | null;
+    logType: string | null;
+    actualHub: string | null;
   }
 ): { status: string; detail: string } {
   const read = (col: string | null) => (col ? String(row[col] ?? "").trim() : "");
 
   const lm = read(cols.lm);
+  const fm = read(cols.fm);
   const wms = read(cols.wms);
   const deliveredAt = read(cols.deliveredAt);
+  const logType = normalizeLogType(read(cols.logType), lm, fm);
+  const actualHub = read(cols.actualHub) || "-";
+
+  const rawStatus = [lm, fm, read(cols.opc), read(cols.fallback), wms].find(isFilled);
+  const status = isFilled(deliveredAt) && !rawStatus ? "Delivered" : titleCaseStatus(rawStatus || "");
+
   const detail = [
-    isFilled(lm) ? `LM: ${lm}` : "",
+    `Log: ${logType}`,
+    `Hub: ${actualHub}`,
     isFilled(wms) ? `WMS: ${wms}` : "",
   ]
     .filter(Boolean)
-    .join(" / ");
+    .join(" | ");
 
-  if (isFilled(deliveredAt)) return { status: OPC_DELIVERED, detail };
-
-  const candidates = [read(cols.opc), lm, wms, read(cols.fallback)].filter(isFilled);
-  let best: string | null = null;
-  let bestRank = -1;
-  for (const candidate of candidates) {
-    const mapped = toOpcStatus(candidate);
-    if (!mapped) continue;
-    const rank = OPC_STATUS_RANK[mapped] ?? 0;
-    if (rank > bestRank) {
-      best = mapped;
-      bestRank = rank;
-    }
-  }
-  if (best) return { status: best, detail };
-
-  // Unmapped raw value: show it unchanged instead of guessing.
-  const firstRaw = candidates[0];
-  return { status: firstRaw ?? EMPTY_STATUS, detail };
+  return { status, detail };
 }
 
 function numberFrom(value: unknown): number | null {
@@ -327,7 +343,10 @@ export default function CekAgingTab({ hubId }: { hubId: string }) {
       const statusColumns = {
         opc: findColumn(headers, OPC_STATUS_KEYS),
         lm: findColumn(headers, LM_STATUS_KEYS),
+        fm: findColumn(headers, FM_STATUS_KEYS),
         wms: findColumn(headers, WMS_STATUS_KEYS),
+        logType: findColumn(headers, LOG_TYPE_KEYS),
+        actualHub: findColumn(headers, ACTUAL_HUB_KEYS),
         deliveredAt: findColumn(headers, DELIVERED_AT_KEYS),
         fallback: statusCol,
       };
@@ -350,7 +369,7 @@ export default function CekAgingTab({ hubId }: { hubId: string }) {
               ? BLANK
               : String(agingRaw).trim();
 
-        const resolvedStatus = resolveOpcStatus(r, statusColumns);
+        const resolvedStatus = resolveHmsStatus(r, statusColumns);
         parsed.push({
           id: id++,
           aging: agingNum,
@@ -562,7 +581,7 @@ export default function CekAgingTab({ hubId }: { hubId: string }) {
                   <input
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
-                    placeholder="Cari AWB / status / remarks"
+                    placeholder="Cari AWB / HMS status / hub / remarks"
                     className="w-56 rounded border border-slate-600 bg-slate-800 pl-7 pr-2 py-1.5 text-[11px] text-gray-200 placeholder:text-gray-500 outline-none focus:border-blue-500"
                   />
                 </div>
@@ -588,7 +607,7 @@ export default function CekAgingTab({ hubId }: { hubId: string }) {
                   <tr>
                     <th className="w-24 px-3 py-2.5 text-left font-bold whitespace-nowrap">Aging</th>
                     <th className="px-3 py-2.5 text-left font-bold whitespace-nowrap">Airwaybill</th>
-                    <th className="px-3 py-2.5 text-left font-bold whitespace-nowrap">Status (OPC)</th>
+                    <th className="px-3 py-2.5 text-left font-bold whitespace-nowrap">HMS Status</th>
                     <th className="px-3 py-2.5 text-left font-bold whitespace-nowrap">Remarks</th>
                   </tr>
                 </thead>
