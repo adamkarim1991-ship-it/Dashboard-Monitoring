@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
-import html2canvas from "html2canvas";
+import domtoimage from "dom-to-image-more";
 import { RefreshCw, Download, AlertTriangle } from "lucide-react";
 
 type CourierRow = {
@@ -175,30 +175,19 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
     try {
       await new Promise((r) => setTimeout(r, 500));
 
-      const canvas = await html2canvas(captureRoot, {
-        scale: 2,
-        useCORS: true,
-        allowTaint: true,
-        backgroundColor: "#0f172a",
-        logging: true,
+      const dataUrl = await domtoimage.toPng(captureRoot, {
+        bgcolor: "#0f172a",
         width: Math.ceil(captureWidth),
         height: Math.ceil(captureHeight),
-        windowWidth: Math.ceil(captureWidth),
-        windowHeight: Math.ceil(captureHeight),
-        scrollX: 0,
-        scrollY: 0,
+        pixelRatio: 2,
+        preserveScroll: true,
+        style: {
+          width: `${Math.ceil(captureWidth)}px`,
+          height: `${Math.ceil(captureHeight)}px`,
+          fontSize: "14px",
+          lineHeight: "1.25",
+        },
       });
-
-      const dataUrl = canvas.toDataURL("image/png");
-      if (dataUrl.length < 200) {
-        console.error("PNG export produced an unexpectedly small data URL.", {
-          captureWidth,
-          captureHeight,
-          dataUrlLength: dataUrl.length,
-        });
-        alert("PNG export failed (blank image). Please try again.");
-        return;
-      }
 
       const now = new Date();
       const dateWib = new Intl.DateTimeFormat("en-CA", {
@@ -433,3 +422,4 @@ function SubTabBtn({
     </button>
   );
 }
+
