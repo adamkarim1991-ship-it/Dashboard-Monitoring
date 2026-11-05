@@ -38,3 +38,6 @@ prisma/dev.db
 prisma/*.backup*
 *.backup-v1
 *.backup
+
+# local runtime logs
+server.log
