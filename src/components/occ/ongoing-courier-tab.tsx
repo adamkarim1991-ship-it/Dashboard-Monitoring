@@ -109,49 +109,93 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
 
   const downloadPNG = async () => {
     const element = tableRef.current;
-    if (!element) return;
+    if (!element) {
+      console.error("PNG export aborted: table container not found.");
+      alert("PNG export failed. Table not found.");
+      return;
+    }
 
-    // Ensure the target element is visible and measurable.
+    const table = element.querySelector("table");
+    if (!(table instanceof HTMLTableElement)) {
+      console.error("PNG export aborted: table element not found.");
+      alert("PNG export failed. Table not found.");
+      return;
+    }
+
     const rect = element.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) {
       alert("Export target is not visible yet. Please scroll to the table and try again.");
       return;
     }
 
-    // Temporarily remove overflow clipping so the capture includes all rows/columns.
-    const prevOverflow = element.style.overflow;
-    const prevMaxHeight = element.style.maxHeight;
-    element.style.overflow = "visible";
-    element.style.maxHeight = "none";
-
-    const scrollContainer = element.querySelector("[data-table-scroll]");
-    const prevScrollOverflow = scrollContainer instanceof HTMLElement ? scrollContainer.style.overflow : "";
-    if (scrollContainer instanceof HTMLElement) scrollContainer.style.overflow = "visible";
-
-    // Force readable table type size in the exported image (min 14px), regardless of responsive CSS.
-    const table = element.querySelector("table");
-    const prevFontSize = table instanceof HTMLElement ? table.style.fontSize : "";
-    const prevLineHeight = table instanceof HTMLElement ? table.style.lineHeight : "";
-    if (table instanceof HTMLElement) {
-      table.style.fontSize = "14px";
-      table.style.lineHeight = "1.25";
+    const captureRoot = element.cloneNode(true);
+    if (!(captureRoot instanceof HTMLDivElement)) {
+      console.error("PNG export aborted: failed to clone table container.");
+      alert("PNG export failed. Please try again.");
+      return;
     }
 
+    const captureScroll = captureRoot.querySelector("[data-table-scroll]");
+    const captureTable = captureRoot.querySelector("table");
+    const captureWidth = Math.max(element.scrollWidth, table.scrollWidth, rect.width);
+    const captureHeight = Math.max(element.scrollHeight, table.scrollHeight, table.offsetHeight, rect.height);
+
+    captureRoot.style.overflow = "visible";
+    captureRoot.style.maxHeight = "none";
+    captureRoot.style.width = `${Math.ceil(captureWidth)}px`;
+    captureRoot.style.backgroundColor = "#0f172a";
+
+    if (captureScroll instanceof HTMLElement) {
+      captureScroll.style.overflow = "visible";
+      captureScroll.style.maxHeight = "none";
+      captureScroll.style.width = `${Math.ceil(captureWidth)}px`;
+    }
+
+    if (captureTable instanceof HTMLElement) {
+      captureTable.style.fontSize = "14px";
+      captureTable.style.lineHeight = "1.25";
+      captureTable.style.width = `${Math.ceil(captureWidth)}px`;
+      captureTable.style.minWidth = `${Math.ceil(captureWidth)}px`;
+    }
+
+    const sandbox = document.createElement("div");
+    sandbox.setAttribute("data-export-sandbox", "occ-ongoing-courier");
+    sandbox.style.position = "fixed";
+    sandbox.style.left = "-10000px";
+    sandbox.style.top = "0";
+    sandbox.style.pointerEvents = "none";
+    sandbox.style.opacity = "0";
+    sandbox.style.zIndex = "-1";
+    sandbox.style.background = "#0f172a";
+    sandbox.style.padding = "16px";
+    sandbox.style.width = `${Math.ceil(captureWidth + 32)}px`;
+    sandbox.appendChild(captureRoot);
+    document.body.appendChild(sandbox);
+
     try {
-      // Wait a bit so the browser finishes painting (avoids blank/white canvas exports).
       await new Promise((r) => setTimeout(r, 500));
 
-      const canvas = await html2canvas(element, {
+      const canvas = await html2canvas(captureRoot, {
         scale: 2,
         useCORS: true,
         allowTaint: true,
-        backgroundColor: "#ffffff",
-        width: element.scrollWidth,
-        height: element.scrollHeight,
+        backgroundColor: "#0f172a",
+        logging: true,
+        width: Math.ceil(captureWidth),
+        height: Math.ceil(captureHeight),
+        windowWidth: Math.ceil(captureWidth),
+        windowHeight: Math.ceil(captureHeight),
+        scrollX: 0,
+        scrollY: 0,
       });
 
       const dataUrl = canvas.toDataURL("image/png");
       if (dataUrl.length < 200) {
+        console.error("PNG export produced an unexpectedly small data URL.", {
+          captureWidth,
+          captureHeight,
+          dataUrlLength: dataUrl.length,
+        });
         alert("PNG export failed (blank image). Please try again.");
         return;
       }
@@ -169,15 +213,7 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
       console.error("PNG export error:", e);
       alert("PNG export failed. Please try again.");
     } finally {
-      if (table instanceof HTMLElement) {
-        table.style.fontSize = prevFontSize;
-        table.style.lineHeight = prevLineHeight;
-      }
-      if (scrollContainer instanceof HTMLElement) {
-        scrollContainer.style.overflow = prevScrollOverflow;
-      }
-      element.style.overflow = prevOverflow;
-      element.style.maxHeight = prevMaxHeight;
+      sandbox.remove();
     }
   };
 
