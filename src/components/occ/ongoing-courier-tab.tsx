@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
+import html2canvas from "html2canvas";
 import { RefreshCw, Download, AlertTriangle } from "lucide-react";
 
 type CourierRow = {
@@ -106,247 +107,78 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
   const totalDelivered = totals?.delivered ?? 0;
   const ongoingCouriers = scoped.filter((c) => c.ongoing > 0).length;
 
-  const downloadPNG = () => {
-    // Light-theme canvas render, drawn from the rows already on screen. DOM
-    // screenshot libraries either choke on the Tailwind oklch() colours
-    // (html2canvas) or hang on the SVG pass (html-to-image), and a hand drawn
-    // canvas also guarantees every row and column lands in the file. Large type
-    // and a 5x pixel ratio keep it readable on a phone without zooming.
-    const rows = displayList;
-    const SCALE = 5;
-    // 5x keeps the type crisp on a phone, but a 54-row report is ~196 MP while
-    // canvas has a hard ~16384 px side limit, so the factor is clamped to the
-    // largest one that still yields a valid PNG (>=4.5x in practice).
-    const MAX_DIMENSION = 16_000;
-    const MAX_PIXELS =
-      typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches
-        ? 200_000_000
-        : 260_000_000;
-    const family = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif';
+  const downloadPNG = async () => {
+    const element = tableRef.current;
+    if (!element) return;
 
-    const columns: {
-      label: string;
-      align: "left" | "right";
-      baseWidth: number;
-      value: (c: CourierRow) => string;
-    }[] = [
-      { label: "Nama Kurir", align: "left", baseWidth: 360, value: (c) => c.name },
-      { label: "Pembawaan Fresh C1", align: "right", baseWidth: 200, value: (c) => c.freshC1.toLocaleString("id-ID") },
-      { label: "SD <12PM %", align: "right", baseWidth: 160, value: (c) => `${c.sd12Pct.toFixed(1)}%` },
-      { label: "Total Pembawaan", align: "right", baseWidth: 190, value: (c) => c.totalCarried.toLocaleString("id-ID") },
-      { label: "Total FTD", align: "right", baseWidth: 150, value: (c) => c.totalFtd.toLocaleString("id-ID") },
-      { label: "Delivered", align: "right", baseWidth: 150, value: (c) => c.delivered.toLocaleString("id-ID") },
-      { label: "% Delivered", align: "right", baseWidth: 160, value: (c) => `${c.deliveredPct.toFixed(1)}%` },
-    ];
-
-    // Logical layout (multiplied by SCALE when drawn). 2160 px of table plus
-    // 2 x 20 px margin is the 2200 px logical canvas the report is sized for.
-    const padX = 20;
-    const titleBlock = 170;
-    const headHeight = 70;
-    const rowHeight = 60;
-    const footerHeight = 76;
-    const minTableWidth = 2160;
-
-    const measure = document.createElement("canvas").getContext("2d");
-    if (!measure) return;
-    measure.font = `700 26px ${family}`;
-    const colWidths = columns.map((c) => Math.max(c.baseWidth, measure.measureText(c.label).width + padX * 2));
-    let tableWidth = colWidths.reduce((a, b) => a + b, 0);
-    // Widen every column evenly instead of leaving a big empty gutter.
-    while (tableWidth < minTableWidth) {
-      const bump = Math.min(40, Math.ceil((minTableWidth - tableWidth) / colWidths.length));
-      colWidths.forEach((w, i) => (colWidths[i] = w + bump));
-      tableWidth = colWidths.reduce((a, b) => a + b, 0);
-    }
-
-    const logicalWidth = tableWidth + padX * 2;
-    const logicalHeight = titleBlock + headHeight + rows.length * rowHeight + footerHeight;
-    const scale = Math.min(
-      SCALE,
-      MAX_DIMENSION / logicalWidth,
-      MAX_DIMENSION / logicalHeight,
-      Math.sqrt(MAX_PIXELS / (logicalWidth * logicalHeight))
-    );
-    const S = Math.max(scale, 1);
-    const px = (value: number) => Math.round(value * S);
-
-    const canvas = document.createElement("canvas");
-    canvas.width = px(logicalWidth);
-    canvas.height = px(logicalHeight);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const fontTitle = `800 ${px(36)}px ${family}`;
-    const fontSub = `500 ${px(24)}px ${family}`;
-    const fontHead = `700 ${px(26)}px ${family}`;
-    const fontName = `700 ${px(24)}px ${family}`;
-    const fontBody = `600 ${px(24)}px ${family}`;
-    const fontFooter = `500 ${px(20)}px ${family}`;
-
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.textBaseline = "middle";
-
-    const now = new Date();
-    const dateLabel = new Intl.DateTimeFormat("en-GB", {
-      timeZone: "Asia/Jakarta",
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-    }).format(now);
-    const timeLabel = new Intl.DateTimeFormat("en-GB", {
-      timeZone: "Asia/Jakarta",
-      hour: "2-digit",
-      minute: "2-digit",
-    }).format(now);
-
-    ctx.textAlign = "left";
-    ctx.fillStyle = "#111111";
-    ctx.font = fontTitle;
-    ctx.fillText("OCC COURIER REPORT", px(padX), px(titleBlock * 0.3));
-    ctx.fillStyle = "#4b5563";
-    ctx.font = fontSub;
-    ctx.fillText(
-      `GTL Jatinegara Hub  |  ${dateLabel} ${timeLabel} WIB  |  ${rows.length} kurir`,
-      px(padX),
-      px(titleBlock * 0.62)
-    );
-    ctx.textAlign = "right";
-    ctx.fillStyle = "#111827";
-    ctx.fillText(
-      `Total ${totalCarried.toLocaleString("id-ID")} | Delivered ${totalDelivered.toLocaleString("id-ID")} | FTD ${(totals?.total_ftd ?? 0).toLocaleString("id-ID")} | ${overallDeliveredPct.toFixed(1)}%`,
-      px(logicalWidth - padX),
-      px(titleBlock * 0.62)
-    );
-
-    // Header band
-    ctx.fillStyle = "#1a1a2e";
-    ctx.fillRect(0, px(titleBlock), canvas.width, px(headHeight));
-    ctx.font = fontHead;
-    ctx.fillStyle = "#ffffff";
-    let headX = px(padX);
-    columns.forEach((c, i) => {
-      ctx.textAlign = c.align === "right" ? "right" : "left";
-      const cx = c.align === "right" ? headX + px(colWidths[i]) - px(padX) : headX;
-      ctx.fillText(c.label.toUpperCase(), cx, px(titleBlock + headHeight / 2));
-      headX += px(colWidths[i]);
-    });
-
-    const roundRect = (x: number, y: number, w: number, h: number, r: number) => {
-      ctx.beginPath();
-      if (typeof ctx.roundRect === "function") {
-        ctx.roundRect(x, y, w, h, r);
-        return;
-      }
-      ctx.moveTo(x + r, y);
-      ctx.lineTo(x + w - r, y);
-      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-      ctx.lineTo(x + w, y + h - r);
-      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-      ctx.lineTo(x + r, y + h);
-      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-      ctx.lineTo(x, y + r);
-      ctx.quadraticCurveTo(x, y, x + r, y);
-      ctx.closePath();
-    };
-
-    const drawBadge = (
-      text: string,
-      rightEdge: number,
-      centerY: number,
-      background: string,
-      foreground = "#ffffff"
-    ) => {
-      // Badge type stays just under the row type so the pill still fits its
-      // 40 px minimum height while remaining readable on a phone.
-      ctx.font = `700 ${px(22)}px ${family}`;
-      const textWidth = ctx.measureText(text).width;
-      const badgeW = textWidth + px(40);
-      const badgeH = px(40);
-      const badgeX = rightEdge - badgeW;
-      ctx.fillStyle = background;
-      roundRect(badgeX, centerY - badgeH / 2, badgeW, badgeH, px(7));
-      ctx.fill();
-      ctx.fillStyle = foreground;
-      ctx.textAlign = "center";
-      ctx.fillText(text, badgeX + badgeW / 2, centerY);
-    };
-
-    const bodyTop = titleBlock + headHeight;
-    rows.forEach((row, rowIndex) => {
-      const top = bodyTop + rowIndex * rowHeight;
-      ctx.fillStyle = rowIndex % 2 === 0 ? "#f8f9fa" : "#ffffff";
-      ctx.fillRect(0, px(top), canvas.width, px(rowHeight));
-      ctx.strokeStyle = "#e5e7eb";
-      ctx.lineWidth = Math.max(1, px(1));
-      ctx.beginPath();
-      ctx.moveTo(0, px(top + rowHeight));
-      ctx.lineTo(canvas.width, px(top + rowHeight));
-      ctx.stroke();
-
-      const centerY = px(top + rowHeight / 2);
-      let cellX = padX;
-      columns.forEach((c, i) => {
-        const columnRight = cellX + colWidths[i] - padX;
-        if (c.label === "Nama Kurir") {
-          ctx.textAlign = "left";
-          ctx.font = fontName;
-          ctx.fillStyle = "#111111";
-          ctx.fillText(c.value(row), px(cellX), centerY);
-        } else if (c.label === "Total FTD") {
-          if (row.totalFtd > 0) drawBadge(c.value(row), px(columnRight), centerY, "#dc2626");
-          else {
-            ctx.textAlign = "right";
-            ctx.font = fontBody;
-            ctx.fillStyle = "#9ca3af";
-            ctx.fillText(c.value(row), px(columnRight), centerY);
-          }
-        } else if (c.label === "Delivered") {
-          if (row.delivered > 0) drawBadge(c.value(row), px(columnRight), centerY, "#16a34a");
-          else {
-            ctx.textAlign = "right";
-            ctx.font = fontBody;
-            ctx.fillStyle = "#9ca3af";
-            ctx.fillText(c.value(row), px(columnRight), centerY);
-          }
-        } else if (c.label === "% Delivered") {
-          ctx.textAlign = "right";
-          ctx.font = fontBody;
-          ctx.fillStyle =
-            row.deliveredPct >= 97 ? "#16a34a" : row.deliveredPct >= 90 ? "#b45309" : "#dc2626";
-          ctx.fillText(c.value(row), px(columnRight), centerY);
-        } else {
-          ctx.textAlign = "right";
-          ctx.font = fontBody;
-          ctx.fillStyle = "#374151";
-          ctx.fillText(c.value(row), px(columnRight), centerY);
-        }
-        cellX += colWidths[i];
-      });
-    });
-
-    ctx.textAlign = "left";
-    ctx.font = fontFooter;
-    ctx.fillStyle = "#6b7280";
-    ctx.fillText(
-      "Sumber: HMS driver productivity (cycle 1-3) - filter Ongoing Courier",
-      px(padX),
-      px(logicalHeight - footerHeight / 2)
-    );
-
-    const dateWib = new Intl.DateTimeFormat("en-CA", {
-      timeZone: "Asia/Jakarta",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(now);
-    const dataUrl = canvas.toDataURL("image/png");
-    if (dataUrl.length < 200) {
-      alert("PNG terlalu besar untuk browser ini. Coba lagi di layar yang lebih lebar.");
+    // Ensure the target element is visible and measurable.
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      alert("Export target is not visible yet. Please scroll to the table and try again.");
       return;
     }
-    saveDataUrl(dataUrl, `courier-report-${dateWib}.png`);
+
+    // Temporarily remove overflow clipping so the capture includes all rows/columns.
+    const prevOverflow = element.style.overflow;
+    const prevMaxHeight = element.style.maxHeight;
+    element.style.overflow = "visible";
+    element.style.maxHeight = "none";
+
+    const scrollContainer = element.querySelector("[data-table-scroll]");
+    const prevScrollOverflow = scrollContainer instanceof HTMLElement ? scrollContainer.style.overflow : "";
+    if (scrollContainer instanceof HTMLElement) scrollContainer.style.overflow = "visible";
+
+    // Force readable table type size in the exported image (min 14px), regardless of responsive CSS.
+    const table = element.querySelector("table");
+    const prevFontSize = table instanceof HTMLElement ? table.style.fontSize : "";
+    const prevLineHeight = table instanceof HTMLElement ? table.style.lineHeight : "";
+    if (table instanceof HTMLElement) {
+      table.style.fontSize = "14px";
+      table.style.lineHeight = "1.25";
+    }
+
+    try {
+      // Wait a bit so the browser finishes painting (avoids blank/white canvas exports).
+      await new Promise((r) => setTimeout(r, 500));
+
+      const canvas = await html2canvas(element, {
+        scale: 2,
+        useCORS: true,
+        allowTaint: true,
+        backgroundColor: "#ffffff",
+        width: element.scrollWidth,
+        height: element.scrollHeight,
+      });
+
+      const dataUrl = canvas.toDataURL("image/png");
+      if (dataUrl.length < 200) {
+        alert("PNG export failed (blank image). Please try again.");
+        return;
+      }
+
+      const now = new Date();
+      const dateWib = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Jakarta",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(now);
+
+      saveDataUrl(dataUrl, "courier-report-" + dateWib + ".png");
+    } catch (e) {
+      console.error("PNG export error:", e);
+      alert("PNG export failed. Please try again.");
+    } finally {
+      if (table instanceof HTMLElement) {
+        table.style.fontSize = prevFontSize;
+        table.style.lineHeight = prevLineHeight;
+      }
+      if (scrollContainer instanceof HTMLElement) {
+        scrollContainer.style.overflow = prevScrollOverflow;
+      }
+      element.style.overflow = prevOverflow;
+      element.style.maxHeight = prevMaxHeight;
+    }
   };
 
   return (
