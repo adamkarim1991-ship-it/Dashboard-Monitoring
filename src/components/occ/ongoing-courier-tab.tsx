@@ -111,16 +111,17 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
     // screenshot libraries either choke on the Tailwind oklch() colours
     // (html2canvas) or hang on the SVG pass (html-to-image), and a hand drawn
     // canvas also guarantees every row and column lands in the file. Large type
-    // and a 4x pixel ratio keep it readable on a phone without zooming.
+    // and a 5x pixel ratio keep it readable on a phone without zooming.
     const rows = displayList;
-    const SCALE = 4;
-    // A 52-row table at 4x lands around 85 MP. Desktop browsers handle that,
-    // phones can silently fail the toDataURL pass and hand back an empty PNG,
-    // so a narrow viewport keeps a smaller cap and still exports at ~3x.
+    const SCALE = 5;
+    // 5x keeps the type crisp on a phone, but a 54-row report is ~196 MP while
+    // canvas has a hard ~16384 px side limit, so the factor is clamped to the
+    // largest one that still yields a valid PNG (>=4.5x in practice).
+    const MAX_DIMENSION = 16_000;
     const MAX_PIXELS =
       typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches
-        ? 45_000_000
-        : 100_000_000;
+        ? 200_000_000
+        : 260_000_000;
     const family = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif';
 
     const columns: {
@@ -129,27 +130,28 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
       baseWidth: number;
       value: (c: CourierRow) => string;
     }[] = [
-      { label: "Nama Kurir", align: "left", baseWidth: 280, value: (c) => c.name },
-      { label: "Pembawaan Fresh C1", align: "right", baseWidth: 160, value: (c) => c.freshC1.toLocaleString("id-ID") },
-      { label: "SD <12PM %", align: "right", baseWidth: 130, value: (c) => `${c.sd12Pct.toFixed(1)}%` },
-      { label: "Total Pembawaan", align: "right", baseWidth: 150, value: (c) => c.totalCarried.toLocaleString("id-ID") },
-      { label: "Total FTD", align: "right", baseWidth: 120, value: (c) => c.totalFtd.toLocaleString("id-ID") },
-      { label: "Delivered", align: "right", baseWidth: 120, value: (c) => c.delivered.toLocaleString("id-ID") },
-      { label: "% Delivered", align: "right", baseWidth: 130, value: (c) => `${c.deliveredPct.toFixed(1)}%` },
+      { label: "Nama Kurir", align: "left", baseWidth: 360, value: (c) => c.name },
+      { label: "Pembawaan Fresh C1", align: "right", baseWidth: 200, value: (c) => c.freshC1.toLocaleString("id-ID") },
+      { label: "SD <12PM %", align: "right", baseWidth: 160, value: (c) => `${c.sd12Pct.toFixed(1)}%` },
+      { label: "Total Pembawaan", align: "right", baseWidth: 190, value: (c) => c.totalCarried.toLocaleString("id-ID") },
+      { label: "Total FTD", align: "right", baseWidth: 150, value: (c) => c.totalFtd.toLocaleString("id-ID") },
+      { label: "Delivered", align: "right", baseWidth: 150, value: (c) => c.delivered.toLocaleString("id-ID") },
+      { label: "% Delivered", align: "right", baseWidth: 160, value: (c) => `${c.deliveredPct.toFixed(1)}%` },
     ];
 
-    // Logical layout (multiplied by SCALE when drawn).
-    const padX = 28;
-    const titleBlock = 156;
-    const headHeight = 68;
-    const rowHeight = 56;
-    const footerHeight = 66;
-    const minTableWidth = 1600;
+    // Logical layout (multiplied by SCALE when drawn). 2160 px of table plus
+    // 2 x 20 px margin is the 2200 px logical canvas the report is sized for.
+    const padX = 20;
+    const titleBlock = 170;
+    const headHeight = 70;
+    const rowHeight = 60;
+    const footerHeight = 76;
+    const minTableWidth = 2160;
 
     const measure = document.createElement("canvas").getContext("2d");
     if (!measure) return;
-    measure.font = `700 20px ${family}`;
-    const colWidths = columns.map((c) => Math.max(c.baseWidth, measure.measureText(c.label).width + 24));
+    measure.font = `700 26px ${family}`;
+    const colWidths = columns.map((c) => Math.max(c.baseWidth, measure.measureText(c.label).width + padX * 2));
     let tableWidth = colWidths.reduce((a, b) => a + b, 0);
     // Widen every column evenly instead of leaving a big empty gutter.
     while (tableWidth < minTableWidth) {
@@ -160,7 +162,12 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
 
     const logicalWidth = tableWidth + padX * 2;
     const logicalHeight = titleBlock + headHeight + rows.length * rowHeight + footerHeight;
-    const scale = Math.min(SCALE, Math.sqrt(MAX_PIXELS / (logicalWidth * logicalHeight)));
+    const scale = Math.min(
+      SCALE,
+      MAX_DIMENSION / logicalWidth,
+      MAX_DIMENSION / logicalHeight,
+      Math.sqrt(MAX_PIXELS / (logicalWidth * logicalHeight))
+    );
     const S = Math.max(scale, 1);
     const px = (value: number) => Math.round(value * S);
 
@@ -170,12 +177,12 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const fontTitle = `800 ${px(28)}px ${family}`;
-    const fontSub = `500 ${px(20)}px ${family}`;
-    const fontHead = `700 ${px(20)}px ${family}`;
-    const fontName = `700 ${px(18)}px ${family}`;
-    const fontBody = `600 ${px(18)}px ${family}`;
-    const fontFooter = `500 ${px(16)}px ${family}`;
+    const fontTitle = `800 ${px(36)}px ${family}`;
+    const fontSub = `500 ${px(24)}px ${family}`;
+    const fontHead = `700 ${px(26)}px ${family}`;
+    const fontName = `700 ${px(24)}px ${family}`;
+    const fontBody = `600 ${px(24)}px ${family}`;
+    const fontFooter = `500 ${px(20)}px ${family}`;
 
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -251,10 +258,12 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
       background: string,
       foreground = "#ffffff"
     ) => {
-      ctx.font = fontBody;
+      // Badge type stays just under the row type so the pill still fits its
+      // 40 px minimum height while remaining readable on a phone.
+      ctx.font = `700 ${px(22)}px ${family}`;
       const textWidth = ctx.measureText(text).width;
-      const badgeW = textWidth + px(26);
-      const badgeH = px(34);
+      const badgeW = textWidth + px(40);
+      const badgeH = px(40);
       const badgeX = rightEdge - badgeW;
       ctx.fillStyle = background;
       roundRect(badgeX, centerY - badgeH / 2, badgeW, badgeH, px(7));

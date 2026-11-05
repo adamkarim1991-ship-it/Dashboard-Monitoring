@@ -1,7 +1,12 @@
 import { auth } from "@/lib/auth";
 import { resolveActiveHub, resolveHmsToken } from "@/lib/hms-context";
 import { buildHmsHeaders } from '@/lib/hms-headers';
-import { applyCleanFloorCookie, resolveCleanFloor } from "@/lib/clean-floor";
+import {
+  metricPercent,
+  resolveMetricLock,
+  setMetricLockCookie,
+} from "@/lib/metric-lock";
+import { opcCurrDate, opcCycleList, wibDate, wibUnixAt } from "@/lib/operating-day";
 import { refreshStoredHmsToken, type RefreshedHmsToken } from "@/lib/hms-token-refresh";
 import { prisma } from "@/lib/prisma";
 import { readTokenChunkCount, writeTokenCookies } from "@/lib/hms-token-store";
@@ -72,51 +77,31 @@ function formatDateYMD(d: Date): string {
   return `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
-// HMS anchors the operational day at 17:00 of the previous WIB day. Passing
-// "today 00:00" is accepted by the API but it changes the meaning of every
-// field (just_arrived collapses to the 00:00-now slice, backlog absorbs the
-// whole previous day: delivered fresh dropped to 17, COD volume to 3.827), so
-// the anchor stays at the HMS convention.
+// HMS OPC anchors the operational day at 17:00 of the previous WIB day; the
+// reasoning lives in lib/operating-day.ts. Every other timestamp path (record
+// ranges, metric locks, displayed clock) uses 00:00-23:59:59 WIB.
 function getMainCurrDate(): string {
-  const d = toWIB();
-  d.setUTCDate(d.getUTCDate() - 1);
-  return `${formatDateYMD(d)} 17:00:00`;
+  return opcCurrDate();
 }
 
 function getTodayDate(): string {
-  return formatDateYMD(toWIB());
+  return wibDate();
 }
 
 function getCycleList(): string {
-  // Whole HMS operational day, 17:00 WIB yesterday .. 17:00 WIB today.
-  const start = toWIB();
-  start.setUTCDate(start.getUTCDate() - 1);
-  start.setUTCHours(17, 0, 0, 0);
-  const end = toWIB();
-  end.setUTCHours(17, 0, 0, 0);
-  const startMs = start.getTime() - 7 * 60 * 60 * 1000;
-  const endMs = end.getTime() - 7 * 60 * 60 * 1000;
-  return JSON.stringify([
-    `${Math.floor(startMs / 1000)}-${Math.floor(endMs / 1000)}`,
-  ]);
+  return opcCycleList();
 }
 
 function getTodayWIBUnix(hour: number): number {
-  const d = toWIB();
-  const y = d.getUTCFullYear();
-  const m = d.getUTCMonth();
-  const day = d.getUTCDate();
-  return Math.floor(
-    (Date.UTC(y, m, day, hour, 0, 0) - 7 * 60 * 60 * 1000) / 1000
-  );
+  return wibUnixAt(hour);
 }
 
 function get12amWIBUnix(): number {
-  return getTodayWIBUnix(0);
+  return wibUnixAt(0);
 }
 
 function get8amWIBUnix(): number {
-  return getTodayWIBUnix(8);
+  return wibUnixAt(8);
 }
 
 // The resolved HMS token can be stale (cookie pushed hours ago, expired grant).
@@ -578,7 +563,9 @@ export async function GET(req: NextRequest) {
     const todayDate = getTodayDate();
     const cycleList = getCycleList();
 
-    const [mainRes, codRes, cycleRes, opsRes, courierRes, urgentRes, dedicatedMerged, c1Result, agingRes] =
+    // No per-package C1 inbound scan any more: HMS OPC already prints the
+    // fresh/backlog split, and the 08:00 lock freezes the fresh C1 cohort.
+    const [mainRes, codRes, cycleRes, opsRes, courierRes, urgentRes, dedicatedMerged, agingRes] =
       await Promise.all([
         callHMS(tokenHolder, API_ID_MAIN, {
           hub_ids: JSON.stringify([HUB_ID]),
@@ -638,17 +625,7 @@ export async function GET(req: NextRequest) {
             avgPickup: 0, avgDelivered: 0, achievementPct: 0, drivers: [],
           };
         }),
-        computeC1FromInboundScan(resolvedToken.token, HUB_NAME).catch((e) => {
-          console.warn("[c1c2] Gagal:", e.message);
-          return {
-            c1: 0,
-            deliveredBefore12: 0,
-            delivered: 0,
-            ongoing: 0,
-            ftd: 0,
-            scanned: 0,
-          };
-        }),
+
         callHMSRetry(tokenHolder, API_ID_AGING, {
           hub_ids: JSON.stringify([HUB_ID]),
           curr_date: currDate,
@@ -743,118 +720,151 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const deliveredJustArrived = main.delivered_just_arrived || 0;
-    const justArrived = Number(main.just_arrived) || 0;
+    // ── HMS OPC field map ─────────────────────────────────────────────────
+    // A single OPC row carries every number the Performance page prints,
+    // including the sub-totals under each card, so every metric below reads the
+    // total and its printed breakdown from that row instead of recomputing.
+    const toCount = (value: unknown) => Number(value) || 0;
 
-    // The C1 scan needs ~50 paginated calls, so it is the slice most likely to
-    // come back empty. Keep the last good scan instead of reporting 0 C1.
-    let c1Scan = c1Result;
-    if (!c1Scan || !c1Scan.c1) {
-      const cachedC1 = recallSlice(HUB_ID, "c1");
-      if (cachedC1) c1Scan = cachedC1;
-    } else {
-      rememberSlice(HUB_ID, "c1", c1Scan);
-    }
+    const totalVolume = toCount(main.today_volume);
+    const justArrived = toCount(main.just_arrived);
+    const backlog = toCount(main.backlog);
 
-    const freshC1 = Math.min(c1Scan.c1, justArrived);
-    const freshC2 = Math.max(justArrived - freshC1, 0);
-    // The paginated TMS scan only sees arrivals recorded before 08:00, so it
-    // missed ~120 deliveries versus HMS. HMS OPC reports the delivered fresh C1
-    // count directly; on a hub whose cutoff is 12:00 that is the SD<12PM
-    // numerator, and it keeps the card on the same source as the top row.
-    const deliveredFreshOpc = Math.min(
-      Number(main.delivered_just_arrived) || 0,
-      freshC1
-    );
-    const deliveredBefore12 = Math.max(c1Scan.deliveredBefore12, deliveredFreshOpc);
-    const sdBefore12 = freshC1 > 0 ? (deliveredBefore12 / freshC1) * 100 : 0;
-    const freshSuccess =
-      justArrived > 0
-        ? parseFloat(((deliveredJustArrived / justArrived) * 100).toFixed(2))
-        : 0;
+    const pendingHub = {
+      total: toCount(main.pending_at_hub),
+      arrived_at_hub: toCount(main.arrived_at_hub),
+      driver_allocated: toCount(main.driver_allocated),
+      bagged: toCount(main.bagged),
+      still_in_hub: toCount(main.still_in_hub),
+      waiting_confirmation: toCount(main.waiting_confirmation),
+    };
+    const ongoingDelivery = {
+      total: toCount(main.ongoing_delivery),
+      fresh: toCount(main.ongoing_delivery_just_arrived),
+      backlog: toCount(main.ongoing_delivery_backlog),
+    };
+    const deliveredSplit = {
+      total: toCount(main.delivered),
+      fresh: toCount(main.delivered_just_arrived),
+      backlog: toCount(main.delivered_backlog),
+    };
+    const ftdSplit = {
+      total: toCount(main.ftd),
+      in_driver: toCount(main.in_driver),
+      return_to_hub: toCount(main.ftd_return_to_hub),
+    };
+    const othersSplit = {
+      total: toCount(main.others),
+      wbc: toCount(main.wbc),
+      cancelled: toCount(main.cancelled),
+      ready_to_return: toCount(main.ready_to_return),
+    };
+    // Clean Floor numerator: everything that already left "Pending at Hub".
+    const processedLive =
+      ongoingDelivery.total + deliveredSplit.total + ftdSplit.total + othersSplit.total;
 
-    const backlog = Number(main.backlog) || 0;
-    const volumeOverall = justArrived + backlog;
-    const cleanFloorOngoing = Number(main.ongoing_delivery) || 0;
-    const cleanFloorDelivered = Number(main.delivered) || 0;
-    const cleanFloorFtd = Number(main.ftd) || 0;
-    const cleanFloorOthers = Number(main.others) || 0;
-    const cleanFloorPendingAtHub = Number(main.pending_at_hub) || 0;
-    const cleanFloorTodayVolume = justArrived + backlog;
-    const currentWibHour = new Date(Date.now() + 7 * 60 * 60 * 1000).getUTCHours();
-
-    // The denominator is frozen at the 08:00 WIB Volume Overall; only the
-    // numerator keeps following live HMS data.
-    const cleanFloorResult = await resolveCleanFloor({
+    // 08:00 WIB lock. Today's Volume, Just Arrived and the whole Clean Floor
+    // numerator are frozen together, so the percentage shown at 09:00 is still
+    // the percentage shown at 17:00.
+    const volumeLockResult = await resolveMetricLock({
       req,
       facility: HUB_ID,
-      date: todayDate,
-      wibHour: currentWibHour,
+      kind: "clean_floor_08",
       live: {
-        ongoing: cleanFloorOngoing,
-        delivered: cleanFloorDelivered,
-        ftd: cleanFloorFtd,
-        others: cleanFloorOthers,
-        pending: cleanFloorPendingAtHub,
-        todayVolume: cleanFloorTodayVolume,
+        today_volume: totalVolume,
+        just_arrived: justArrived,
+        backlog,
+        ongoing: ongoingDelivery.total,
+        delivered: deliveredSplit.total,
+        ftd: ftdSplit.total,
+        others: othersSplit.total,
+        pending_at_hub: pendingHub.total,
+        clean_floor_numerator: processedLive,
+        clean_floor_denominator: totalVolume,
       },
+      metric: (values) =>
+        Math.min(
+          metricPercent(
+            values.clean_floor_numerator,
+            values.clean_floor_denominator
+          ),
+          100
+        ),
     });
-    const cleanFloor = cleanFloorResult.payload;
 
-    // Clean Floor (Overall C1): morning target metric, not a snapshot. The pool
-    // is today's C1 arrivals plus yesterday's FTD carried over as backlog, and
-    // the numerator is the processed part of that same pool.
-    //
-    // Delivered / ongoing / FTD come from the SAME HMS OPC call that feeds the
-    // top-row DELIVERED and DELIVERING cards. The old version counted the C1
-    // paginated inbound scan instead, so the card could disagree with the cards
-    // right next to it (87 + 2.868 next to delivered 85 / delivering 3.145).
-    // Strictly C1: the numerator and the denominator both come from the C1
-    // cohort only. The OPC summary aggregates C1+C2 per status (today C2 is
-    // 2.826 of 5.850 arrivals), so using its delivered/ongoing/FTD totals would
-    // leak C2 into the floor and drag it to ~53%. The per-AWB C1 scan is the
-    // only C1-only source: delivered / ongoing / FTD are counted per package of
-    // the C1 cohort, and the backlog side uses the OPC backlog split.
-    const c1Pool = freshC1 + backlog;
-    const deliveredBacklog = Number(main.delivered_backlog) || 0;
-    const ongoingBacklog = Number(main.ongoing_delivery_backlog) || 0;
+    // 12:00 WIB lock: Delivered > Just Arrived = the SD<12PM numerator. This is
+    // a different OPC field from today_volume.just_arrived, which is the
+    // denominator frozen at 08:00 above.
+    const deliveryLockResult = await resolveMetricLock({
+      req,
+      facility: HUB_ID,
+      kind: "sd12_numerator_12",
+      live: { delivered_fresh: deliveredSplit.fresh },
+      metric: (values) => values.delivered_fresh,
+    });
 
-    const deliveredComponent = Math.min(c1Scan.delivered, freshC1) + deliveredBacklog;
-    const ongoingComponent = Math.min(c1Scan.ongoing, freshC1) + ongoingBacklog;
-    const ftdComponent = Math.min(c1Scan.ftd, freshC1);
-    const processedRaw = deliveredComponent + ongoingComponent + ftdComponent;
-    const c1Numerator = Math.min(processedRaw, c1Pool);
+    const volumeLock = volumeLockResult.payload;
+    const deliveryLock = deliveryLockResult.payload;
 
-    // Whatever the pool cap trims has to leave one of the components, so the
-    // breakdown line always adds up to the numerator printed above it.
-    const components = [deliveredComponent, ongoingComponent, ftdComponent];
-    let overflow = processedRaw - c1Numerator;
-    for (let i = 0; i < components.length && overflow > 0; i += 1) {
-      const take = Math.min(overflow, components[i]);
-      components[i] -= take;
-      overflow -= take;
-    }
-    const [deliveredShown, ongoingShown, ftdShown] = components;
-    const freshDeliveredC1 = c1Scan.delivered;
-    const freshOngoingC1 = c1Scan.ongoing;
-    const freshFtdC1 = c1Scan.ftd;
+    const volumeOverall = totalVolume || justArrived + backlog;
+    // SD < 12 PM mixes two OPC fields on purpose:
+    //   denominator = Today's Volume > Just Arrived (Fresh C1), frozen 08:00 WIB
+    //   numerator   = Delivered > Just Arrived, frozen 12:00 WIB
+    // Feeding just_arrived into both sides is what produced the 100% reading.
+    const freshC1 = volumeLock.values.just_arrived;
+    const freshC2 = Math.max(justArrived - freshC1, 0);
+    const deliveredBefore12 =
+      freshC1 > 0 ? Math.min(deliveryLock.values.delivered_fresh, freshC1) : 0;
+    const sdBefore12 = metricPercent(deliveredBefore12, freshC1);
+    const freshSuccess = metricPercent(deliveredSplit.fresh, justArrived);
+    const successDelivered = metricPercent(deliveredSplit.total, volumeOverall);
+
+
+
+    // Clean Floor = everything out of "Pending at Hub" over Today's Volume,
+    // both frozen at 08:00 WIB. The card therefore reports the same finish
+    // rate all day instead of drifting with live deliveries.
+    const cleanFloor = {
+      value: Math.min(volumeLock.value, 100),
+      breakdown: {
+        ongoing: volumeLock.values.ongoing,
+        delivered: volumeLock.values.delivered,
+        ftd: volumeLock.values.ftd,
+        others: volumeLock.values.others,
+        pending: volumeLock.values.pending_at_hub,
+        numerator: volumeLock.values.clean_floor_numerator,
+        today_volume: volumeLock.values.clean_floor_denominator,
+      },
+      is_locked: volumeLock.is_locked,
+      locked_at: volumeLock.is_locked ? volumeLock.captured_at : null,
+      captured_at: volumeLock.captured_at,
+      quality: volumeLock.quality,
+      lock_source: volumeLock.source,
+      lock_hour_wib: volumeLock.lock_hour_wib,
+      live_processed: processedLive,
+      post_lock_volume: volumeOverall,
+      excluded_processed: 0,
+    };
 
     const cleanFloorC1 = {
-      value:
-        c1Pool > 0
-          ? parseFloat(((c1Numerator / c1Pool) * 100).toFixed(2))
-          : 0,
-      numerator: c1Numerator,
-      denominator: c1Pool,
+      value: Math.min(volumeLock.value, 100),
+      numerator: volumeLock.values.clean_floor_numerator,
+      denominator: volumeLock.values.clean_floor_denominator || volumeOverall,
       fresh_c1: freshC1,
-      backlog,
-      delivered: deliveredShown,
-      ongoing: ongoingShown,
-      ftd: ftdShown,
-      fresh_processed: freshDeliveredC1 + freshOngoingC1 + freshFtdC1,
-      backlog_processed: deliveredBacklog + ongoingBacklog,
-      c1_scanned: c1Scan.scanned,
-      target_hour_wib: 8,
+      backlog: volumeLock.values.backlog,
+      today_volume: volumeLock.values.today_volume,
+      delivered: volumeLock.values.delivered,
+      ongoing: volumeLock.values.ongoing,
+      ftd: volumeLock.values.ftd,
+      others: volumeLock.values.others,
+      target_hour_wib: volumeLock.lock_hour_wib,
+      is_locked: volumeLock.is_locked,
+      captured_at: volumeLock.captured_at,
+      quality: volumeLock.quality,
+      lock_source: volumeLock.source,
+      live_value: metricPercent(processedLive, volumeOverall),
+      live_numerator: processedLive,
+      live_denominator: volumeOverall,
       source: "opc_main",
     };
 
@@ -922,6 +932,7 @@ export async function GET(req: NextRequest) {
       backlog,
       today_volume: volumeOverall,
       pending_at_hub: pendingAtHub,
+      pending_at_hub_detail: pendingHub,
       clean_floor: cleanFloor,
       clean_floor_c1: cleanFloorC1,
       fresh_c1: freshC1,
@@ -944,12 +955,15 @@ export async function GET(req: NextRequest) {
       cod_rtr: codReadyToReturn,
       cod_delivered: codDelivered,
       cod_fd: codFd,
-      delivered_just_arrived: deliveredJustArrived,
+      delivered_just_arrived: deliveredSplit.fresh,
       delivered_backlog: main.delivered_backlog || 0,
       fresh_success: freshSuccess,
       cycle_total_picked: freshC1,
       delivered_before_12: deliveredBefore12,
       sd_before_12: parseFloat(sdBefore12.toFixed(2)),
+      sd_before_12_locked: deliveryLock.is_locked,
+      sd_before_12_quality: deliveryLock.quality,
+      sd_before_12_captured_at: deliveryLock.captured_at,
       courier_assigned: courier?.assigned || 0,
       courier_check_in: courier?.check_in || 0,
       courier_check_in_percent: parseFloat(courier?.check_in_percent) || 0,
@@ -998,7 +1012,8 @@ export async function GET(req: NextRequest) {
       },
       summary,
     });
-    applyCleanFloorCookie(response, cleanFloorResult.cookie);
+    setMetricLockCookie(response, volumeLockResult.cookie);
+    setMetricLockCookie(response, deliveryLockResult.cookie);
     applyRefreshedToken(response, req, tokenHolder);
     return response;
   } catch (e: any) {

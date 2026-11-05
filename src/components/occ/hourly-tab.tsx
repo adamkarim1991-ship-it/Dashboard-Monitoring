@@ -12,6 +12,14 @@ type SummaryResponse = {
   backlog: number;
   today_volume: number;
   pending_at_hub: number;
+  pending_at_hub_detail?: {
+    total: number;
+    arrived_at_hub: number;
+    driver_allocated: number;
+    bagged: number;
+    still_in_hub: number;
+    waiting_confirmation: number;
+  };
   ongoing_delivery: number;
   delivered: number;
   delivered_percentage: number;
@@ -136,6 +144,14 @@ export default function HourlyTab({ hubId, hubName }: { hubId: string; hubName: 
   const ongoing = summary?.ongoing_delivery ?? 0;
   const delivered = summary?.delivered ?? 0;
   const pendingAtHub = summary?.pending_at_hub ?? 0;
+  const pendingBreakdown = summary?.pending_at_hub_detail ?? {
+    total: 0,
+    arrived_at_hub: 0,
+    driver_allocated: 0,
+    bagged: 0,
+    still_in_hub: 0,
+    waiting_confirmation: 0,
+  };
   const ftd = summary?.ftd ?? 0;
   const others = summary?.others ?? 0;
   const deliveredJustArrived = summary?.delivered_just_arrived ?? 0;
@@ -247,7 +263,7 @@ export default function HourlyTab({ hubId, hubName }: { hubId: string; hubName: 
         <VolCard label="VOLUME FRESH" value={justArrived} sub={`C1: ${freshC1.toLocaleString("id-ID")}`} sub2={`C2: ${freshC2.toLocaleString("id-ID")}`} accent="purple" />
         <VolCard label="DELIVERED" value={delivered} sub={`Fresh: ${deliveredJustArrived.toLocaleString("id-ID")} - Backlog: ${deliveredBacklog.toLocaleString("id-ID")}`} accent="green" />
         <VolCard label="DELIVERING" value={ongoing} sub={`Fresh: ${ongoingFresh.toLocaleString("id-ID")}`} sub2={`Backlog: ${ongoingBacklog.toLocaleString("id-ID")}`} accent="blue" />
-        <VolCard label="PENDING AT HUB" value={pendingAtHub} sub="Packages still at hub" accent="red" />
+        <PendingHubCard total={pendingAtHub} breakdown={pendingBreakdown} />
         <VolCard label="FAILED TO DELIVER" value={ftd} sub="Failed delivery attempts" accent="red" />
         <VolCard label="OTHER STATUS" value={others} sub="WBC + Cancelled + Ready to Return" accent="purple" />
       </div>
@@ -426,6 +442,49 @@ function VolCard({ label, value, sub, sub2, accent }: { label: string; value: nu
       <p className="text-3xl font-bold text-white mt-1.5">{value.toLocaleString("id-ID")}</p>
       {sub && <p className="text-[10px] text-gray-500 mt-1">{sub}</p>}
       {sub2 && <p className="text-[10px] text-gray-500 mt-0.5">{sub2}</p>}
+    </div>
+  );
+}
+
+function PendingHubCard({
+  total,
+  breakdown,
+}: {
+  total: number;
+  breakdown: {
+    arrived_at_hub: number;
+    driver_allocated: number;
+    bagged: number;
+    still_in_hub: number;
+  };
+}) {
+  const rows = [
+    { label: "Arrived at Hub", value: breakdown.arrived_at_hub },
+    { label: "Driver Allocated", value: breakdown.driver_allocated },
+    { label: "Bagged", value: breakdown.bagged },
+    { label: "Still in Hub", value: breakdown.still_in_hub },
+  ];
+  return (
+    <div className="bg-slate-800/60 rounded border border-slate-700 border-l-4 border-l-red-500 px-4 py-3">
+      <p className="text-[10px] font-bold text-gray-400 tracking-wide">
+        PENDING AT HUB
+      </p>
+      <p className="text-3xl font-bold text-white mt-1.5">
+        {total.toLocaleString("id-ID")}
+      </p>
+      <div className="mt-1 grid grid-cols-2 gap-x-2 gap-y-0.5">
+        {rows.map((row) => (
+          <p
+            key={row.label}
+            className="flex items-baseline justify-between gap-1 text-[10px] text-gray-500"
+          >
+            <span className="truncate">{row.label}</span>
+            <span className="tabular-nums text-gray-300">
+              {row.value.toLocaleString("id-ID")}
+            </span>
+          </p>
+        ))}
+      </div>
     </div>
   );
 }

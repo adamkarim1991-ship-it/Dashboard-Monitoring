@@ -36,6 +36,14 @@ type SummaryResponse = {
   backlog: number;
   today_volume: number;
   pending_at_hub: number;
+  pending_at_hub_detail?: {
+    total: number;
+    arrived_at_hub: number;
+    driver_allocated: number;
+    bagged: number;
+    still_in_hub: number;
+    waiting_confirmation: number;
+  };
   ongoing_delivery: number;
   delivered: number;
   delivered_percentage: number;
@@ -131,6 +139,7 @@ type CleanFloorC1Data = {
   delivered: number;
   ongoing: number;
   ftd: number;
+  others: number;
   fresh_processed: number;
   backlog_processed: number;
   c1_scanned: number;
@@ -370,6 +379,14 @@ export default function DashboardView({
   const ongoing = summary?.ongoing_delivery ?? 0;
   const delivered = summary?.delivered ?? 0;
   const pendingAtHub = summary?.pending_at_hub ?? 0;
+  const pendingBreakdown = summary?.pending_at_hub_detail ?? {
+    total: 0,
+    arrived_at_hub: 0,
+    driver_allocated: 0,
+    bagged: 0,
+    still_in_hub: 0,
+    waiting_confirmation: 0,
+  };
   const ftd = summary?.ftd ?? 0;
   const others = summary?.others ?? 0;
   const deliveredJustArrived = summary?.delivered_just_arrived ?? 0;
@@ -615,12 +632,7 @@ export default function DashboardView({
             subSecond={`Backlog: ${ongoingBacklog.toLocaleString("id-ID")}`}
             accent="blue"
           />
-          <BigVolumeCard
-            label="PENDING AT HUB"
-            value={pendingAtHub}
-            sub="Packages still at hub"
-            accent="red"
-          />
+          <PendingHubCard total={pendingAtHub} breakdown={pendingBreakdown} />
           <BigVolumeCard
             label="FAILED TO DELIVER"
             value={ftd}
@@ -1094,6 +1106,52 @@ function BigVolumeCard({
   );
 }
 
+function PendingHubCard({
+  total,
+  breakdown,
+}: {
+  total: number;
+  breakdown: {
+    arrived_at_hub: number;
+    driver_allocated: number;
+    bagged: number;
+    still_in_hub: number;
+  };
+}) {
+  const rows = [
+    { label: "Arrived at Hub", value: breakdown.arrived_at_hub },
+    { label: "Driver Allocated", value: breakdown.driver_allocated },
+    { label: "Bagged", value: breakdown.bagged },
+    { label: "Still in Hub", value: breakdown.still_in_hub },
+  ];
+  return (
+    <div className="bg-white rounded shadow-sm border-l-4 border-l-red-500 px-4 py-3">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] font-bold text-gray-500 tracking-wide">
+          PENDING AT HUB
+        </p>
+        <Info className="w-3 h-3 text-gray-300" />
+      </div>
+      <p className="text-3xl font-bold text-gray-900 mt-1.5">
+        {total.toLocaleString("id-ID")}
+      </p>
+      <div className="mt-1 grid grid-cols-2 gap-x-2 gap-y-0.5">
+        {rows.map((row) => (
+          <p
+            key={row.label}
+            className="flex items-baseline justify-between gap-1 text-[10px] text-gray-400"
+          >
+            <span className="truncate">{row.label}</span>
+            <span className="tabular-nums text-gray-600">
+              {row.value.toLocaleString("id-ID")}
+            </span>
+          </p>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function BigPercentCard({
   label,
   value,
@@ -1187,7 +1245,7 @@ function CleanFloorC1Card({
             {`${numerator.toLocaleString("id-ID")} / ${denominator.toLocaleString("id-ID")} (Fresh C1: ${freshC1.toLocaleString("id-ID")} + Backlog: ${backlog.toLocaleString("id-ID")})`}
           </p>
           <p className="text-[9px] text-gray-400 mt-0.5 leading-tight">
-            {`C1 delivered ${(data?.delivered ?? 0).toLocaleString("id-ID")} - ongoing ${(data?.ongoing ?? 0).toLocaleString("id-ID")} - FTD ${(data?.ftd ?? 0).toLocaleString("id-ID")}`}
+            {`Ongoing ${(data?.ongoing ?? 0).toLocaleString("id-ID")} + Delivered ${(data?.delivered ?? 0).toLocaleString("id-ID")} + FTD ${(data?.ftd ?? 0).toLocaleString("id-ID")} + Others ${(data?.others ?? 0).toLocaleString("id-ID")}`}
           </p>
         </>
       )}

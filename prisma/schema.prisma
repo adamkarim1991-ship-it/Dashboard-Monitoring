@@ -222,3 +222,22 @@ model AuditLog {
   @@index([userId, createdAt])
   @@index([hubId, createdAt])
 }
+
+// =====================================================
+// METRIC LOCKS
+// 08:00 / 12:00 WIB snapshots, create-only per hub + date + kind
+// =====================================================
+
+model MetricLock {
+  id         String   @id @default(cuid())
+  facility   String
+  date       String
+  kind       String
+  value      Float
+  payload    Json
+  capturedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@unique([facility, date, kind])
+  @@index([facility, date])
+}

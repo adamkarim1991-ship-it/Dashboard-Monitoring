@@ -19,7 +19,10 @@ type AgingRow = {
   aging: number | null;
   agingLabel: string;
   awb: string;
+  // HMS OPC display name (Pending at Hub / Ongoing Delivery / ...).
   status: string;
+  // Raw HMS events the status was derived from, kept as a secondary line.
+  statusDetail: string;
   remarks: string;
 };
 
@@ -46,7 +49,77 @@ type Pivot = {
   remarksCount: number;
 };
 
+// HMS OPC Performance status names. The raw export only carries event level
+// codes (vehicle_arrival, inbounded_to_sorting, bagged, ...) so the UI must
+// translate them; a raw code must never reach the Status column.
+const OPC_PENDING = "Pending at Hub";
+const OPC_ONGOING = "Ongoing Delivery";
+const OPC_DELIVERED = "Delivered";
+const OPC_FTD = "Failed to Deliver (FTD)";
+const OPC_CANCELLED = "Cancelled";
+const OPC_RTR = "Ready to Return";
+const OPC_WBC = "WBC";
+
+const OPC_STATUS_NAMES = [
+  OPC_PENDING,
+  OPC_ONGOING,
+  OPC_DELIVERED,
+  OPC_FTD,
+  OPC_CANCELLED,
+  OPC_RTR,
+  OPC_WBC,
+];
+
+// How far a package has moved. When a row carries several raw events the most
+// advanced one wins, so "bagged + delivered" reports Delivered, not Pending.
+const OPC_STATUS_RANK: Record<string, number> = {
+  [OPC_PENDING]: 1,
+  [OPC_WBC]: 1,
+  [OPC_ONGOING]: 2,
+  [OPC_RTR]: 2,
+  [OPC_FTD]: 3,
+  [OPC_CANCELLED]: 3,
+  [OPC_DELIVERED]: 4,
+};
+
+const RAW_TO_OPC: Record<string, string> = {
+  vehicle_arrival: OPC_PENDING,
+  vehicle_arrivals: OPC_PENDING,
+  arrived_at_hub: OPC_PENDING,
+  arrive_at_hub: OPC_PENDING,
+  inbound_to_sorting: OPC_PENDING,
+  inbounded_to_sorting: OPC_PENDING,
+  inbound_sorting: OPC_PENDING,
+  received: OPC_PENDING,
+  bagged: OPC_PENDING,
+  still_in_hub: OPC_PENDING,
+  at_hub: OPC_PENDING,
+  pending_at_hub: OPC_PENDING,
+  pending: OPC_PENDING,
+  driver_allocated: OPC_ONGOING,
+  ongoing_delivery: OPC_ONGOING,
+  out_for_delivery: OPC_ONGOING,
+  on_delivery: OPC_ONGOING,
+  delivering: OPC_ONGOING,
+  delivered: OPC_DELIVERED,
+  pod_confirmed: OPC_DELIVERED,
+  failed_delivery: OPC_FTD,
+  failed_to_deliver: OPC_FTD,
+  return_to_hub: OPC_FTD,
+  returned_to_hub: OPC_FTD,
+  ftd: OPC_FTD,
+  cancelled: OPC_CANCELLED,
+  canceled: OPC_CANCELLED,
+  ready_to_return: OPC_RTR,
+  rtr: OPC_RTR,
+  wbc: OPC_WBC,
+};
+
 const STATUS_KEYS = ["status", "status package", "status paket", "current status", "last status", "status akhir"];
+const OPC_STATUS_KEYS = ["opc status", "status opc", "opc performance status"];
+const LM_STATUS_KEYS = ["tms lm status", "lm status", "last mile status"];
+const WMS_STATUS_KEYS = ["wms | oms status", "wms oms status", "wms"];
+const DELIVERED_AT_KEYS = ["lm delivered", "delivered at", "delivery time", "pod time"];
 const AGING_KEYS = ["aging", "aging group", "aging days", "aging day", "umur", "aging (day)", "grim aging"];
 const AWB_KEYS = ["airwaybill", "awb", "airwaybill no", "no airwaybill", "no. airwaybill", "waybill", "awb number", "awb #", "airwaybill#"];
 const REMARK_KEYS = ["remarks", "remark", "keterangan", "note", "notes", "catatan"];
@@ -69,6 +142,79 @@ function findColumn(headers: string[], aliases: string[]): string | null {
     if (partial) return partial.raw;
   }
   return null;
+}
+
+function normRawStatus(raw: string): string {
+  return String(raw || "")
+    .toLowerCase()
+    .replace(/\W+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+// Raw HMS event -> HMS OPC display name. Returns null when the value is not a
+// status we know (the caller then shows the value as-is).
+function toOpcStatus(raw: string): string | null {
+  const key = normRawStatus(raw);
+  if (!key) return null;
+  const direct = RAW_TO_OPC[key];
+  if (direct) return direct;
+  const compact = key.replace(/_/g, "");
+  for (const [rawKey, label] of Object.entries(RAW_TO_OPC)) {
+    if (rawKey.replace(/_/g, "") === compact) return label;
+  }
+  const alreadyOpc = OPC_STATUS_NAMES.find((name) => normRawStatus(name) === key);
+  return alreadyOpc ?? null;
+}
+
+function isFilled(value: unknown): boolean {
+  const text = String(value ?? "").trim();
+  return !!text && !/^null$/i.test(text);
+}
+
+// Derive one HMS OPC status per row. Primary signals are the TMS/OMS event
+// columns; the generic Status column is only a fallback. The returned detail
+// keeps the raw events visible underneath the OPC label.
+function resolveOpcStatus(
+  row: Record<string, unknown>,
+  cols: {
+    opc: string | null;
+    lm: string | null;
+    wms: string | null;
+    deliveredAt: string | null;
+    fallback: string | null;
+  }
+): { status: string; detail: string } {
+  const read = (col: string | null) => (col ? String(row[col] ?? "").trim() : "");
+
+  const lm = read(cols.lm);
+  const wms = read(cols.wms);
+  const deliveredAt = read(cols.deliveredAt);
+  const detail = [
+    isFilled(lm) ? `LM: ${lm}` : "",
+    isFilled(wms) ? `WMS: ${wms}` : "",
+  ]
+    .filter(Boolean)
+    .join(" / ");
+
+  if (isFilled(deliveredAt)) return { status: OPC_DELIVERED, detail };
+
+  const candidates = [read(cols.opc), lm, wms, read(cols.fallback)].filter(isFilled);
+  let best: string | null = null;
+  let bestRank = -1;
+  for (const candidate of candidates) {
+    const mapped = toOpcStatus(candidate);
+    if (!mapped) continue;
+    const rank = OPC_STATUS_RANK[mapped] ?? 0;
+    if (rank > bestRank) {
+      best = mapped;
+      bestRank = rank;
+    }
+  }
+  if (best) return { status: best, detail };
+
+  // Unmapped raw value: show it unchanged instead of guessing.
+  const firstRaw = candidates[0];
+  return { status: firstRaw ?? EMPTY_STATUS, detail };
 }
 
 function numberFrom(value: unknown): number | null {
@@ -176,6 +322,15 @@ export default function CekAgingTab({ hubId }: { hubId: string }) {
       const agingCol = findColumn(headers, AGING_KEYS);
       const awbCol = findColumn(headers, AWB_KEYS);
       const remarkCol = findColumn(headers, REMARK_KEYS);
+      // The HMS export ships raw event columns; read them all so the Status
+      // column can show the OPC performance names instead of event codes.
+      const statusColumns = {
+        opc: findColumn(headers, OPC_STATUS_KEYS),
+        lm: findColumn(headers, LM_STATUS_KEYS),
+        wms: findColumn(headers, WMS_STATUS_KEYS),
+        deliveredAt: findColumn(headers, DELIVERED_AT_KEYS),
+        fallback: statusCol,
+      };
 
       if (!agingCol) throw new Error(`Kolom Aging tidak ditemukan. Kolom tersedia: ${headers.join(", ")}`);
       if (!awbCol) throw new Error(`Kolom Airwaybill tidak ditemukan. Kolom tersedia: ${headers.join(", ")}`);
@@ -195,12 +350,14 @@ export default function CekAgingTab({ hubId }: { hubId: string }) {
               ? BLANK
               : String(agingRaw).trim();
 
+        const resolvedStatus = resolveOpcStatus(r, statusColumns);
         parsed.push({
           id: id++,
           aging: agingNum,
           agingLabel,
           awb,
-          status: statusCol ? String(r[statusCol] ?? "").trim() || EMPTY_STATUS : EMPTY_STATUS,
+          status: resolvedStatus.status,
+          statusDetail: resolvedStatus.detail,
           remarks: remarkCol ? String(r[remarkCol] ?? "").trim() : "",
         });
       }
@@ -264,6 +421,7 @@ export default function CekAgingTab({ hubId }: { hubId: string }) {
       return (
         r.awb.toLowerCase().includes(q) ||
         r.status.toLowerCase().includes(q) ||
+        r.statusDetail.toLowerCase().includes(q) ||
         r.remarks.toLowerCase().includes(q) ||
         r.agingLabel.toLowerCase().includes(q)
       );
@@ -430,7 +588,7 @@ export default function CekAgingTab({ hubId }: { hubId: string }) {
                   <tr>
                     <th className="w-24 px-3 py-2.5 text-left font-bold whitespace-nowrap">Aging</th>
                     <th className="px-3 py-2.5 text-left font-bold whitespace-nowrap">Airwaybill</th>
-                    <th className="px-3 py-2.5 text-left font-bold whitespace-nowrap">Status</th>
+                    <th className="px-3 py-2.5 text-left font-bold whitespace-nowrap">Status (OPC)</th>
                     <th className="px-3 py-2.5 text-left font-bold whitespace-nowrap">Remarks</th>
                   </tr>
                 </thead>
@@ -545,7 +703,12 @@ const RemarkRow = memo(function RemarkRow({
     <tr className={zebra ? "bg-slate-900" : "bg-slate-800/50"}>
       <td className="px-3 py-1.5 tabular-nums text-gray-300 whitespace-nowrap">{row.agingLabel}</td>
       <td className="px-3 py-1.5 font-mono text-[11px] text-gray-200 whitespace-nowrap">{row.awb}</td>
-      <td className="px-3 py-1.5 text-gray-400 whitespace-nowrap">{row.status}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap">
+        <span className="font-semibold text-gray-200">{row.status}</span>
+        {row.statusDetail && (
+          <span className="block text-[10px] text-gray-500">{row.statusDetail}</span>
+        )}
+      </td>
       <td className="px-2 py-1">
         <input
           value={row.remarks}
