@@ -237,7 +237,7 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
 
   const downloadPNG = async () => {
     console.log("[PNG Export] start");
-    const exportRows = displayList.slice(0, 25);
+    const exportRows = displayList;
     if (exportRows.length === 0) {
       alert("No courier data to export.");
       return;
@@ -652,6 +652,7 @@ function SubTabBtn({
     </button>
   );
 }
+
 
 
 
