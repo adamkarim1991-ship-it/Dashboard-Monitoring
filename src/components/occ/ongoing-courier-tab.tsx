@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
+﻿import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import domtoimage from "dom-to-image-more";
 import { RefreshCw, Download, AlertTriangle } from "lucide-react";
 
@@ -26,10 +26,36 @@ type Totals = {
   delivered_pct: number;
 };
 
+type FtdRecordEntry = {
+  name: string;
+  ongoing: number;
+  ftdToday: number;
+  lastTotalFtd: number;
+  updatedAt: number;
+};
+
+type FtdRecordState = {
+  dateWib: string;
+  entries: Record<string, FtdRecordEntry>;
+};
+
+
 type FilterMode = "all" | "below97" | "above97";
 type TabMode = "ongoing" | "top10";
 type SubTabMode = "c1" | "overall";
 
+function getSDColor(pct: number) {
+  if (pct >= 90) return "#00AA00";
+  const ratio = Math.max(0, pct) / 90;
+  if (ratio < 0.5) {
+    const r = 204;
+    const g = Math.round(ratio * 2 * 204);
+    return `rgb(${r},${g},0)`;
+  }
+  const r = Math.round((1 - (ratio - 0.5) * 2) * 204);
+  const g = 170;
+  return `rgb(${r},${g},0)`;
+}
 function saveDataUrl(dataUrl: string, filename: string) {
   const link = document.createElement("a");
   link.download = filename;
@@ -48,7 +74,84 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
   const [tabMode, setTabMode] = useState<TabMode>("ongoing");
   const [subTab, setSubTab] = useState<SubTabMode>("c1");
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [ftdRecord, setFtdRecord] = useState<FtdRecordState | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
+
+  const getWibDate = () => {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Jakarta",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  };
+
+  const ftdStorageKey = hubId ? `occ_ftd_record_${hubId}` : null;
+
+  const loadFtdRecord = () => {
+    if (!ftdStorageKey) return null;
+    try {
+      const raw = localStorage.getItem(ftdStorageKey);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as FtdRecordState;
+      if (!parsed || typeof parsed !== "object") return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  };
+
+  const saveFtdRecord = (next: FtdRecordState) => {
+    if (!ftdStorageKey) return;
+    try {
+      localStorage.setItem(ftdStorageKey, JSON.stringify(next));
+    } catch {
+      // ignore storage errors
+    }
+  };
+
+  const updateFtdRecord = useCallback(
+    (nextCouriers: CourierRow[]) => {
+      if (!ftdStorageKey) return;
+      const today = getWibDate();
+      const prev = loadFtdRecord();
+      const base: FtdRecordState =
+        prev && prev.dateWib === today ? prev : { dateWib: today, entries: {} };
+
+      const entries: Record<string, FtdRecordEntry> = { ...base.entries };
+      const now = Date.now();
+
+      nextCouriers.forEach((c) => {
+        const key = c.name;
+        const prevEntry = entries[key];
+        const init: FtdRecordEntry = prevEntry || {
+          name: c.name,
+          ongoing: c.ongoing,
+          ftdToday: 0,
+          lastTotalFtd: c.totalFtd,
+          updatedAt: now,
+        };
+
+        const delta = c.totalFtd - init.lastTotalFtd;
+        const nextEntry: FtdRecordEntry = {
+          ...init,
+          ongoing: c.ongoing,
+          ftdToday: delta > 0 ? init.ftdToday + delta : init.ftdToday,
+          lastTotalFtd: c.totalFtd,
+          updatedAt: now,
+        };
+
+        entries[key] = nextEntry;
+      });
+
+      const nextState: FtdRecordState = { dateWib: today, entries };
+      setFtdRecord(nextState);
+      saveFtdRecord(nextState);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [ftdStorageKey]
+  );
+
 
   const fetchData = useCallback(async () => {
     if (!hubId) return;
@@ -58,6 +161,7 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
       const d = await res.json();
       if (d.success && Array.isArray(d.couriers)) {
         setCouriers(d.couriers);
+        updateFtdRecord(d.couriers);
         setTotals(d.totals || null);
         setLastUpdate(new Date());
         setError(
@@ -81,6 +185,18 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
     const t = setInterval(fetchData, 60000);
     return () => clearInterval(t);
   }, [fetchData]);
+
+  useEffect(() => {
+    if (!ftdStorageKey) return;
+    const prev = loadFtdRecord();
+    if (prev) {
+      setFtdRecord(prev);
+    } else {
+      setFtdRecord({ dateWib: getWibDate(), entries: {} });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ftdStorageKey]);
+
 
   // "On-Going C1" = couriers who carried fresh C1 packages, "Overall" = everyone.
   const scoped = couriers.filter((c) =>
@@ -107,87 +223,150 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
   const totalDelivered = totals?.delivered ?? 0;
   const ongoingCouriers = scoped.filter((c) => c.ongoing > 0).length;
 
+  const ftdTop = Object.values(ftdRecord?.entries ?? {})
+    .sort((a, b) => b.ftdToday - a.ftdToday)
+    .slice(0, 10);
+
+  const resetFtdRecord = () => {
+    if (!ftdStorageKey) return;
+    const next: FtdRecordState = { dateWib: getWibDate(), entries: {} };
+    setFtdRecord(next);
+    saveFtdRecord(next);
+  };
+
+
   const downloadPNG = async () => {
-    const element = tableRef.current;
-    if (!element) {
-      console.error("PNG export aborted: table container not found.");
-      alert("PNG export failed. Table not found.");
+    console.log("[PNG Export] start");
+    const exportRows = displayList.slice(0, 25);
+    if (exportRows.length === 0) {
+      alert("No courier data to export.");
       return;
     }
 
-    const table = element.querySelector("table");
-    if (!(table instanceof HTMLTableElement)) {
-      console.error("PNG export aborted: table element not found.");
-      alert("PNG export failed. Table not found.");
-      return;
-    }
+    const printDiv = document.createElement("div");
+    printDiv.setAttribute("data-export-sandbox", "occ-ongoing-courier-print");
+    printDiv.style.position = "fixed";
+    printDiv.style.left = "0";
+    printDiv.style.top = "0";
+    printDiv.style.pointerEvents = "none";
+    printDiv.style.opacity = "1";
+    printDiv.style.zIndex = "2147483647";
+    printDiv.style.background = "#ffffff";
+    printDiv.style.padding = "12px";
+    printDiv.style.fontFamily = "Arial, Helvetica, sans-serif";
+    printDiv.style.color = "#000000";
 
-    const rect = element.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) {
-      alert("Export target is not visible yet. Please scroll to the table and try again.");
-      return;
-    }
+    const title = document.createElement("div");
+    title.textContent = "OCC Ongoing Courier Report";
+    title.style.fontSize = "18px";
+    title.style.fontWeight = "700";
+    title.style.marginBottom = "8px";
+    title.style.color = "#000";
+    printDiv.appendChild(title);
 
-    const captureRoot = element.cloneNode(true);
-    if (!(captureRoot instanceof HTMLDivElement)) {
-      console.error("PNG export aborted: failed to clone table container.");
-      alert("PNG export failed. Please try again.");
-      return;
-    }
+    const table = document.createElement("table");
+    table.style.borderCollapse = "collapse";
+    table.style.width = "100%";
+    table.style.minWidth = "980px";
+    table.style.fontSize = "14px";
+    table.style.lineHeight = "1.2";
 
-    const captureScroll = captureRoot.querySelector("[data-table-scroll]");
-    const captureTable = captureRoot.querySelector("table");
-    const captureWidth = Math.max(element.scrollWidth, table.scrollWidth, rect.width);
-    const captureHeight = Math.max(element.scrollHeight, table.scrollHeight, table.offsetHeight, rect.height);
+    const headers = [
+      "Nama Kurir",
+      "Pembawaan Fresh C1",
+      "SD <12PM %",
+      "Total Pembawaan",
+      "Total FTD",
+      "Delivered",
+      "% Delivered",
+    ];
 
-    captureRoot.style.overflow = "visible";
-    captureRoot.style.maxHeight = "none";
-    captureRoot.style.width = `${Math.ceil(captureWidth)}px`;
-    captureRoot.style.backgroundColor = "#0f172a";
+    const thead = document.createElement("thead");
+    const headerRow = document.createElement("tr");
+    headers.forEach((h) => {
+      const th = document.createElement("th");
+      th.textContent = h;
+      th.style.background = "#FFD700";
+      th.style.color = "#000";
+      th.style.fontWeight = "700";
+      th.style.border = "1px solid #000";
+      th.style.padding = "8px 10px";
+      th.style.textAlign = h === "Nama Kurir" ? "left" : "right";
+      th.style.whiteSpace = "nowrap";
+      headerRow.appendChild(th);
+    });
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
 
-    if (captureScroll instanceof HTMLElement) {
-      captureScroll.style.overflow = "visible";
-      captureScroll.style.maxHeight = "none";
-      captureScroll.style.width = `${Math.ceil(captureWidth)}px`;
-    }
+    const tbody = document.createElement("tbody");
 
-    if (captureTable instanceof HTMLElement) {
-      captureTable.style.fontSize = "14px";
-      captureTable.style.lineHeight = "1.25";
-      captureTable.style.width = `${Math.ceil(captureWidth)}px`;
-      captureTable.style.minWidth = `${Math.ceil(captureWidth)}px`;
-    }
+    exportRows.forEach((c, i) => {
+      const tr = document.createElement("tr");
+      tr.style.background = i % 2 === 0 ? "#ffffff" : "#f9f9f9";
 
-    const sandbox = document.createElement("div");
-    sandbox.setAttribute("data-export-sandbox", "occ-ongoing-courier");
-    sandbox.style.position = "fixed";
-    sandbox.style.left = "-10000px";
-    sandbox.style.top = "0";
-    sandbox.style.pointerEvents = "none";
-    sandbox.style.opacity = "0";
-    sandbox.style.zIndex = "-1";
-    sandbox.style.background = "#0f172a";
-    sandbox.style.padding = "16px";
-    sandbox.style.width = `${Math.ceil(captureWidth + 32)}px`;
-    sandbox.appendChild(captureRoot);
-    document.body.appendChild(sandbox);
+
+
+      const cells: Array<{
+        value: string;
+        align?: "left" | "right";
+        color?: string;
+        weight?: string;
+      }> = [
+        { value: c.name, align: "left", color: "#000", weight: "600" },
+        { value: c.freshC1.toLocaleString("id-ID"), align: "right", color: "#000", weight: "600" },
+        {
+          value: `${c.sd12Pct.toFixed(1)}%`,
+          align: "right",
+          color: getSDColor(c.sd12Pct),
+          weight: "700",
+        },
+        { value: c.totalCarried.toLocaleString("id-ID"), align: "right", color: "#000", weight: "600" },
+        {
+          value: c.totalFtd.toLocaleString("id-ID"),
+          align: "right",
+          color: c.totalFtd > 5 ? "#CC0000" : "#000",
+          weight: c.totalFtd > 5 ? "700" : "400",
+        },
+        { value: c.delivered.toLocaleString("id-ID"), align: "right", color: "#000", weight: "600" },
+        {
+          value: `${c.deliveredPct.toFixed(1)}%`,
+          align: "right",
+          color: c.deliveredPct >= 96 ? "#00AA00" : "#CC0000",
+          weight: "700",
+        },
+      ];
+
+      cells.forEach((cell) => {
+        const td = document.createElement("td");
+        td.textContent = cell.value;
+        td.style.border = "1px solid #000";
+        td.style.padding = "8px 10px";
+        td.style.color = cell.color || "#000";
+        td.style.fontWeight = cell.weight || "600";
+        td.style.textAlign = cell.align || "left";
+        td.style.whiteSpace = "nowrap";
+        tr.appendChild(td);
+      });
+
+      tbody.appendChild(tr);
+    });
+
+    table.appendChild(tbody);
+    printDiv.appendChild(table);
+    document.body.appendChild(printDiv);
 
     try {
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 50));
 
-      const dataUrl = await domtoimage.toPng(captureRoot, {
-        bgcolor: "#0f172a",
-        width: Math.ceil(captureWidth),
-        height: Math.ceil(captureHeight),
-        pixelRatio: 2,
-        preserveScroll: true,
-        style: {
-          width: `${Math.ceil(captureWidth)}px`,
-          height: `${Math.ceil(captureHeight)}px`,
-          fontSize: "14px",
-          lineHeight: "1.25",
-        },
-      });
+      const dataUrl = await Promise.race([
+        domtoimage.toPng(printDiv, {
+          bgcolor: "#ffffff",
+          scale: 2,
+        }),
+        new Promise<string>((_, reject) =>
+          setTimeout(() => reject(new Error("PNG export timeout")), 120000)
+        ),
+      ]);
 
       const now = new Date();
       const dateWib = new Intl.DateTimeFormat("en-CA", {
@@ -197,12 +376,13 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
         day: "2-digit",
       }).format(now);
 
-      saveDataUrl(dataUrl, "courier-report-" + dateWib + ".png");
+      console.log("[PNG Export] dataUrl length", dataUrl.length);
+      saveDataUrl(dataUrl, "courier-report-print-" + dateWib + ".png");
     } catch (e) {
       console.error("PNG export error:", e);
       alert("PNG export failed. Please try again.");
     } finally {
-      sandbox.remove();
+      printDiv.remove();
     }
   };
 
@@ -247,6 +427,56 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
           sub={`${totalDelivered.toLocaleString("id-ID")} / ${totalCarried.toLocaleString("id-ID")}`}
           accent="green"
         />
+      </div>
+
+
+      <div className="rounded-lg border border-slate-700 bg-slate-900 overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+          <div>
+            <p className="text-sm font-semibold text-white">FTD Record Tracker</p>
+            <p className="text-[10px] text-slate-400">Daily cumulative (WIB) - resets at 00:00</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-slate-400">{ftdRecord?.dateWib || getWibDate()}</span>
+            <button
+              onClick={resetFtdRecord}
+              className="text-[10px] px-2 py-1 rounded border border-slate-600 text-slate-300 hover:bg-slate-800"
+              title="Reset todays tracker"
+            >
+              Reset
+            </button>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[520px] text-xs text-slate-200">
+            <thead className="bg-slate-800/60 text-slate-200">
+              <tr>
+                <th className="px-3 py-2 text-left font-semibold">#</th>
+                <th className="px-3 py-2 text-left font-semibold">Nama Kurir</th>
+                <th className="px-3 py-2 text-right font-semibold">Ongoing</th>
+                <th className="px-3 py-2 text-right font-semibold">FTD Today</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ftdTop.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-3 py-6 text-center text-slate-500">
+                    Tracker will populate after the next refresh.
+                  </td>
+                </tr>
+              ) : (
+                ftdTop.map((r, idx) => (
+                  <tr key={r.name} className="border-t border-slate-800">
+                    <td className="px-3 py-2 text-slate-400">{idx + 1}</td>
+                    <td className="px-3 py-2 font-semibold text-white whitespace-nowrap">{r.name}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{r.ongoing}</td>
+                    <td className="px-3 py-2 text-right tabular-nums font-bold">{r.ftdToday}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -422,4 +652,14 @@ function SubTabBtn({
     </button>
   );
 }
+
+
+
+
+
+
+
+
+
+
 
