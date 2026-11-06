@@ -41,3 +41,9 @@ prisma/*.backup*
 
 # local runtime logs
 server.log
+
+# local run logs
+/aime-start*.log
+/manual-start.log
+/server-start.log
+
