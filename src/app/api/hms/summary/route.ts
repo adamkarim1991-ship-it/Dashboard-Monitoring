@@ -1,3 +1,5 @@
+import { ScopedSingleflightCache } from "@/lib/cache-singleflight";
+import { SUMMARY_CACHE_TTL_MS } from "@/lib/constants";
 import { auth } from "@/lib/auth";
 import { resolveActiveHub, resolveHmsToken } from "@/lib/hms-context";
 import { buildHmsHeaders } from '@/lib/hms-headers';
@@ -6,7 +8,7 @@ import {
   resolveMetricLock,
   setMetricLockCookie,
 } from "@/lib/metric-lock";
-import { opcCurrDate, opcCycleList, wibDate, wibUnixAt } from "@/lib/operating-day";
+import { opcCurrDate, opcCycleList, wibDate, wibUnixAt, wibHour } from "@/lib/operating-day";
 import { refreshStoredHmsToken, type RefreshedHmsToken } from "@/lib/hms-token-refresh";
 import { prisma } from "@/lib/prisma";
 import { readTokenChunkCount, writeTokenCookies } from "@/lib/hms-token-store";
@@ -28,9 +30,7 @@ const JOB_ROLES_CYCLE =
 const JOB_ROLES_DEDICATED = '["Dedicated Rider LM 2W"]';
 const DEDICATED_TARGET = 135;
 
-type CacheEntry = { data: any; timestamp: number };
-const cache = new Map<string, CacheEntry>();
-const CACHE_TTL_MS = 5 * 1000;
+const globalCache = new ScopedSingleflightCache(64);
 
 // Last good value per hub for the slices that can lose a parallel race.
 type SliceSnapshot = {
@@ -347,7 +347,7 @@ async function computeC1FromInboundScan(hmsToken: string, hubName: string) {
     }
   }
 
-  
+
   const normalizedTarget = normalizeHubName(hubName);
   const hubTasks = allTasks.filter(
     (task) => normalizeHubName(task.lm_facility || "") === normalizedTarget
@@ -503,7 +503,7 @@ async function fetchDedicatedMerged(holder: HmsTokenHolder, hubId: string) {
   return result;
 }
 
-export async function GET(req: NextRequest) {
+async function originalGET(req: NextRequest, startTimestamp: string) {
   console.log("=== HIT /api/hms/summary ===");
   const session = await auth();
   if (!session?.user?.id) {
@@ -518,20 +518,6 @@ export async function GET(req: NextRequest) {
 
   const HUB_ID = activeHub.hmsHubId;
   const HUB_NAME = activeHub.name;
-
-  // Answer from the in-memory snapshot first: a cached response must never wait
-  // for token resolution, otherwise a flaky token probe turns a warm cache into
-  // an empty dashboard.
-  const cacheKey = HUB_ID;
-  const now = Date.now();
-  const cached = cache.get(cacheKey);
-  if (cached && now - cached.timestamp < CACHE_TTL_MS) {
-    return NextResponse.json({
-      success: true,
-      meta: { cached: true, cache_age_seconds: Math.floor((now - cached.timestamp) / 1000) },
-      summary: cached.data,
-    });
-  }
 
   const resolvedToken = await resolveHmsToken(req, session.user.id, session.user);
   if (!resolvedToken.token) {
@@ -997,16 +983,15 @@ export async function GET(req: NextRequest) {
       pending_48h_attempt_more: pending48h.attempt_more,
       pending_48h_volume: volumeOverall,
       pending_72h_total: pending72hTotal,
-      fetched_at: new Date().toISOString(),
+      fetched_at: startTimestamp,
     };
 
-    cache.set(cacheKey, { data: summary, timestamp: Date.now() });
 
     const response = NextResponse.json({
       success: true,
       meta: {
         cached: false,
-        fetched_at: new Date().toISOString(),
+        fetched_at: startTimestamp,
         hub_id: HUB_ID,
         hub_name: HUB_NAME,
       },
@@ -1056,5 +1041,63 @@ function applyRefreshedToken(
     );
   } catch (e: any) {
     console.warn(`[summary] cookie refresh skipped: ${e?.message ?? e}`);
+  }
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    const session = await auth();
+    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    const hubId = req.nextUrl.searchParams.get("hubId");
+    const activeHub = await resolveActiveHub(session.user.id, hubId, session.user as any);
+    if (!activeHub) return NextResponse.json({ error: "Hub not found" }, { status: 404 });
+
+    const HUB_ID = activeHub.hmsHubId;
+    const today = wibDate();
+    const hour = wibHour();
+    const phase = hour < 8 ? "pre08" : (hour < 12 ? "08to12" : "post12");
+    const key = JSON.stringify([session.user.id, HUB_ID, today, phase]);
+
+    const { data, source, leaderRes } = await globalCache.getOrFetch(
+      key,
+      SUMMARY_CACHE_TTL_MS,
+      async () => {
+        const startTimestamp = new Date().toISOString();
+        return await originalGET(req, startTimestamp);
+      }
+    );
+
+    let obj: any;
+    try { obj = JSON.parse(data.body); } catch {
+      return leaderRes ?? new NextResponse(data.body, { status: data.status, headers: data.headers });
+    }
+    if (obj?.summary) {
+      const dataAge = Math.max(0, Math.floor((Date.now() - new Date(data.fetchedAt).getTime()) / 1000));
+      obj.meta = {
+        ...obj.meta,
+        cached: source === "cache",
+        data_age_seconds: dataAge,
+        deduplicated: source === "inflight"
+      };
+    }
+
+    if (leaderRes) {
+      return new NextResponse(JSON.stringify(obj), {
+        status: leaderRes.status,
+        headers: leaderRes.headers,
+      });
+    }
+
+    return new NextResponse(JSON.stringify(obj), {
+      status: data.status,
+      headers: new Headers(data.headers),
+    });
+  } catch (e: any) {
+    console.error("[summary] GET Wrapper Error:", e.message);
+    return NextResponse.json(
+      { error: "Internal Server Error" },
+      { status: 500 }
+    );
   }
 }

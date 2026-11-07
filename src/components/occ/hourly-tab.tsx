@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { RefreshCw, Info, CheckCircle2, Wifi, Lock, AlertTriangle } from "lucide-react";
 import { fetchDashboardJson } from "@/lib/client-fetch";
+import { SUMMARY_POLL_INTERVAL_MS, SUBDISTRICT_POLL_INTERVAL_MS } from "@/lib/constants";
+import { FreshnessStatus } from "@/components/ui/freshness-status";
 
 // ── Types ──
 type SummaryResponse = {
@@ -87,6 +89,8 @@ type SortDirection = "asc" | "desc";
 
 // ── Props ──
 export default function HourlyTab({ hubId, hubName }: { hubId: string; hubName: string }) {
+  const activeHubRef = useRef(hubId);
+  activeHubRef.current = hubId;
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
   const [subdistricts, setSubdistricts] = useState<SubdistrictRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -104,33 +108,37 @@ export default function HourlyTab({ hubId, hubName }: { hubId: string; hubName: 
   useEffect(() => { setMounted(true); setNow(lastUpdate ?? new Date()); }, [lastUpdate]);
 
   const fetchSummary = useCallback(async () => {
-    if (!hubId) return;
+    if (!hubId || activeHubRef.current !== hubId) return;
     setLoading(true);
     try {
       const d = await fetchDashboardJson<any>(`/api/hms/summary?hubId=${hubId}`);
+      if (activeHubRef.current !== hubId) return;
       if (d?.success) {
         setSummary(d.summary);
         setLastUpdate(new Date());
       }
-    } catch (e) { console.error("Hourly fetch error:", e); }
-    finally { setLoading(false); }
+    } catch (e) { if (activeHubRef.current !== hubId) return; console.error("Hourly fetch error:", e); }
+    finally { if (activeHubRef.current === hubId) setLoading(false); }
   }, [hubId]);
 
   const fetchSubdistricts = useCallback(async () => {
-    if (!hubId) return;
+    if (!hubId || activeHubRef.current !== hubId) return;
     setSubLoading(true);
     try {
       const d = await fetchDashboardJson<any>(`/api/hms/subdistrict?hubId=${hubId}`);
+      if (activeHubRef.current !== hubId) return;
       if (d?.success) setSubdistricts(d.subdistricts || []);
-    } catch (e) { console.error("Subdistrict fetch error:", e); }
-    finally { setSubLoading(false); }
+    } catch (e) { if (activeHubRef.current !== hubId) return; console.error("Subdistrict fetch error:", e); }
+    finally { if (activeHubRef.current === hubId) setSubLoading(false); }
   }, [hubId]);
 
   useEffect(() => {
+    setSummary(null);
+    setSubdistricts([]);
     fetchSummary();
     fetchSubdistricts();
-    intervalRef.current = setInterval(() => { fetchSummary(); }, 30000);
-    const subInterval = setInterval(() => { fetchSubdistricts(); }, 300000);
+    intervalRef.current = setInterval(() => { fetchSummary(); }, SUMMARY_POLL_INTERVAL_MS);
+    const subInterval = setInterval(() => { fetchSubdistricts(); }, SUBDISTRICT_POLL_INTERVAL_MS);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
       clearInterval(subInterval);
@@ -164,8 +172,8 @@ export default function HourlyTab({ hubId, hubName }: { hubId: string; hubName: 
   const ongoingFresh = summary?.ongoing_delivery_just_arrived ?? 0;
   const ongoingBacklog = summary?.ongoing_delivery_backlog ?? 0;
 
-  const opDate = mounted && now ? now.toLocaleDateString("id-ID", { year: "numeric", month: "2-digit", day: "2-digit" }) : "N/A";
-  const opTime = mounted && now ? now.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "N/A";
+  const opDate = mounted && now ? now.toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta", year: "numeric", month: "2-digit", day: "2-digit" }) : "N/A";
+  const opTime = mounted && now ? now.toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta", hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "N/A";
 
   const displayHubName = hubName || summary?.hub_name || "GTL Jatinegara Hub";
   const shortHubName = displayHubName.replace(/^GTL\s+/i, "").replace(/\s+Hub$/i, "").toUpperCase();
@@ -230,11 +238,12 @@ export default function HourlyTab({ hubId, hubName }: { hubId: string; hubName: 
 
   return (
     <div className="px-6 py-4 space-y-3">
+      <FreshnessStatus fetchedAt={summary?.fetched_at} />
       {/* STATUS BAR */}
       <div className="flex items-center justify-between text-xs bg-slate-800/50 rounded px-4 py-2 border border-slate-700">
         <span className="flex items-center gap-2 text-green-400">
           <Wifi className="w-3.5 h-3.5" />
-          Live HMS Jatinegara | {opDate} {opTime} WIB
+          HMS | UI received at {opDate} {opTime} WIB
         </span>
         <div className="flex items-center gap-3">
           <span className="flex items-center gap-1 text-green-400">

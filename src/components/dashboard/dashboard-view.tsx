@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { signOut } from "next-auth/react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,8 @@ import {
   ArrowLeft,
 } from "lucide-react";
 import { fetchDashboardJson } from "@/lib/client-fetch";
+import { SUMMARY_POLL_INTERVAL_MS, SUBDISTRICT_POLL_INTERVAL_MS } from "@/lib/constants";
+import { FreshnessStatus } from "@/components/ui/freshness-status";
 
 type AppRole = "MANAGER" | "SPV" | "HUB_LEAD";
 
@@ -208,6 +210,9 @@ export default function DashboardView({
   hubName?: string;
   showSubdistrict?: boolean;
 }) {
+  const activeHubId = hubId || user.hmsHubIds?.[0] || "";
+  const activeHubRef = useRef(activeHubId);
+  activeHubRef.current = activeHubId;
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
   const [subdistricts, setSubdistricts] = useState<SubdistrictRow[]>([]);
   const [showUrgent, setShowUrgent] = useState(false);
@@ -263,12 +268,13 @@ export default function DashboardView({
   }, [lastUpdate]);
 
   const fetchSummary = useCallback(async () => {
+    if (activeHubRef.current !== activeHubId) return;
     setLoading(true);
     try {
-      const activeHubId = hubId || user.hmsHubIds?.[0] || "";
       const d = await fetchDashboardJson<any>(
         `/api/hms/summary${activeHubId ? `?hubId=${activeHubId}` : ""}`
       );
+      if (activeHubRef.current !== activeHubId) return;
       if (d?.success) {
         setSummary(d.summary);
         setSummaryError(null);
@@ -326,20 +332,22 @@ export default function DashboardView({
         console.error("Summary error:", message);
       }
     } catch (e: any) {
+      if (activeHubRef.current !== activeHubId) return;
       setSummaryError(String(e?.message || e));
       console.error("Failed to load summary:", e);
     } finally {
-      setLoading(false);
+      if (activeHubRef.current === activeHubId) setLoading(false);
     }
-  }, [user.hmsHubIds, hubId]);
+  }, [activeHubId]);
 
   const fetchSubdistricts = useCallback(async () => {
+    if (activeHubRef.current !== activeHubId) return;
     setSubLoading(true);
     try {
-      const activeHubId = hubId || user.hmsHubIds?.[0] || "";
       const d = await fetchDashboardJson<any>(
         `/api/hms/subdistrict${activeHubId ? `?hubId=${activeHubId}` : ""}`
       );
+      if (activeHubRef.current !== activeHubId) return;
       if (d?.success) {
         // Only the per-district rows come from here. COD / urgent stay on the
         // summary payload: it is the single place that applies the HMS OPC
@@ -349,11 +357,14 @@ export default function DashboardView({
     } catch (e) {
       console.error("Failed to load subdistricts:", e);
     } finally {
-      setSubLoading(false);
+      if (activeHubRef.current === activeHubId) setSubLoading(false);
     }
-  }, [user.hmsHubIds, hubId]);
+  }, [activeHubId]);
 
   useEffect(() => {
+    setSummaryError(null);
+    setSummary(null);
+    setSubdistricts([]);
     fetchSummary();
     if (showSubdistrict) fetchSubdistricts();
   }, [fetchSummary, fetchSubdistricts, showSubdistrict]);
@@ -361,11 +372,11 @@ export default function DashboardView({
   useEffect(() => {
     const t = setInterval(() => {
       fetchSummary();
-    }, 300000);
+    }, SUMMARY_POLL_INTERVAL_MS);
     const tSub = showSubdistrict
       ? setInterval(() => {
           fetchSubdistricts();
-        }, 5 * 60 * 1000)
+        }, SUBDISTRICT_POLL_INTERVAL_MS)
       : null;
     return () => {
       clearInterval(t);
@@ -401,7 +412,7 @@ export default function DashboardView({
 
   const opDate =
     mounted && now
-      ? now.toLocaleDateString("id-ID", {
+      ? now.toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta",
           year: "numeric",
           month: "2-digit",
           day: "2-digit",
@@ -409,7 +420,7 @@ export default function DashboardView({
       : "N/A";
   const opTime =
     mounted && now
-      ? now.toLocaleTimeString("id-ID", {
+      ? now.toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta",
           hour: "2-digit",
           minute: "2-digit",
           second: "2-digit",
@@ -512,6 +523,7 @@ export default function DashboardView({
 
   return (
     <div className="min-h-screen bg-gray-100">
+      <FreshnessStatus fetchedAt={summary?.fetched_at} />
       {/* HEADER */}
       <header className="bg-[#0f1e3d] text-white">
         <div className="max-w-[1600px] mx-auto px-6 py-3 flex items-center justify-between">
@@ -537,7 +549,7 @@ export default function DashboardView({
             <p className="text-[11px] text-gray-400 mt-0.5 flex items-center gap-1.5">
               <Info className="w-3 h-3 flex-shrink-0" />
               <span>
-                Live data: Summary View | Hourly | Observed at {opDate} {opTime}{" "}
+                Live data: Summary View | Hourly | UI received at {opDate} {opTime}{" "}
                 WIB
               </span>
             </p>
@@ -593,7 +605,7 @@ export default function DashboardView({
         <div className="max-w-[1600px] mx-auto px-6 py-2 flex items-center justify-between text-xs">
           <span className="flex items-center gap-2 text-green-700">
             <Wifi className="w-3.5 h-3.5" />
-            Live GTL/TMS | secure local bridge | Live observation {opDate}{" "}
+            Live GTL/TMS | secure local bridge | UI received at {opDate}{" "}
             {opTime} WIB
           </span>
           <span className="flex items-center gap-1 text-green-700">
