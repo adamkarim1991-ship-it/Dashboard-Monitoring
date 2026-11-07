@@ -67,7 +67,7 @@ export default function UrgentMonitoringTab({ hubId }: { hubId: string }) {
 
   useEffect(() => {
     fetchData();
-    const t = setInterval(fetchData, 60000);
+    const t = setInterval(fetchData, 300000);
     return () => clearInterval(t);
   }, [fetchData]);
 

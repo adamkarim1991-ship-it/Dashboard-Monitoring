@@ -361,7 +361,7 @@ export default function DashboardView({
   useEffect(() => {
     const t = setInterval(() => {
       fetchSummary();
-    }, 60000);
+    }, 300000);
     const tSub = showSubdistrict
       ? setInterval(() => {
           fetchSubdistricts();

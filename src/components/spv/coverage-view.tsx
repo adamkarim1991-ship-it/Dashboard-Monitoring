@@ -116,7 +116,7 @@ export default function CoverageView({ user }: { user: SessionUser }) {
   }, [fetchCoverage]);
 
   useEffect(() => {
-    const t = setInterval(() => fetchCoverage(), 120000);
+    const t = setInterval(() => fetchCoverage(), 300000);
     return () => clearInterval(t);
   }, [fetchCoverage]);
 

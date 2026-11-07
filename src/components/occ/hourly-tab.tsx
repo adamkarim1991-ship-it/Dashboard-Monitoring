@@ -130,7 +130,7 @@ export default function HourlyTab({ hubId, hubName }: { hubId: string; hubName: 
     fetchSummary();
     fetchSubdistricts();
     intervalRef.current = setInterval(() => { fetchSummary(); }, 30000);
-    const subInterval = setInterval(() => { fetchSubdistricts(); }, 120000);
+    const subInterval = setInterval(() => { fetchSubdistricts(); }, 300000);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
       clearInterval(subInterval);

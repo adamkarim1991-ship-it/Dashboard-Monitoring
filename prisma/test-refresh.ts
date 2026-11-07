@@ -1,4 +1,4 @@
-﻿import { PrismaClient } from '@prisma/client'
+import { PrismaClient } from '@prisma/client'
 const prisma = new PrismaClient()
 async function main() {
   const user = await prisma.user.findUnique({
@@ -9,7 +9,7 @@ async function main() {
   console.log('USER ID:', user.id)
 
   console.log('\nCalling /api/auth/refresh-hms...')
-  const res = await fetch('https://dashboard-monitoring-beige.vercel.app/api/auth/refresh-hms', {
+  const res = await fetch('https://dashboard-monitoring-production.up.railway.app/api/auth/refresh-hms', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ userId: user.id }),
