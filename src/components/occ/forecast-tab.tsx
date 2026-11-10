@@ -1,7 +1,7 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import { RefreshCw, AlertTriangle, Info, Calendar } from "lucide-react";
+import { RefreshCw, AlertTriangle, Info } from "lucide-react";
 import {
   Bar,
   CartesianGrid,
@@ -106,13 +106,16 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
   const [rangeLoading, setRangeLoading] = useState(false);
 
   const fetchRange = useCallback(async () => {
+    const rid = ++rangeRequestId.current;
     if (!hubId || !rangeStartDate || !rangeEndDate) {
       setRangeData(null);
+      setRangeLoading(false);
+      setRangeError(null);
       return;
     }
-    const rid = ++rangeRequestId.current;
     setRangeLoading(true);
     setRangeError(null);
+    setRangeData(null);
     try {
       const res = await fetch(
         `/api/hms/fm?hubId=${hubId}&district=jatinegara&countOnly=1&startDate=${rangeStartDate}&endDate=${rangeEndDate}`,
@@ -192,27 +195,33 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
 
   useEffect(() => {
     fetchDaily();
-    fetchRange();
     fetchWeek();
     fetchSummary();
 
     const dailyTimer = setInterval(fetchDaily, 300000);
     const weekTimer = setInterval(fetchWeek, 300000);
     const summaryTimer = setInterval(fetchSummary, 300000);
-    const rangeTimer = setInterval(fetchRange, 300000);
     return () => {
       clearInterval(dailyTimer);
       clearInterval(weekTimer);
       clearInterval(summaryTimer);
-      clearInterval(rangeTimer);
     };
-  }, [fetchDaily, fetchWeek, fetchSummary, fetchRange]);
+  }, [fetchDaily, fetchWeek, fetchSummary]);
+
+  useEffect(() => {
+    fetchRange();
+    const rangeTimer = setInterval(fetchRange, 300000);
+    return () => {
+      clearInterval(rangeTimer);
+      rangeRequestId.current++;
+    };
+  }, [fetchRange]);
 
   const received = data?.today?.received || 0;
-  const receivedForRange = rangeData ? rangeData.received : null;
+
   const avgHistory = data?.avgHistory ?? null;
 
-  // ── top cards: driven by the actual HMS received volume only ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ top cards: driven by the actual HMS received volume only Ã¢â€â‚¬Ã¢â€â‚¬
   const freshEstimated = Math.round((received * HISTORICAL_RATE) / 100);
   const ftdInDriver = summary?.ftd ?? 0;
   const ftdReturned = summary?.ready_to_return ?? 0;
@@ -230,11 +239,11 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
   const estC1 = Math.round(forecastVolume * c1Ratio);
   const estC2 = Math.max(forecastVolume - estC1, 0);
 
-  // ── bottom row: the only numbers the slider is allowed to move ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ bottom row: the only numbers the slider is allowed to move Ã¢â€â‚¬Ã¢â€â‚¬
   const targetDelivered = Math.round((forecastVolume * targetRate) / 100);
   const targetFtd = Math.max(forecastVolume - targetDelivered, 0);
 
-  const num = (value: number) => (backlogKnown ? value.toLocaleString("id-ID") : "—");
+  const num = (value: number) => (backlogKnown ? value.toLocaleString("id-ID") : "â€”");
 
   const potentialGap = received - freshEstimated;
   const vsAvg = avgHistory && avgHistory > 0 ? ((received - avgHistory) / avgHistory) * 100 : null;
@@ -292,32 +301,36 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
         </div>
       )}
 
+      {rangeError && (
+        <div className="flex items-start gap-2 rounded border border-amber-800 bg-amber-950/40 px-4 py-3 text-xs text-amber-300">
+          <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+          <div>
+            <p className="font-semibold">Range Volume Error</p>
+            <p className="mt-0.5 text-amber-400/80">{rangeError}</p>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
         <FilterChip label="Leg type" value="Last Mile" />
         <FilterChip label="Status" value="Received" />
         <FilterChip label="District" value="Jatinegara" />
         <FilterChip
           label="Date"
-          value={rangeData ? `Range: ${rangeStartDate} to ${rangeEndDate}` : `${data?.filters?.date || "today"} (hari ini)`}
+          value={`${rangeStartDate || "..."} to ${rangeEndDate || "..."}`}
         />
         <div className="flex items-center gap-1.5 ml-2">
           <input
             type="date"
-            value={`${rangeStartDate.slice(0, 4)}-${rangeStartDate.slice(4, 6)}-${rangeStartDate.slice(6, 8)}`}
-            onChange={(e) => {
-              const val = e.target.value.replace(/-/g, "");
-              if (val) setRangeStartDate(val);
-            }}
+            value={rangeStartDate ? `${rangeStartDate.slice(0, 4)}-${rangeStartDate.slice(4, 6)}-${rangeStartDate.slice(6, 8)}` : ""}
+            onChange={(e) => setRangeStartDate(e.target.value.replace(/-/g, ""))}
             className="bg-slate-800 text-[10px] border border-slate-700 rounded px-1 text-gray-300"
           />
           <span className="text-gray-500 text-[10px]">to</span>
           <input
             type="date"
-            value={`${rangeEndDate.slice(0, 4)}-${rangeEndDate.slice(4, 6)}-${rangeEndDate.slice(6, 8)}`}
-            onChange={(e) => {
-              const val = e.target.value.replace(/-/g, "");
-              if (val) setRangeEndDate(val);
-            }}
+            value={rangeEndDate ? `${rangeEndDate.slice(0, 4)}-${rangeEndDate.slice(4, 6)}-${rangeEndDate.slice(6, 8)}` : ""}
+            onChange={(e) => setRangeEndDate(e.target.value.replace(/-/g, ""))}
             className="bg-slate-800 text-[10px] border border-slate-700 rounded px-1 text-gray-300"
           />
           <button
@@ -346,15 +359,15 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
       {/* Row 1 */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <MetricCard
-          label="Volume Received"
-          value={received.toLocaleString("id-ID")}
-          sub="HMS · hari ini, status Received"
+          label="Volume Received (Range)"
+          value={rangeLoading ? "..." : (rangeError || rangeData === null ? "-" : rangeData.received.toLocaleString("id-ID"))}
+          sub={`${rangeStartDate} - ${rangeEndDate}`}
           accent="border-l-blue-500"
         />
         <MetricCard
           label="Backlog FTD"
           value={num(backlog)}
-          sub={`In driver ${ftdInDriver.toLocaleString("id-ID")} · Returned hub ${ftdReturned.toLocaleString("id-ID")}`}
+          sub={`In driver ${ftdInDriver.toLocaleString("id-ID")} Â· Returned hub ${ftdReturned.toLocaleString("id-ID")}`}
           accent="border-l-red-500"
         />
         <MetricCard
@@ -371,19 +384,19 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
         <MetricCard
           label="Fresh Estimated"
           value={freshEstimated.toLocaleString("id-ID")}
-          sub={`Received × ${HISTORICAL_RATE}%`}
+          sub={`Daily Received [${data?.filters?.date || ""}] x${HISTORICAL_RATE}%`}
           accent="border-l-green-500"
         />
         <MetricCard
           label="Estimated Volume C1"
           value={num(estC1)}
-          sub={`Forecast × ${(c1Ratio * 100).toFixed(0)}%`}
+          sub={`Forecast Ã— ${(c1Ratio * 100).toFixed(0)}%`}
           accent="border-l-violet-500"
         />
         <MetricCard
           label="Estimated Volume C2"
           value={num(estC2)}
-          sub={`Forecast × ${(100 - c1Ratio * 100).toFixed(0)}%`}
+          sub={`Forecast Ã— ${(100 - c1Ratio * 100).toFixed(0)}%`}
           accent="border-l-yellow-500"
         />
       </div>
@@ -395,7 +408,7 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
             <div>
               <p className="text-xs font-bold text-white">Volume Harian Minggu Ini</p>
               <p className="text-[10px] text-gray-500 mt-0.5">
-                Sen–Sab · actual received per day + ADO (Average Daily Order)
+                Senâ€“Sab Â· actual received per day + ADO (Average Daily Order)
               </p>
             </div>
             <div className="text-right">
@@ -476,7 +489,7 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
             <LegendDot color="#334155" label="Hari sebelumnya" />
             <LegendDot color="#f59e0b" label="ADO" />
             <LegendDot color="#22d3ee" label="Kumulatif (sumbu kanan)" />
-            {!hasWeekData && <span className="text-amber-500">Menunggu data minggu ini…</span>}
+            {!hasWeekData && <span className="text-amber-500">Menunggu data minggu iniâ€¦</span>}
           </div>
         </div>
 
@@ -505,12 +518,12 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
         </div>
       </div>
 
-      {/* Delivery rate slider — full width, only drives the target cards */}
+      {/* Delivery rate slider â€” full width, only drives the target cards */}
       <div className="rounded-lg border border-slate-700 border-l-4 border-l-purple-500 bg-slate-800/60 px-5 py-4">
         <div className="flex flex-wrap items-end justify-between gap-2">
           <div>
             <p className="text-xs font-bold text-white">Delivery Rate: {targetRate}%</p>
-            <p className="text-[10px] text-gray-500 mt-0.5">Fresh Estimated = Received × rate</p>
+            <p className="text-[10px] text-gray-500 mt-0.5">Fresh Estimated = Received Ã— rate</p>
           </div>
           <p className="text-[10px] text-gray-500 max-w-md text-right leading-relaxed">
             Slider hanya mengubah <span className="text-blue-300">Target Delivered</span> dan{" "}
@@ -536,24 +549,24 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
         </div>
       </div>
 
-      {/* Bottom row — target cards, only these move with the slider */}
+      {/* Bottom row â€” target cards, only these move with the slider */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <TargetCard
           label="Forecast Volume"
           value={num(forecastVolume)}
-          sub="Static · Fresh Estimated + Backlog"
+          sub="Static Â· Fresh Estimated + Backlog"
           tone="text-cyan-300"
         />
         <TargetCard
           label="Target Delivered"
           value={num(targetDelivered)}
-          sub={`Forecast × ${targetRate}%`}
+          sub={`Forecast Ã— ${targetRate}%`}
           tone="text-blue-300"
         />
         <TargetCard
           label="Target FTD"
           value={num(targetFtd)}
-          sub={`Forecast × ${(100 - targetRate).toFixed(0)}%`}
+          sub={`Forecast Ã— ${(100 - targetRate).toFixed(0)}%`}
           tone="text-red-300"
         />
       </div>
@@ -561,7 +574,7 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
       <div className="rounded-lg border border-slate-700 bg-slate-900 overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
           <p className="text-xs font-bold text-white">Volume Received Harian</p>
-          <p className="text-[10px] text-gray-500">Jatinegara · 3 hari terakhir</p>
+          <p className="text-[10px] text-gray-500">Jatinegara Â· 3 hari terakhir</p>
         </div>
         <table className="w-full text-xs">
           <thead className="bg-[#0f1e3d] text-white">
@@ -624,10 +637,10 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
         <Info className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-blue-400" />
         <div className="space-y-1">
           <p>
-            Sumber: HMS FM Volume = Last Mile · Status{" "}
-            <span className="text-gray-200">Received</span> · District{" "}
-            <span className="text-gray-200">Jatinegara</span> ·{" "}
-            <span className="text-gray-200">tanggal hari ini saja</span> (00:00–23:59 WIB, hub
+            Sumber: HMS FM Volume = Last Mile Â· Status{" "}
+            <span className="text-gray-200">Received</span> Â· District{" "}
+            <span className="text-gray-200">Jatinegara</span> Â·{" "}
+            <span className="text-gray-200">tanggal hari ini saja</span> (00:00â€“23:59 WIB, hub
             460450593288). Angka volume diambil dari <span className="text-gray-200">total_records</span>{" "}
             HMS untuk filter tersebut, bukan hasil hitung halaman, supaya sama dengan yang tampil di
             HMS.

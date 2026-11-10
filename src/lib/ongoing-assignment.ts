@@ -10,6 +10,37 @@ export async function singleFlight<T>(pending: Map<string, Promise<T>>, key: str
   try { return await promise; }
   finally { if (pending.get(key) === promise) pending.delete(key); }
 }
+export class MovingAssignmentSnapshotError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MovingAssignmentSnapshotError";
+  }
+}
+// At most two fresh snapshots. Neither pages nor counts from a failed snapshot survive.
+// The caller supplies the same route deadline; retries never extend it.
+export async function loadCurrentAssignmentsWithRetry(
+  fetchPage: (page: number) => Promise<unknown>,
+  hubId: string,
+  signal: AbortSignal,
+  maxPages = 120
+): Promise<Assignment & { snapshotAttempts: number }> {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    signal.throwIfAborted();
+    try {
+      const assignment = await loadCurrentAssignments(async page => {
+        signal.throwIfAborted();
+        const result = await fetchPage(page);
+        signal.throwIfAborted();
+        return result;
+      }, hubId, maxPages);
+      return { ...assignment, snapshotAttempts: attempt };
+    } catch (error) {
+      signal.throwIfAborted();
+      if (!(error instanceof MovingAssignmentSnapshotError) || attempt === 2) throw error;
+    }
+  }
+  throw new Error("Current assignment snapshot attempts exhausted");
+}
 export async function loadCurrentAssignments(fetchPage: (page: number) => Promise<unknown>, hubId: string, maxPages = 120): Promise<Assignment> {
   const unique = new Map<string, Shipment>();
   let total = -1, pageSize = 0, received = 0, pages = 0;
@@ -18,7 +49,8 @@ export async function loadCurrentAssignments(fetchPage: (page: number) => Promis
     const data = json?.data;
     if ((json.code !== undefined && json.code !== 200) || !Array.isArray(data?.shipments) || !Number.isSafeInteger(data.total_records) || data.total_records! < 0 || Number(data.page) !== page || !Number.isSafeInteger(data.per_page) || data.per_page! <= 0) throw new Error("Invalid current assignment page contract");
     if (total < 0) { total = data.total_records!; pageSize = data.per_page!; }
-    if (data.total_records !== total || data.per_page !== pageSize) throw new Error("Current assignment total changed during pagination");
+    if (data.per_page !== pageSize) throw new Error("Invalid current assignment page contract");
+    if (data.total_records !== total) throw new MovingAssignmentSnapshotError("Current assignment total changed during pagination");
     const expected = Math.min(pageSize, Math.max(total - (page - 1) * pageSize, 0));
     if (data.shipments.length !== expected) throw new Error("Current assignment page missing or truncated");
     received += data.shipments.length;
@@ -27,7 +59,7 @@ export async function loadCurrentAssignments(fetchPage: (page: number) => Promis
       const key = String(row.awb_number || row.id || "").trim();
       if (!key) throw new Error("Current shipment missing AWB/ID");
       const old = unique.get(key);
-      if (old && (old.assigned_drivers !== row.assigned_drivers || old.status !== row.status || old.hub_id !== row.hub_id)) throw new Error("Current assignment changed during pagination");
+      if (old && (old.assigned_drivers !== row.assigned_drivers || old.status !== row.status || old.hub_id !== row.hub_id)) throw new MovingAssignmentSnapshotError("Current assignment changed during pagination");
       unique.set(key, row);
     }
   }

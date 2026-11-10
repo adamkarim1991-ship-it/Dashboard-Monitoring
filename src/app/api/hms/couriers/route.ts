@@ -1,4 +1,4 @@
-import { loadCurrentAssignments, mergeCurrentCounts, singleFlight, pruneTimedCache, type Assignment } from "@/lib/ongoing-assignment";
+import { loadCurrentAssignmentsWithRetry, mergeCurrentCounts, singleFlight, pruneTimedCache, type Assignment } from "@/lib/ongoing-assignment";
 import { auth } from "@/lib/auth";
 import { resolveActiveHub, resolveHmsToken } from "@/lib/hms-context";
 import { buildHmsHeaders } from "@/lib/hms-headers";
@@ -119,10 +119,10 @@ export async function GET(req: NextRequest) {
     const deadline = AbortSignal.any([controller.signal, AbortSignal.timeout(25000)]);
     try {
       const response = await (async () => {
-        let assignment: Assignment;
+        let assignment: Assignment & { snapshotAttempts: number };
         try {
 
-          assignment = await loadCurrentAssignments(async (page) => {
+          assignment = await loadCurrentAssignmentsWithRetry(async (page) => {
             const url = new URL(`${process.env.HMS_BASE_URL}/tms/api/lms/v1/shipments`);
             // HMS Ongoing UI uses today minus 90 days through today (verified network).
             // Include older-created packages still assigned today; productivity cycles remain today-only.
@@ -131,7 +131,7 @@ export async function GET(req: NextRequest) {
             const response = await fetch(url, { headers: buildHmsHeaders(hmsToken), cache: "no-store", signal: deadline });
             if (!response.ok) throw new Error(`Current shipment page ${page}: HTTP ${response.status}`);
             return response.json();
-          }, String(HUB_ID));
+          }, String(HUB_ID), deadline);
           if (assignment.ambiguous || assignment.unassigned) return NextResponse.json({ success: false, error: "Current shipment ownership incomplete", meta: { complete: false, ongoing_source: "current_assignment", ambiguous_owners: assignment.ambiguous, unassigned_owners: assignment.unassigned } }, { status: 502 });
         } catch (error) {
           return NextResponse.json({ success: false, error: "Current assignments incomplete", detail: error instanceof Error ? error.message : "HMS failed", meta: { complete: false, ongoing_source: "current_assignment" } }, { status: 502 });
@@ -251,6 +251,8 @@ export async function GET(req: NextRequest) {
             ongoing_created_at_from: dayStart - 90 * 86400,
             ongoing_created_at_to: dayStart + 86400 - 1,
             ongoing_pages: assignment.pages,
+            ongoing_snapshot_attempts: assignment.snapshotAttempts,
+            ongoing_snapshot_attempt_limit: 2,
             ongoing_page_limit: 120,
             ongoing_page_concurrency: 3,
             upstream_deadline_ms: 25000,

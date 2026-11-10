@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { loadCurrentAssignments, mergeCurrentCounts, singleFlight, pruneTimedCache } from "./ongoing-assignment";
+import { loadCurrentAssignments, loadCurrentAssignmentsWithRetry, mergeCurrentCounts, singleFlight, pruneTimedCache } from "./ongoing-assignment";
 const row = (awb: string, name: unknown, status = "out_for_delivery", hub_id = 1) => ({ awb_number: awb, assigned_drivers: name, status, hub_id });
 const page = (shipments: unknown[], total_records = shipments.length, n = 1, per_page = 100) => ({ data: { shipments, total_records, page: n, per_page } });
 test("A to B reassignment credits only current B, preserving other metrics", async () => {
@@ -86,4 +86,66 @@ test("actual UI incomplete guard blocks FTD updates for upstream and invalid sam
   assert.equal(guard({ meta: { complete: true }, couriers: [1, 2] }, [1]), true);
   assert.equal(guard({ meta: { complete: true, cycle_errors: [] }, couriers: [1] }, [1]), false);
   assert.ok(source.includes("if (!incomplete) {"));
+});
+test("moving total retries from page one once; only second stable snapshot counts", async () => {
+  let attempts = 0;
+  const requested: number[] = [];
+  const signal = new AbortController().signal;
+  const assignment = await loadCurrentAssignmentsWithRetry(async n => {
+    requested.push(n);
+    if (n === 1) attempts++;
+    if (attempts === 1) return page([row("old", "A")], n === 1 ? 2 : 3, n, 1);
+    return page([row(String(n), n === 1 ? "B" : "C")], 2, n, 1);
+  }, "1", signal);
+  assert.equal(assignment.snapshotAttempts, 2);
+  assert.deepEqual(requested, [1, 2, 1, 2]);
+  assert.equal(assignment.counts.has("a"), false);
+  assert.equal(assignment.counts.get("b")?.count, 1);
+  assert.equal(assignment.counts.get("c")?.count, 1);
+});
+test("moving ownership retries once without retaining earlier owners", async () => {
+  let attempts = 0;
+  const assignment = await loadCurrentAssignmentsWithRetry(async n => {
+    if (n === 1) attempts++;
+    return page([row("x", attempts === 1 && n === 1 ? "A" : "B")], 2, n, 1);
+  }, "1", new AbortController().signal);
+  assert.equal(assignment.snapshotAttempts, 2);
+  assert.equal(assignment.counts.has("a"), false);
+  assert.equal(assignment.counts.get("b")?.count, 1);
+});
+test("both moving snapshots fail closed; no third snapshot", async () => {
+  let attempts = 0, calls = 0;
+  await assert.rejects(loadCurrentAssignmentsWithRetry(async n => {
+    calls++;
+    if (n === 1) attempts++;
+    return page([row("x", "B")], n === 1 ? 2 : 3, n, 1);
+  }, "1", new AbortController().signal), /total changed/);
+  assert.equal(attempts, 2);
+  assert.equal(calls, 4);
+});
+test("schema, HTTP, page-size drift and truncation errors are not snapshot-retried", async () => {
+  const responses = [
+    async () => { throw new Error("HTTP 503"); },
+    async () => ({ data: { shipments: [] } }),
+    async (n: number) => page([row("x", "B")], 2, n, n === 1 ? 1 : 2),
+    async (n: number) => page(n === 1 ? [row("x", "B")] : [], 2, n, 1)
+  ];
+  for (const response of responses) {
+    let starts = 0;
+    await assert.rejects(loadCurrentAssignmentsWithRetry(async n => {
+      if (n === 1) starts++;
+      return response(n);
+    }, "1", new AbortController().signal));
+    assert.equal(starts, 1);
+  }
+});
+test("retry retains original deadline and never starts after it expires", async () => {
+  const controller = new AbortController();
+  let starts = 0;
+  await assert.rejects(loadCurrentAssignmentsWithRetry(async n => {
+    if (n === 1) starts++;
+    else controller.abort(new Error("original deadline expired"));
+    return page([row("x", "A")], n === 1 ? 2 : 3, n, 1);
+  }, "1", controller.signal), /original deadline expired/);
+  assert.equal(starts, 1);
 });
