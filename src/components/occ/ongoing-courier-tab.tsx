@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import domtoimage from "dom-to-image-more";
+import { accumulateFtd, emptyFtdRecord, ftdStorageKey, getWibDate, parseFtdRecord, validCount, validSample, type FtdRecordState } from "@/lib/ftd-record";
 import { RefreshCw, Download, AlertTriangle } from "lucide-react";
 
 type CourierRow = {
@@ -25,20 +26,6 @@ type Totals = {
   sd_before_12: number;
   delivered_pct: number;
 };
-
-type FtdRecordEntry = {
-  name: string;
-  ongoing: number;
-  ftdToday: number;
-  lastTotalFtd: number;
-  updatedAt: number;
-};
-
-type FtdRecordState = {
-  dateWib: string;
-  entries: Record<string, FtdRecordEntry>;
-};
-
 
 type FilterMode = "all" | "below97" | "above97";
 type TabMode = "ongoing" | "top10";
@@ -77,130 +64,110 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
   const [ftdRecord, setFtdRecord] = useState<FtdRecordState | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
 
-  const getWibDate = () => {
-    return new Intl.DateTimeFormat("en-CA", {
-      timeZone: "Asia/Jakarta",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(new Date());
+  const [today, setToday] = useState(() => getWibDate());
+  const [selectedDate, setSelectedDate] = useState(() => getWibDate());
+  const activeHub = useRef(hubId);
+  activeHub.current = hubId;
+  const requestId = useRef(0);
+
+  const loadFtdRecord = (date: string) => {
+    try { return parseFtdRecord(localStorage.getItem(ftdStorageKey(hubId, date)), hubId, date); }
+    catch { return null; }
   };
-
-  const ftdStorageKey = hubId ? `occ_ftd_record_${hubId}` : null;
-
-  const loadFtdRecord = () => {
-    if (!ftdStorageKey) return null;
-    try {
-      const raw = localStorage.getItem(ftdStorageKey);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as FtdRecordState;
-      if (!parsed || typeof parsed !== "object") return null;
-      return parsed;
-    } catch {
-      return null;
-    }
-  };
-
   const saveFtdRecord = (next: FtdRecordState) => {
-    if (!ftdStorageKey) return;
-    try {
-      localStorage.setItem(ftdStorageKey, JSON.stringify(next));
-    } catch {
-      // ignore storage errors
-    }
+    try { localStorage.setItem(ftdStorageKey(next.hubId, next.dateWib), JSON.stringify(next)); }
+    catch { setError("FTD record could not be saved in this browser."); }
   };
-
-  const updateFtdRecord = useCallback(
-    (nextCouriers: CourierRow[]) => {
-      if (!ftdStorageKey) return;
-      const today = getWibDate();
-      const prev = loadFtdRecord();
-      const base: FtdRecordState =
-        prev && prev.dateWib === today ? prev : { dateWib: today, entries: {} };
-
-      const entries: Record<string, FtdRecordEntry> = { ...base.entries };
-      const now = Date.now();
-
-      nextCouriers.forEach((c) => {
-        const key = c.name;
-        const prevEntry = entries[key];
-        const init: FtdRecordEntry = prevEntry || {
-          name: c.name,
-          ongoing: c.ongoing,
-          ftdToday: 0,
-          lastTotalFtd: c.totalFtd,
-          updatedAt: now,
-        };
-
-        const delta = c.totalFtd - init.lastTotalFtd;
-        const nextEntry: FtdRecordEntry = {
-          ...init,
-          ongoing: c.ongoing,
-          ftdToday: delta > 0 ? init.ftdToday + delta : init.ftdToday,
-          lastTotalFtd: c.totalFtd,
-          updatedAt: now,
-        };
-
-        entries[key] = nextEntry;
-      });
-
-      const nextState: FtdRecordState = { dateWib: today, entries };
-      setFtdRecord(nextState);
-      saveFtdRecord(nextState);
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [ftdStorageKey]
-  );
-
 
   const fetchData = useCallback(async () => {
     if (!hubId) return;
+    const day = getWibDate();
+    const id = ++requestId.current;
+    const isCurrent = () => activeHub.current === hubId && getWibDate() === day && requestId.current === id;
     setLoading(true);
     try {
       const res = await fetch(`/api/hms/couriers?hubId=${hubId}`);
       const d = await res.json();
+      if (!isCurrent()) return;
       if (d.success && Array.isArray(d.couriers)) {
-        setCouriers(d.couriers);
-        updateFtdRecord(d.couriers);
+        const safeCouriers = d.couriers.filter((c: CourierRow) => validSample(c) && [c.freshC1, c.c1Delivered, c.c1Ftd, c.sd12Pct, c.totalCarried, c.deliveredPct, c.delivered, c.ongoing].every(validCount));
+        setCouriers(safeCouriers);
         setTotals(d.totals || null);
         setLastUpdate(new Date());
-        setError(
-          d.meta?.cycle_errors?.length
-            ? `Sebagian cycle gagal: ${d.meta.cycle_errors.join("; ")}`
-            : null
-        );
+        const incomplete = d.meta?.complete === false || d.meta?.cycle_errors?.length > 0 || safeCouriers.length !== d.couriers.length;
+        setError(incomplete ? "Data incomplete: FTD record and baseline were not updated." : null);
+        if (!incomplete) {
+          const next = accumulateFtd(loadFtdRecord(day), hubId, d.couriers);
+          setFtdRecord(next);
+          saveFtdRecord(next);
+        }
       } else {
         setError(d.message || d.error || d.detail || `HMS error (HTTP ${res.status})`);
       }
     } catch (e) {
-      console.error("Courier fetch error:", e);
-      setError("Tidak dapat menghubungi server HMS.");
+      if (isCurrent()) {
+        console.error("Courier fetch error:", e);
+        setError("Tidak dapat menghubungi server HMS.");
+      }
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
+    // Storage functions only depend on hubId; record/selection changes must not restart fetches.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hubId]);
 
   useEffect(() => {
+    const day = getWibDate();
+    setToday(day);
+    setSelectedDate(day);
+    setFtdRecord(loadFtdRecord(day) ?? emptyFtdRecord(hubId, day));
+    setCouriers([]);
+    setTotals(null);
+    setLastUpdate(null);
+    setError(null);
+    setLoading(false);
     fetchData();
     const t = setInterval(fetchData, 300000);
-    return () => clearInterval(t);
-  }, [fetchData]);
-
-  useEffect(() => {
-    if (!ftdStorageKey) return;
-    const prev = loadFtdRecord();
-    if (prev) {
-      setFtdRecord(prev);
-    } else {
-      setFtdRecord({ dateWib: getWibDate(), entries: {} });
-    }
+    const midnight = setInterval(() => {
+      const nextDay = getWibDate();
+      if (nextDay === dayRef.current) return;
+      dayRef.current = nextDay;
+      setToday(nextDay);
+      setSelectedDate(nextDay);
+      setFtdRecord(loadFtdRecord(nextDay) ?? emptyFtdRecord(hubId, nextDay));
+      setCouriers([]);
+      setTotals(null);
+      setLastUpdate(null);
+      setError(null);
+      fetchData();
+    }, 30000);
+    dayRef.current = day;
+    return () => { clearInterval(t); clearInterval(midnight); ++requestId.current; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ftdStorageKey]);
+  }, [fetchData, hubId]);
+  const dayRef = useRef(today);
 
+  const recordForView = selectedDate === today
+    ? (ftdRecord?.hubId === hubId && ftdRecord.dateWib === today ? ftdRecord : null)
+    : loadFtdRecord(selectedDate);
+  const availableDates = (() => {
+    const dates = new Set([today]);
+    try {
+      const prefix = `occ_ftd_record_v2_${hubId}_`;
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key?.startsWith(prefix)) {
+          const date = key.slice(prefix.length);
+          if (/^\d{4}-\d{2}-\d{2}$/.test(date) && loadFtdRecord(date)) dates.add(date);
+        }
+      }
+    } catch { /* Browser storage unavailable. */ }
+    return [...dates].sort().reverse();
+  })();
 
   // "On-Going C1" = couriers who carried fresh C1 packages, "Overall" = everyone.
   const scoped = couriers.filter((c) =>
-    subTab === "c1" ? c.freshC1 > 0 : c.totalCarried > 0
+    subTab === "c1" ? c.freshC1 > 0 : c.totalCarried > 0 || c.ongoing > 0
   );
 
   const filtered = scoped.filter((c) => {
@@ -223,17 +190,17 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
   const totalDelivered = totals?.delivered ?? 0;
   const ongoingCouriers = scoped.filter((c) => c.ongoing > 0).length;
 
-  const ftdTop = Object.values(ftdRecord?.entries ?? {})
+  const ftdTop = Object.values(recordForView?.entries ?? {})
     .sort((a, b) => b.ftdToday - a.ftdToday)
     .slice(0, 10);
 
   const resetFtdRecord = () => {
-    if (!ftdStorageKey) return;
-    const next: FtdRecordState = { dateWib: getWibDate(), entries: {} };
+    const day = getWibDate();
+    if (!hubId || selectedDate !== day || !window.confirm("Reset only today's browser-local FTD record? Other days and legacy records are kept.")) return;
+    const next = emptyFtdRecord(hubId, day);
     setFtdRecord(next);
     saveFtdRecord(next);
   };
-
 
   const downloadPNG = async () => {
     console.log("[PNG Export] start");
@@ -434,12 +401,13 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
           <div>
             <p className="text-sm font-semibold text-white">FTD Record Tracker</p>
-            <p className="text-[10px] text-slate-400">Daily cumulative (WIB) - resets at 00:00</p>
+            <p className="text-[10px] text-slate-400">Daily cumulative (WIB), browser-local from first observation. Earlier lost counts cannot be restored; daily archives are kept.</p>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-[10px] text-slate-400">{ftdRecord?.dateWib || getWibDate()}</span>
+            <select aria-label="FTD record date (WIB)" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="text-[10px] bg-slate-900 text-slate-300">{availableDates.map(date => <option key={date} value={date}>{date}</option>)}</select>
             <button
               onClick={resetFtdRecord}
+              disabled={selectedDate !== today}
               className="text-[10px] px-2 py-1 rounded border border-slate-600 text-slate-300 hover:bg-slate-800"
               title="Reset todays tracker"
             >
@@ -453,8 +421,8 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
               <tr>
                 <th className="px-3 py-2 text-left font-semibold">#</th>
                 <th className="px-3 py-2 text-left font-semibold">Nama Kurir</th>
-                <th className="px-3 py-2 text-right font-semibold">Ongoing</th>
-                <th className="px-3 py-2 text-right font-semibold">FTD Today</th>
+                <th className="px-3 py-2 text-right font-semibold">FTD Saat Ini</th>
+                <th className="px-3 py-2 text-right font-semibold">FTD Record Hari Ini</th>
               </tr>
             </thead>
             <tbody>
@@ -469,7 +437,7 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
                   <tr key={r.name} className="border-t border-slate-800">
                     <td className="px-3 py-2 text-slate-400">{idx + 1}</td>
                     <td className="px-3 py-2 font-semibold text-white whitespace-nowrap">{r.name}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{r.ongoing}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{r.currentFtd}</td>
                     <td className="px-3 py-2 text-right tabular-nums font-bold">{r.ftdToday}</td>
                   </tr>
                 ))

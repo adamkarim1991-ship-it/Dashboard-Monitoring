@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshCw, AlertTriangle, Info } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { RefreshCw, AlertTriangle, Info, Calendar } from "lucide-react";
 import {
   Bar,
   CartesianGrid,
@@ -92,6 +92,49 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [targetRate, setTargetRate] = useState(HISTORICAL_RATE);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [rangeError, setRangeError] = useState<string | null>(null);
+  const rangeRequestId = useRef(0);
+  const [rangeStartDate, setRangeStartDate] = useState(() => {
+    const d = new Date(Date.now() + 7 * 60 * 60 * 1000 - 6 * 86400000);
+    return d.toISOString().slice(0, 10).replace(/-/g, "");
+  });
+  const [rangeEndDate, setRangeEndDate] = useState(() => {
+    const d = new Date(Date.now() + 7 * 60 * 60 * 1000);
+    return d.toISOString().slice(0, 10).replace(/-/g, "");
+  });
+  const [rangeData, setRangeData] = useState<any>(null);
+  const [rangeLoading, setRangeLoading] = useState(false);
+
+  const fetchRange = useCallback(async () => {
+    if (!hubId || !rangeStartDate || !rangeEndDate) {
+      setRangeData(null);
+      return;
+    }
+    const rid = ++rangeRequestId.current;
+    setRangeLoading(true);
+    setRangeError(null);
+    try {
+      const res = await fetch(
+        `/api/hms/fm?hubId=${hubId}&district=jatinegara&countOnly=1&startDate=${rangeStartDate}&endDate=${rangeEndDate}`,
+        { cache: "no-store" }
+      );
+      const d = await res.json();
+      if (rangeRequestId.current !== rid) return;
+      if (d.success && d.rangeCount) {
+        setRangeData(d.rangeCount);
+      } else {
+        setRangeError(d.message || d.error || "Range Error");
+        setRangeData(null);
+      }
+    } catch {
+      if (rangeRequestId.current === rid) {
+        setRangeError("Network error");
+        setRangeData(null);
+      }
+    } finally {
+      if (rangeRequestId.current === rid) setRangeLoading(false);
+    }
+  }, [hubId, rangeStartDate, rangeEndDate]);
 
   const fetchDaily = useCallback(async () => {
     if (!hubId) return;
@@ -149,20 +192,24 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
 
   useEffect(() => {
     fetchDaily();
+    fetchRange();
     fetchWeek();
     fetchSummary();
 
     const dailyTimer = setInterval(fetchDaily, 300000);
     const weekTimer = setInterval(fetchWeek, 300000);
     const summaryTimer = setInterval(fetchSummary, 300000);
+    const rangeTimer = setInterval(fetchRange, 300000);
     return () => {
       clearInterval(dailyTimer);
       clearInterval(weekTimer);
       clearInterval(summaryTimer);
+      clearInterval(rangeTimer);
     };
-  }, [fetchDaily, fetchWeek, fetchSummary]);
+  }, [fetchDaily, fetchWeek, fetchSummary, fetchRange]);
 
   const received = data?.today?.received || 0;
+  const receivedForRange = rangeData ? rangeData.received : null;
   const avgHistory = data?.avgHistory ?? null;
 
   // ── top cards: driven by the actual HMS received volume only ──
@@ -249,10 +296,42 @@ export default function ForecastTab({ hubId }: { hubId: string }) {
         <FilterChip label="Leg type" value="Last Mile" />
         <FilterChip label="Status" value="Received" />
         <FilterChip label="District" value="Jatinegara" />
-        <FilterChip label="Date" value={`${data?.filters?.date || "today"} (hari ini)`} />
+        <FilterChip
+          label="Date"
+          value={rangeData ? `Range: ${rangeStartDate} to ${rangeEndDate}` : `${data?.filters?.date || "today"} (hari ini)`}
+        />
+        <div className="flex items-center gap-1.5 ml-2">
+          <input
+            type="date"
+            value={`${rangeStartDate.slice(0, 4)}-${rangeStartDate.slice(4, 6)}-${rangeStartDate.slice(6, 8)}`}
+            onChange={(e) => {
+              const val = e.target.value.replace(/-/g, "");
+              if (val) setRangeStartDate(val);
+            }}
+            className="bg-slate-800 text-[10px] border border-slate-700 rounded px-1 text-gray-300"
+          />
+          <span className="text-gray-500 text-[10px]">to</span>
+          <input
+            type="date"
+            value={`${rangeEndDate.slice(0, 4)}-${rangeEndDate.slice(4, 6)}-${rangeEndDate.slice(6, 8)}`}
+            onChange={(e) => {
+              const val = e.target.value.replace(/-/g, "");
+              if (val) setRangeEndDate(val);
+            }}
+            className="bg-slate-800 text-[10px] border border-slate-700 rounded px-1 text-gray-300"
+          />
+          <button
+            onClick={fetchRange}
+            disabled={rangeLoading}
+            className="p-1 hover:bg-slate-700 rounded text-gray-400"
+          >
+            <RefreshCw className={`w-3 h-3 ${rangeLoading ? "animate-spin" : ""}`} />
+          </button>
+        </div>
         <button
           onClick={() => {
             fetchDaily();
+    fetchRange();
             fetchWeek();
             fetchSummary();
           }}

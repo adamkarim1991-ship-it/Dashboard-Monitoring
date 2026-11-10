@@ -1,9 +1,11 @@
 import { auth } from "@/lib/auth";
-import { resolveHmsToken } from "@/lib/hms-context";
+import { resolveActiveHub, resolveHmsToken } from "@/lib/hms-context";
 import { getWibRangeDayCount } from "@/lib/wib-range";
+import { getWibRangeEpoch } from "@/lib/wib-date-utils";
 import { NextRequest, NextResponse } from "next/server";
 
 const JATINEGARA_HUB = "GTL Jatinegara Hub";
+const JATINEGARA_HUB_ID = "460450593288";
 const WEEK_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const WEEK_CACHE_TTL_MS = 5 * 60 * 1000;
 const weekCache = new Map<string, { data: any; timestamp: number }>();
@@ -24,7 +26,6 @@ function dayWindowsWIB(days: number) {
   const out: { date: string; from: number; to: number }[] = [];
   for (let i = days - 1; i >= 0; i--) {
     const startMs = todayStartWIB - i * 86400000;
-    // full WIB day window, so the numbers line up with the HMS filter
     const endMs = startMs + 86399999;
     const d = new Date(startMs + wibOffsetMs);
     out.push({
@@ -36,8 +37,6 @@ function dayWindowsWIB(days: number) {
   return out;
 }
 
-// Monday..Saturday of the current WIB week. Future days are flagged so the UI
-// can render them as empty slots instead of fetching HMS for nothing.
 function weekWindowsWIB() {
   const now = new Date();
   const wibOffsetMs = 7 * 60 * 60 * 1000;
@@ -68,7 +67,7 @@ function weekWindowsWIB() {
   });
 }
 
-async function fetchPage(token: string, page: number, fromTs: number, toTs: number) {
+async function fetchPage(token: string, page: number, fromTs: number, toTs: number, districtIds?: string) {
   const url = new URL(`${process.env.HMS_BASE_URL}/tms/api/lms/v1/shipments`);
   url.searchParams.set("type", "order_management");
   url.searchParams.set("leg_type", "last_mile");
@@ -78,6 +77,7 @@ async function fetchPage(token: string, page: number, fromTs: number, toTs: numb
   url.searchParams.set("created_at_from", String(fromTs));
   url.searchParams.set("created_at_to", String(toTs));
   url.searchParams.set("page", String(page));
+  if (districtIds) url.searchParams.set("district_ids", districtIds);
 
   const res = await fetch(url.toString(), {
     headers: {
@@ -94,13 +94,6 @@ async function fetchPage(token: string, page: number, fromTs: number, toTs: numb
   return res.json();
 }
 
-// HMS answers `total_records` for the exact filter combination the HMS UI uses
-// (leg type + status + created_at range). Counting downloaded pages used to cap
-// at 30 pages (3.000 rows) and silently truncated busy days, so the headline
-// count now comes from `total_records`.
-// HMS rate limiter answers empty once too many queries run at the same time, so
-// a 30-day window (30 day-buckets x combined with the weekly call) goes through
-// a small semaphore instead of one unbounded burst.
 const MAX_CONCURRENT_HMS = 6;
 let activeHmsCalls = 0;
 const hmsWaiting: (() => void)[] = [];
@@ -119,13 +112,25 @@ async function withHmsSlot<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-async function fetchDay(token: string, fromTs: number, toTs: number, countOnly = false) {
-  const first = await withHmsSlot(() => fetchPage(token, 1, fromTs, toTs));
+async function fetchDay(token: string, fromTs: number, toTs: number, countOnly = false, districtIds?: string) {
+  const first = await withHmsSlot(() => fetchPage(token, 1, fromTs, toTs, districtIds));
+  if (countOnly) {
+    const data = first?.data;
+    if (
+      (first?.code !== undefined && first.code !== 200) ||
+      !Array.isArray(data?.shipments) ||
+      !Number.isSafeInteger(data?.total_records) ||
+      data.total_records < 0
+    ) {
+      throw new Error("Invalid HMS FM count contract");
+    }
+    return { total: data.total_records, shipments: data.shipments };
+  }
   const firstPage = first?.data?.shipments || [];
   const totalRaw = Number(first?.data?.total_records);
   const total = Number.isFinite(totalRaw) && totalRaw > 0 ? totalRaw : firstPage.length;
 
-  if (countOnly || total <= firstPage.length) return { total, shipments: firstPage };
+  if (total <= firstPage.length) return { total, shipments: firstPage };
 
   const totalPages = Math.min(Math.ceil(total / 100), 60);
   let all = firstPage;
@@ -134,7 +139,7 @@ async function fetchDay(token: string, fromTs: number, toTs: number, countOnly =
   for (let i = 0; i < pages.length; i += batchSize) {
     const batch = pages.slice(i, i + batchSize);
     const results = await Promise.all(
-      batch.map((p) => withHmsSlot(() => fetchPage(token, p, fromTs, toTs)).catch(() => null))
+      batch.map((p) => withHmsSlot(() => fetchPage(token, p, fromTs, toTs, districtIds)).catch(() => null))
     );
     for (const r of results) {
       if (r?.data?.shipments) all = all.concat(r.data.shipments);
@@ -153,9 +158,6 @@ async function fetchDay(token: string, fromTs: number, toTs: number, countOnly =
   return { total, shipments: unique };
 }
 
-// The shipments endpoint is scoped to the logged-in hub, so `total_records`
-// already equals the hub-wide volume. The district share is measured on the
-// downloaded sample and applied to the authoritative total.
 function splitCounts(shipments: any[], total: number, districtFilter: string) {
   const hubMatched = shipments.filter((s: any) => s.actual_hub === JATINEGARA_HUB);
   const districtMatched = hubMatched.filter((s: any) => districtOf(s).includes(districtFilter));
@@ -193,15 +195,54 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  // Default to the exact window used by the HMS created_at filters (one
-  // calendar month back .. today) so the daily table and the filters agree.
+  const startDate = req.nextUrl.searchParams.get("startDate");
+  const endDate = req.nextUrl.searchParams.get("endDate");
+  const districtFilter = (req.nextUrl.searchParams.get("district") || "jatinegara").toLowerCase();
+  const countOnly = req.nextUrl.searchParams.get("countOnly") === "1";
+
+  if (startDate || endDate) {
+    if (!startDate || !endDate || !/^\d{8}$/.test(startDate) || !/^\d{8}$/.test(endDate)) {
+      return NextResponse.json({ error: "Invalid date format. Use YYYYMMDD." }, { status: 400 });
+    }
+    const range = getWibRangeEpoch(startDate, endDate);
+    if (!range) {
+      return NextResponse.json({ error: "Invalid date range." }, { status: 400 });
+    }
+    if (districtFilter !== "jatinegara") {
+       return NextResponse.json({ error: "Only 'jatinegara' district is verified for range queries." }, { status: 400 });
+    }
+    const requestedHubId = req.nextUrl.searchParams.get("hubId");
+    const activeHub = await resolveActiveHub(session.user.id, requestedHubId, session.user);
+    // This range contract is verified only for Jatinegara. Do not silently accept
+    // a different requested hub when the shared resolver falls back to a default.
+    if (
+      !activeHub ||
+      String(activeHub.hmsHubId) !== JATINEGARA_HUB_ID ||
+      (requestedHubId !== null && requestedHubId !== String(activeHub.hmsHubId))
+    ) {
+      return NextResponse.json(
+        { error: "FM range queries are supported only for the active Jatinegara hub." },
+        { status: 403 }
+      );
+    }
+    const districtIds = "2293";
+    try {
+      const { total } = await fetchDay(hmsToken, range.from, range.to, true, districtIds);
+      return NextResponse.json({
+        success: true,
+        filters: { district: "Jatinegara", startDate, endDate, districtIds },
+        rangeCount: { received: total, totalRecords: total, from: range.from, to: range.to }
+      });
+    } catch (e: any) {
+      return NextResponse.json({ error: "HMS range failed", detail: e.message }, { status: 502 });
+    }
+  }
+
   const rangeDays = getWibRangeDayCount();
   const days = Math.min(
     Math.max(Number(req.nextUrl.searchParams.get("days") || rangeDays), 1),
     rangeDays
   );
-  const districtFilter = (req.nextUrl.searchParams.get("district") || "jatinegara").toLowerCase();
-  const countOnly = req.nextUrl.searchParams.get("countOnly") === "1";
 
   if (req.nextUrl.searchParams.get("range") === "week") {
     const cacheKey = `week:${districtFilter}`;
@@ -321,7 +362,7 @@ export async function GET(req: NextRequest) {
       })
     );
 
-    const today = results[results.length - 1];
+    const todayResult = results[results.length - 1];
     const history = results.slice(0, -1).filter((r) => r.received > 0);
     const avgHistory = history.length
       ? Math.round(history.reduce((a, r) => a + r.received, 0) / history.length)
@@ -333,9 +374,9 @@ export async function GET(req: NextRequest) {
         legType: "Last Mile",
         status: "Received",
         district: "Jatinegara",
-        date: today?.date,
+        date: todayResult?.date,
       },
-      today,
+      today: todayResult,
       history: results.slice(0, -1),
       avgHistory,
       meta: {
