@@ -4,12 +4,12 @@ import { buildHmsHeaders } from "@/lib/hms-headers";
 import { refreshStoredHmsToken } from "@/lib/hms-token-refresh";
 import { NextRequest, NextResponse } from "next/server";
 
-export const maxDuration = 30;
+export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
 const MAX_AWBS = 50;
 const CACHE_TTL_MS = 60 * 1000;
-const REQUEST_TIMEOUT_MS = 20 * 1000;
+const REQUEST_TIMEOUT_MS = 28 * 1000;
 const LEGS = ["last_mile", "first_mile"] as const;
 const CONTROL_ZONE_API_BASE = "https://vuvcjbjn.cn-east-fn-hj.bytedance.net";
 
@@ -249,7 +249,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ...cached.data, meta: { ...cached.data.meta, cached: true } });
   }
 
-  if (requestedHubId === "272") {
+  const shouldTryControlZone = requestedHubId === "272" || requestedHubId === "460450593288" || requestedHubId === "";
+  if (shouldTryControlZone) {
     try {
       const controlZone = await fetchControlZoneDatbuy(awbs);
       const results = awbs.map((awb): DatbuyResult => {
@@ -264,7 +265,7 @@ export async function POST(req: NextRequest) {
         results,
         meta: {
           sources: ["Control Zone Datbuy", "HMS/TMS", "CSMS/OMS"],
-          note: "Duren Sawit lookup uses the verified Control Zone Datbuy service. COD is mapped from codNominal/cod_price equivalent; missing fields remain blank.",
+          note: requestedHubId === "272" ? "Duren Sawit lookup uses the verified Control Zone Datbuy service. COD is mapped from codNominal/cod_price equivalent; missing fields remain blank." : "Lookup enriched through Control Zone Datbuy when available, then missing fields remain blank; phone is shown only if CSMS/OMS returns it.",
           checkedAt: controlZone.checkedAt,
           windowDays: controlZone.windowDays,
           sourceErrors: [],
