@@ -48,7 +48,7 @@ export default function OccDashboard({
   const hubId = initialHub.hmsHubId;
   const hubName = initialHub.name;
   const hubShortName = initialHub.shortName;
-  const visibleTabs = initialHub.fmDistrict ? TABS : TABS.filter((tab) => tab.id !== "forecast");
+  const visibleTabs = TABS.filter((tab) => initialHub.fmDistrict ? true : tab.id !== "forecast" && tab.id !== "datbuy");
 
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);

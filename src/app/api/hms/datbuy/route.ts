@@ -249,7 +249,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ...cached.data, meta: { ...cached.data.meta, cached: true } });
   }
 
-  const shouldTryControlZone = requestedHubId === "272" || requestedHubId === "460450593288" || requestedHubId === "";
+  const shouldTryControlZone = requestedHubId === "460450593288" || requestedHubId === "";
   if (shouldTryControlZone) {
     try {
       const controlZone = await fetchControlZoneDatbuy(awbs);
@@ -265,7 +265,7 @@ export async function POST(req: NextRequest) {
         results,
         meta: {
           sources: ["Control Zone Datbuy", "HMS/TMS", "CSMS/OMS"],
-          note: requestedHubId === "272" ? "Duren Sawit lookup uses the verified Control Zone Datbuy service. COD is mapped from codNominal/cod_price equivalent; missing fields remain blank." : "Lookup enriched through Control Zone Datbuy when available, then missing fields remain blank; phone is shown only if CSMS/OMS returns it.",
+          note: "Jatinegara OCC lookup is enriched through Control Zone Datbuy when available, then missing fields remain blank; phone is shown only if CSMS/OMS returns it.",
           checkedAt: controlZone.checkedAt,
           windowDays: controlZone.windowDays,
           sourceErrors: [],
