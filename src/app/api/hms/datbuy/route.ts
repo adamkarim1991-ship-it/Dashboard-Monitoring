@@ -50,14 +50,23 @@ function normalizeAwbs(value: unknown): string[] {
   return out;
 }
 
+function readPath(row: ShipmentRow, path: string) {
+  let current: unknown = row;
+  for (const part of path.split(".")) {
+    if (!current || typeof current !== "object") return null;
+    current = (current as Record<string, unknown>)[part];
+  }
+  if (current === undefined || current === null || String(current).trim() === "") return null;
+  return current;
+}
+
 function first(row: ShipmentRow, keys: string[]) {
   for (const key of keys) {
-    const value = row[key];
+    const value = key.includes(".") ? readPath(row, key) : row[key];
     if (value !== undefined && value !== null && String(value).trim() !== "") return value;
   }
   return null;
 }
-
 function safeUrl(value: unknown) {
   if (!value) return null;
   try {
