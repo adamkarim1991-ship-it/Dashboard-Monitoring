@@ -15,12 +15,5 @@ export default async function OccHubPage({
   const hub = getOccHub(slug);
   if (!hub) notFound();
 
-  const user = session.user as any;
-  const accessibleHmsHubIds = (user.hmsHubIds ?? []).map(String);
-  const isManager = user.role === "MANAGER";
-  if (!isManager && accessibleHmsHubIds.length > 0 && !accessibleHmsHubIds.includes(hub.hmsHubId)) {
-    redirect("/occ");
-  }
-
-  return <OccDashboard user={user} initialHub={hub} />;
+  return <OccDashboard user={session.user as any} initialHub={hub} />;
 }

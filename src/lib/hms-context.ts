@@ -247,10 +247,6 @@ export async function resolveActiveHub(
         return { id: hub.id, name: hub.name, hmsHubId: hub.hmsHubId };
       }
 
-      const sessionAllowed = (sessionUser?.hmsHubIds ?? []).map(String).includes(requestedHmsHubId);
-      const isManager = sessionUser?.role === "MANAGER";
-      if (!sessionAllowed && !isManager) return null;
-
       // Managers can operate hubs that are visible in the hub catalogue even
       // when they are not represented as direct userHub rows in the JWT scope.
       // This keeps /occ/<hub> separated by the requested HMS hub id instead of
