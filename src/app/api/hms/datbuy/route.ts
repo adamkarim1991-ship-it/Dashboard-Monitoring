@@ -112,12 +112,12 @@ function mapShipment(requestedAwb: string, row: ShipmentRow, leg: Leg): DatbuyRe
       updatedAt: first(row, ["updated_at", "updated_time"]),
     },
     receiver: {
-      name: first(row, ["recipient_name", "receiver_name", "consignee_name"]),
-      phone: first(row, ["recipient_phone", "receiver_phone", "consignee_phone"]),
-      address: first(row, ["recipient_address", "receiver_address", "consignee_address", "destination_address"]),
+      name: first(row, ["recipient_name", "receiver_name", "consignee_name", "receiver.name", "recipient.name", "consignee.name", "destination_details.receiver_name", "destination_details.recipient_name"]),
+      phone: first(row, ["recipient_phone", "receiver_phone", "consignee_phone", "receiver.phone", "receiver.mobile", "receiver.phone_number", "recipient.phone", "recipient.mobile", "consignee.phone", "consignee.mobile", "destination_details.receiver_phone", "destination_details.recipient_phone", "destination_details.phone", "destination_details.mobile"]),
+      address: first(row, ["recipient_address", "receiver_address", "consignee_address", "destination_address", "receiver.address", "recipient.address", "consignee.address", "destination_details.address", "destination_details.destination_address", "destination_details.full_address"]),
     },
     order: {
-      seller: first(row, ["seller", "seller_name", "shop_name", "merchant_name"]),
+      seller: first(row, ["seller", "seller_name", "shop_name", "merchant_name", "seller.name", "shop.name", "merchant.name", "order.seller_name", "order.shop_name"]),
       platform: first(row, ["platform", "platform_name", "channel", "source_platform"]),
       codPrice,
       productName: first(row, ["product_name", "item_name", "goods_name", "sku_name"]),
