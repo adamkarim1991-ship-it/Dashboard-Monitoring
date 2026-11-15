@@ -10,75 +10,15 @@ export const dynamic = "force-dynamic";
 const MAX_AWBS = 50;
 const CACHE_TTL_MS = 60 * 1000;
 const REQUEST_TIMEOUT_MS = 55 * 1000;
+const CSMS_TIMEOUT_MS = 12 * 1000;
 const LEGS = ["last_mile", "first_mile"] as const;
-const CONTROL_ZONE_API_BASE = "https://vuvcjbjn.cn-east-fn-hj.bytedance.net";
-
-function mapControlZoneRow(row: Record<string, unknown>): DatbuyResult {
-  const lookupStatus = String(row.lookupStatus || "partial").toLowerCase();
-  const sourceStatus = row.sourceStatus && typeof row.sourceStatus === "object" ? row.sourceStatus as Record<string, unknown> : {};
-  const hasSourceError = Object.values(sourceStatus).some((value) => String(value).toLowerCase() === "error");
-  const status = lookupStatus === "not_found" ? "not_found" : hasSourceError ? "error" : "partial";
-  const message = status === "error"
-    ? String(row.error || "Control Zone lookup found incomplete source data.")
-    : "Verified through Control Zone Datbuy service (HMS/TMS + CSMS/OMS where available).";
-
-  return {
-    awb: String(row.awb || ""),
-    status,
-    sourceStatus: JSON.stringify(sourceStatus),
-    message,
-    package: {
-      status: row.status,
-      hub: row.source,
-      driver: row.driver,
-      paymentType: row.paymentType,
-      weight: row.weight,
-      shipmentId: row.shipmentId,
-      omsShipmentId: row.omsShipmentId,
-    },
-    receiver: {
-      name: row.receiverName,
-      phone: row.phone,
-      address: row.address,
-      subdistrict: row.subdistrict,
-    },
-    order: {
-      seller: row.seller,
-      platform: row.platform,
-      codPrice: row.codNominal,
-      productName: row.productDetail,
-      productLink: safeUrl(row.productLink),
-      trackingLink: safeUrl(row.trackingLink),
-    },
-  };
-}
-
-async function fetchControlZoneDatbuy(awbs: string[]) {
-  const url = new URL("/api/v1/datbuy/lookup", CONTROL_ZONE_API_BASE);
-  url.searchParams.set("hub", "gtldsw");
-  url.searchParams.set("awbs", awbs.join(","));
-  const res = await fetch(url.toString(), {
-    headers: { Accept: "application/json" },
-    cache: "no-store",
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-  if (!res.ok) throw new Error(`Control Zone Datbuy failed: ${res.status}`);
-  const json = await res.json();
-  if (!Array.isArray(json?.rows)) throw new Error("Control Zone Datbuy returned invalid payload");
-  const rows = new Map<string, Record<string, unknown>>();
-  for (const row of json.rows as Record<string, unknown>[]) {
-    const awb = String(row.awb || "").trim();
-    if (awb) rows.set(awb.toLowerCase(), row);
-  }
-  return { rows, checkedAt: json.checkedAt, windowDays: json.windowDays };
-}
 
 type Leg = (typeof LEGS)[number];
-type ShipmentRow = Record<string, unknown>;
+type Row = Record<string, unknown>;
 
 type DatbuyResult = {
   awb: string;
-  status: "partial" | "not_found" | "error";
+  status: "found" | "partial" | "not_found" | "error";
   sourceStatus: string;
   message?: string;
   package?: Record<string, unknown>;
@@ -94,40 +34,47 @@ type CachedResponse = {
   meta: Record<string, unknown>;
 };
 
+type HmsHit = { row: Row; leg: Leg };
+type OmsHit = { search?: Row; detail?: Row; status: "verified" | "partial" | "not_found" | "error"; error?: string };
+
 const cache = new Map<string, { at: number; data: CachedResponse }>();
+
+function normalizeAwb(awb: unknown) {
+  return String(awb || "").normalize("NFKC").trim().replace(/\s+/g, "").toUpperCase();
+}
 
 function normalizeAwbs(value: unknown): string[] {
   const raw = Array.isArray(value) ? value.join("\n") : String(value || "");
   const seen = new Set<string>();
   const out: string[] = [];
   for (const item of raw.replaceAll(",", "\n").split("\n")) {
-    const awb = item.trim();
+    const awb = normalizeAwb(item);
     if (!awb) continue;
-    const key = awb.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (seen.has(awb)) continue;
+    seen.add(awb);
     out.push(awb);
   }
   return out;
 }
 
-function readPath(row: ShipmentRow, path: string) {
-  let current: unknown = row;
+function readPath(row: unknown, path: string) {
+  let current = row;
   for (const part of path.split(".")) {
     if (!current || typeof current !== "object") return null;
-    current = (current as Record<string, unknown>)[part];
+    current = (current as Row)[part];
   }
   if (current === undefined || current === null || String(current).trim() === "") return null;
   return current;
 }
 
-function first(row: ShipmentRow, keys: string[]) {
+function first(row: unknown, keys: string[]) {
   for (const key of keys) {
-    const value = key.includes(".") ? readPath(row, key) : row[key];
+    const value = readPath(row, key);
     if (value !== undefined && value !== null && String(value).trim() !== "") return value;
   }
   return null;
 }
+
 function safeUrl(value: unknown) {
   if (!value) return null;
   try {
@@ -144,59 +91,46 @@ function numericTime(value: unknown) {
   return Number.isFinite(n) ? n : 0;
 }
 
-function rowAwb(row: ShipmentRow) {
-  return String(row.awb_number || row.awb || "").trim();
+function numericCod(value: unknown) {
+  if (typeof value === "boolean" || value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }
 
-function pickPreferred(current: ShipmentRow | undefined, next: ShipmentRow) {
+function rowAwb(row: unknown) {
+  return normalizeAwb(first(row, ["awb_number", "awb", "airwaybill", "awbNumber", "order.awb_number"]));
+}
+
+function sameAwb(row: unknown, awb: string) {
+  return rowAwb(row) === normalizeAwb(awb);
+}
+
+function pickPreferred(current: Row | undefined, next: Row) {
   if (!current) return next;
-  const currentDelivered = String(current.status || "").toLowerCase() === "delivered";
-  const nextDelivered = String(next.status || "").toLowerCase() === "delivered";
+  const currentDelivered = String(first(current, ["status"]) || "").toLowerCase() === "delivered";
+  const nextDelivered = String(first(next, ["status"]) || "").toLowerCase() === "delivered";
   if (nextDelivered && !currentDelivered) return next;
-  const currentTime = Math.max(numericTime(current.updated_at), numericTime(current.delivered_time), numericTime(current.created_at));
-  const nextTime = Math.max(numericTime(next.updated_at), numericTime(next.delivered_time), numericTime(next.created_at));
+  const currentTime = Math.max(numericTime(first(current, ["updated_at", "delivered_time", "created_at"])));
+  const nextTime = Math.max(numericTime(first(next, ["updated_at", "delivered_time", "created_at"])));
   return nextTime >= currentTime ? next : current;
 }
 
-function mapShipment(requestedAwb: string, row: ShipmentRow, leg: Leg): DatbuyResult {
-  const awb = rowAwb(row) || requestedAwb;
-  const codPrice = first(row, ["cod_price"]);
-  const productLink = safeUrl(first(row, ["product_link", "item_link", "goods_link"]));
-
-  return {
-    awb,
-    status: "partial",
-    sourceStatus: "hms_tms_only",
-    message: "Package found in HMS/TMS. CSMS/OMS buyer, seller, platform, and product enrichment is not integrated yet; missing fields are intentionally left blank.",
-    package: {
-      status: first(row, ["status", "shipment_status"]),
-      statusLabel: first(row, ["status_name", "status_label"]),
-      legType: row.leg_type || leg,
-      hub: first(row, ["actual_hub", "hub_name", "facility_name"]),
-      hubId: first(row, ["hub_id", "facility_id"]),
-      driver: first(row, ["assigned_drivers", "driver_name", "driver"]),
-      driverCode: first(row, ["driver_code", "driver_id"]),
-      paymentType: first(row, ["payment_type", "payment_method"]),
-      serviceType: first(row, ["service_type", "service"]),
-      createdAt: first(row, ["created_at", "created_time"]),
-      updatedAt: first(row, ["updated_at", "updated_time"]),
-    },
-    receiver: {
-      name: first(row, ["recipient_name", "receiver_name", "consignee_name", "receiver.name", "recipient.name", "consignee.name", "destination_details.receiver_name", "destination_details.recipient_name"]),
-      phone: first(row, ["recipient_phone", "receiver_phone", "consignee_phone", "receiver.phone", "receiver.mobile", "receiver.phone_number", "recipient.phone", "recipient.mobile", "consignee.phone", "consignee.mobile", "destination_details.receiver_phone", "destination_details.recipient_phone", "destination_details.phone", "destination_details.mobile"]),
-      address: first(row, ["recipient_address", "receiver_address", "consignee_address", "destination_address", "receiver.address", "recipient.address", "consignee.address", "destination_details.address", "destination_details.destination_address", "destination_details.full_address"]),
-    },
-    order: {
-      seller: first(row, ["seller", "seller_name", "shop_name", "merchant_name", "seller.name", "shop.name", "merchant.name", "order.seller_name", "order.shop_name"]),
-      platform: first(row, ["platform", "platform_name", "channel", "source_platform"]),
-      codPrice,
-      productName: first(row, ["product_name", "item_name", "goods_name", "sku_name"]),
-      productLink,
-    },
-  };
+function hmsHeaders(token: string) {
+  return buildHmsHeaders(token);
 }
 
-async function fetchLeg(token: string, awbs: string[], leg: Leg) {
+async function fetchJsonWithTimeout(url: URL, token: string, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const res = await fetch(url.toString(), {
+    headers: hmsHeaders(token),
+    cache: "no-store",
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (res.status === 401) return { status: 401, json: null as any };
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return { status: res.status, json: await res.json() };
+}
+
+async function fetchLeg(token: string, awbs: string[], leg: Leg, hubId: string) {
   const url = new URL(`${process.env.HMS_BASE_URL}/tms/api/lms/v1/shipments`);
   url.searchParams.set("type", "order_management");
   url.searchParams.set("leg_type", leg);
@@ -204,33 +138,131 @@ async function fetchLeg(token: string, awbs: string[], leg: Leg) {
   url.searchParams.set("per_page", "100");
   url.searchParams.set("page", "1");
   url.searchParams.set("awb_numbers", awbs.join(","));
+  if (hubId) url.searchParams.set("hub_id", hubId);
 
-  const res = await fetch(url.toString(), {
-    headers: buildHmsHeaders(token),
-    cache: "no-store",
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-  if (res.status === 401) return { status: 401, rows: [] as ShipmentRow[] };
-  if (!res.ok) throw new Error(`HMS ${leg} lookup failed: ${res.status}`);
-  const json = await res.json();
-  const rows = json?.data?.shipments;
+  const { status, json } = await fetchJsonWithTimeout(url, token);
+  if (status === 401) return { status, rows: [] as Row[] };
+  const rows = json?.data?.shipments ?? json?.data?.list ?? json?.data?.rows ?? json?.shipments;
   if (!Array.isArray(rows)) throw new Error(`HMS ${leg} lookup returned invalid payload`);
-  return { status: res.status, rows: rows as ShipmentRow[] };
+  return { status, rows: rows as Row[] };
 }
 
-async function fetchLegWithRefresh(token: string, userId: string, awbs: string[], leg: Leg) {
+async function fetchLegWithRefresh(token: string, userId: string, awbs: string[], leg: Leg, hubId: string) {
   let currentToken = token;
   let refreshed = false;
-  let response = await fetchLeg(currentToken, awbs, leg);
-  if (response.status === 401 && !refreshed) {
+  let response = await fetchLeg(currentToken, awbs, leg, hubId);
+  if (response.status === 401) {
     const newToken = await refreshStoredHmsToken(userId, currentToken);
     if (newToken?.token) {
       currentToken = newToken.token;
       refreshed = true;
-      response = await fetchLeg(currentToken, awbs, leg);
+      response = await fetchLeg(currentToken, awbs, leg, hubId);
     }
   }
   return { ...response, token: currentToken, refreshed };
+}
+
+function extractRows(json: any): Row[] {
+  const candidates = [json?.data?.list, json?.data?.rows, json?.data?.shipments, json?.data?.items, json?.list, json?.rows, json?.shipments, json?.items, json?.data];
+  for (const value of candidates) if (Array.isArray(value)) return value as Row[];
+  return [];
+}
+
+async function searchOms(token: string, awb: string, hubId: string): Promise<OmsHit> {
+  try {
+    const url = new URL(`${process.env.HMS_BASE_URL}/api/csms/shipment/v1/ui/shipment/search`);
+    url.searchParams.set("page", "1");
+    url.searchParams.set("limit", "20");
+    url.searchParams.set("page_size", "20");
+    url.searchParams.set("awb", awb);
+    url.searchParams.set("awb_number", awb);
+    url.searchParams.set("keyword", awb);
+    url.searchParams.set("query", awb);
+    url.searchParams.set("hub_id", hubId);
+    url.searchParams.set("facility_id", hubId);
+
+    const { status, json } = await fetchJsonWithTimeout(url, token, CSMS_TIMEOUT_MS);
+    if (status === 401) return { status: "error", error: "CSMS/OMS token expired" };
+    const matches = extractRows(json).filter((row) => sameAwb(row, awb));
+    if (matches.length === 0) return { status: "not_found" };
+    const search = matches.sort((a, b) => numericTime(first(b, ["updated_at", "created_at", "shipment.updated_at"])) - numericTime(first(a, ["updated_at", "created_at", "shipment.updated_at"])))[0];
+    const id = first(search, ["id", "shipment_id", "shipmentId", "oms_shipment_id"]);
+    if (!id) return { search, status: "partial" };
+
+    const detailUrl = new URL(`${process.env.HMS_BASE_URL}/api/csms/shipment/v1/ui/shipment/${id}`);
+    const detailRes = await fetchJsonWithTimeout(detailUrl, token, CSMS_TIMEOUT_MS);
+    if (detailRes.status === 401) return { search, status: "partial", error: "CSMS/OMS detail token expired" };
+    const detail = (detailRes.json?.data ?? detailRes.json) as Row;
+    if (detail && typeof detail === "object" && sameAwb(detail, awb)) return { search, detail, status: "verified" };
+    return { search, status: "partial", error: "CSMS/OMS detail AWB mismatch or missing" };
+  } catch (error) {
+    return { status: "error", error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function mapLimit<T, R>(items: T[], limit: number, mapper: (item: T) => Promise<R>) {
+  const out: R[] = new Array(items.length);
+  let index = 0;
+  async function worker() {
+    while (index < items.length) {
+      const current = index++;
+      out[current] = await mapper(items[current]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+function sourceStatus(hms?: HmsHit, oms?: OmsHit) {
+  return JSON.stringify({ hmsTms: hms ? "verified" : "not_found", csmsOms: oms?.status ?? "not_found" });
+}
+
+function mapResult(awb: string, hms?: HmsHit, oms?: OmsHit): DatbuyResult {
+  const h = hms?.row;
+  const search = oms?.search;
+  const detail = oms?.detail;
+  const cod = numericCod(first(detail, ["detail.cod_price", "cod_price"]));
+  const hasAny = !!h || !!search || !!detail;
+  const status: DatbuyResult["status"] = h && oms?.status === "verified" ? "found" : hasAny ? "partial" : oms?.status === "error" ? "error" : "not_found";
+
+  return {
+    awb,
+    status,
+    sourceStatus: sourceStatus(hms, oms),
+    message: status === "found"
+      ? "HMS/TMS and CSMS/OMS matched the requested AWB."
+      : status === "partial"
+        ? `Partial Datbuy result. ${oms?.error || "One source did not return complete data."}`
+        : status === "error"
+          ? `Datbuy lookup failed: ${oms?.error || "source error"}`
+          : "Resi tidak ditemukan pada scope lookup Datbuy.",
+    package: {
+      status: first(h, ["status", "shipment_status"]) ?? first(detail, ["status"]) ?? first(search, ["status"]),
+      statusLabel: first(h, ["status_name", "status_label"]),
+      legType: hms?.leg,
+      hub: first(h, ["actual_hub", "hub_name", "facility_name", "destination_details.hub_name"]),
+      hubId: first(h, ["hub_id", "facility_id"]),
+      driver: first(h, ["route.driver_name", "assigned_drivers", "driver_name", "driver"]),
+      paymentType: first(h, ["payment_type", "payment_method"]) ?? (first(detail, ["is_cod"]) === true ? "cod" : null),
+      weight: first(h, ["package_details.weight"]) ?? first(detail, ["detail.weight"]),
+      shipmentId: first(detail, ["id", "shipment_id", "shipmentId"]) ?? first(search, ["id", "shipment_id", "shipmentId"]),
+      omsShipmentId: first(detail, ["oms_shipment_id", "omsShipmentId"]) ?? first(search, ["oms_shipment_id", "omsShipmentId"]),
+    },
+    receiver: {
+      name: first(h, ["destination_details.destination_name"]) ?? first(detail, ["destination_address.contact_name", "buyer_info.name"]) ?? first(search, ["buyer_info.name"]),
+      phone: first(h, ["destination_details.destination_phone"]) ?? first(detail, ["destination_address.phone_number"]),
+      address: first(h, ["destination_details.destination_address"]) ?? first(detail, ["destination_address.address"]),
+      subdistrict: first(h, ["destination_details.destination_sub_district_name"]) ?? first(detail, ["destination_address.metadata.sub_district"]),
+    },
+    order: {
+      seller: first(detail, ["seller_info.seller_name"]) ?? first(search, ["seller_info.seller_name"]) ?? first(h, ["seller_details.name"]),
+      platform: first(detail, ["company_partner_name"]) ?? first(search, ["detail.company_partner_name"]),
+      codPrice: cod,
+      productName: first(detail, ["detail.product_name", "product_name"]),
+      productLink: safeUrl(first(detail, ["detail.product_url", "product_url"])),
+      trackingLink: safeUrl(first(h, ["destination_details.live_tracking_url"]) ?? first(detail, ["live_tracking_url"])),
+    },
+  };
 }
 
 export async function POST(req: NextRequest) {
@@ -239,110 +271,56 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json().catch(() => ({}));
   const awbs = normalizeAwbs(body.awbs ?? body.query);
-  const requestedHubId = String(body.hubId || "");
+  const requestedHubId = String(body.hubId || "460450593288");
   if (awbs.length === 0) return NextResponse.json({ error: "Masukkan minimal satu nomor resi." }, { status: 400 });
   if (awbs.length > MAX_AWBS) return NextResponse.json({ error: `Maksimal ${MAX_AWBS} resi per pencarian.` }, { status: 400 });
+  if (awbs.some((awb) => awb.length > 80 || !/^[A-Z0-9_-]+$/.test(awb))) {
+    return NextResponse.json({ error: "Format resi tidak valid. Gunakan huruf, angka, underscore, atau minus." }, { status: 400 });
+  }
 
-  const cacheKey = awbs.map((awb) => awb.toLowerCase()).sort().join("|");
+  const cacheKey = `${requestedHubId}:${awbs.map((awb) => awb.toLowerCase()).sort().join("|")}`;
   const cached = cache.get(cacheKey);
-  if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
-    return NextResponse.json({ ...cached.data, meta: { ...cached.data.meta, cached: true } });
-  }
+  if (cached && Date.now() - cached.at < CACHE_TTL_MS) return NextResponse.json({ ...cached.data, meta: { ...cached.data.meta, cached: true } });
 
-  const shouldTryControlZone = requestedHubId === "460450593288" || requestedHubId === "";
-  if (shouldTryControlZone) {
-    try {
-      const controlZone = await fetchControlZoneDatbuy(awbs);
-      const results = awbs.map((awb): DatbuyResult => {
-        const row = controlZone.rows.get(awb.toLowerCase());
-        if (!row) return { awb, status: "not_found", sourceStatus: "not_found", message: "Resi tidak ditemukan di Control Zone Datbuy." };
-        return { ...mapControlZoneRow(row), awb };
-      });
-      const data: CachedResponse = {
-        success: true,
-        count: results.length,
-        maxAwbs: MAX_AWBS,
-        results,
-        meta: {
-          sources: ["Control Zone Datbuy", "HMS/TMS", "CSMS/OMS"],
-          note: "Jatinegara OCC lookup is enriched through Control Zone Datbuy when available, then missing fields remain blank; phone is shown only if CSMS/OMS returns it.",
-          checkedAt: controlZone.checkedAt,
-          windowDays: controlZone.windowDays,
-          sourceErrors: [],
-        },
-      };
-      cache.set(cacheKey, { at: Date.now(), data });
-      return NextResponse.json(data);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const data: CachedResponse = {
-        success: true,
-        count: awbs.length,
-        maxAwbs: MAX_AWBS,
-        results: awbs.map((awb): DatbuyResult => ({
-          awb,
-          status: "error",
-          sourceStatus: "control_zone_error",
-          message: `Control Zone Datbuy belum berhasil mengembalikan buyer/phone: ${message}. Coba Search ulang; HMS-only fallback sengaja tidak dipakai untuk buyer phone.`,
-        })),
-        meta: {
-          sources: ["Control Zone Datbuy"],
-          note: "Jatinegara Datbuy requires Control Zone enrichment for receiver/phone. If this source times out, buyer phone is not guessed from HMS/TMS.",
-          sourceErrors: [message],
-        },
-      };
-      return NextResponse.json(data);
-    }
-  }  const { token } = await resolveHmsToken(req, session.user.id, session.user);
-  if (!token) {
-    return NextResponse.json({ error: "Token GTL/HMS belum tersedia. Buka HMS atau sync GTL Bridge dulu." }, { status: 403 });
-  }
+  const { token } = await resolveHmsToken(req, session.user.id, session.user);
+  if (!token) return NextResponse.json({ error: "Token GTL/HMS belum tersedia. Buka HMS atau sync GTL Bridge dulu." }, { status: 403 });
 
-  const hits = new Map<string, { row: ShipmentRow; leg: Leg }>();
-  const remaining = new Set(awbs.map((awb) => awb.toLowerCase()));
+  const hmsHits = new Map<string, HmsHit>();
   const sourceErrors: string[] = [];
   let currentToken = token;
   let refreshedAny = false;
 
   for (const leg of LEGS) {
-    if (remaining.size === 0) break;
-    const batch = awbs.filter((awb) => remaining.has(awb.toLowerCase()));
     try {
-      const response = await fetchLegWithRefresh(currentToken, session.user.id, batch, leg);
+      const response = await fetchLegWithRefresh(currentToken, session.user.id, awbs, leg, requestedHubId);
       currentToken = response.token;
       refreshedAny = refreshedAny || response.refreshed;
       if (response.status === 401) throw new Error(`HMS ${leg} token expired`);
-
       for (const row of response.rows) {
         const actualAwb = rowAwb(row);
-        if (!actualAwb) continue;
-        const requested = batch.find((awb) => awb.toLowerCase() === actualAwb.toLowerCase());
+        const requested = awbs.find((awb) => normalizeAwb(awb) === actualAwb);
         if (!requested) continue;
         const key = requested.toLowerCase();
-        const current = hits.get(key);
-        hits.set(key, { row: pickPreferred(current?.row, row), leg });
-        remaining.delete(key);
+        hmsHits.set(key, { row: pickPreferred(hmsHits.get(key)?.row, row), leg });
       }
     } catch (error) {
       sourceErrors.push(error instanceof Error ? error.message : String(error));
     }
   }
 
-  const results = awbs.map((awb): DatbuyResult => {
-    const hit = hits.get(awb.toLowerCase());
-    if (hit) return mapShipment(awb, hit.row, hit.leg);
-    if (sourceErrors.length > 0) return { awb, status: "error", sourceStatus: "hms_tms_error", message: sourceErrors.join("; ") };
-    return { awb, status: "not_found", sourceStatus: "not_found", message: "Resi tidak ditemukan di HMS/TMS Last Mile atau First Mile." };
-  });
+  const omsList = await mapLimit(awbs, 5, (awb) => searchOms(currentToken, awb, requestedHubId));
+  const omsHits = new Map<string, OmsHit>();
+  awbs.forEach((awb, index) => omsHits.set(awb.toLowerCase(), omsList[index]));
 
+  const results = awbs.map((awb) => mapResult(awb, hmsHits.get(awb.toLowerCase()), omsHits.get(awb.toLowerCase())));
   const data: CachedResponse = {
     success: true,
     count: results.length,
     maxAwbs: MAX_AWBS,
     results,
     meta: {
-      sources: ["HMS/TMS shipments"],
-      note: "This lookup is live HMS/TMS only. CSMS/OMS enrichment is not integrated yet; COD amount is shown only from cod_price when present.",
+      sources: ["HMS/TMS shipments", "CSMS/OMS shipment search/detail"],
+      note: "Datbuy now calls HMS/TMS and CSMS/OMS directly with the authorized GTL session. Receiver/phone are shown only from the documented response fields; missing fields are not guessed.",
       sourceErrors,
       refreshed: refreshedAny,
     },
