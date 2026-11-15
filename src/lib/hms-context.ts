@@ -33,6 +33,7 @@ export interface SessionUserLike {
   hubs?: SessionHub[];
   hmsHubIds?: string[];
   activeHubId?: string | null;
+  role?: string | null;
   hmsToken?: string | null;
 }
 
@@ -239,19 +240,48 @@ export async function resolveActiveHub(
   );
 
   if (userHubs.length > 0) {
-    const match = requestedHmsHubId
-      ? userHubs.find((uh) => uh.hub.hmsHubId === requestedHmsHubId)
-      : undefined;
-    const hub = (match ?? userHubs[0]).hub;
+    if (requestedHmsHubId) {
+      const match = userHubs.find((uh) => uh.hub.hmsHubId === requestedHmsHubId);
+      if (match) {
+        const hub = match.hub;
+        return { id: hub.id, name: hub.name, hmsHubId: hub.hmsHubId };
+      }
+
+      const sessionAllowed = (sessionUser?.hmsHubIds ?? []).map(String).includes(requestedHmsHubId);
+      const isManager = sessionUser?.role === "MANAGER";
+      if (!sessionAllowed && !isManager) return null;
+
+      // Managers can operate hubs that are visible in the hub catalogue even
+      // when they are not represented as direct userHub rows in the JWT scope.
+      // This keeps /occ/<hub> separated by the requested HMS hub id instead of
+      // silently falling back to the first/Jatinegara hub.
+      const requestedHub = await dbRead(
+        () => prisma.hub.findFirst({ where: { hmsHubId: requestedHmsHubId } }),
+        null as { id: string; name: string; hmsHubId: string } | null,
+        "hub.findFirstByHmsHubId"
+      );
+      if (requestedHub) {
+        return {
+          id: requestedHub.id,
+          name: requestedHub.name,
+          hmsHubId: requestedHub.hmsHubId,
+        };
+      }
+      return null;
+    }
+
+    const hub = userHubs[0].hub;
     return { id: hub.id, name: hub.name, hmsHubId: hub.hmsHubId };
   }
 
   const sessionHubs = sessionUser?.hubs ?? [];
   if (sessionHubs.length > 0) {
-    const match = requestedHmsHubId
-      ? sessionHubs.find((h) => h.hmsHubId === requestedHmsHubId)
-      : undefined;
-    const hub = match ?? sessionHubs[0];
+    if (requestedHmsHubId) {
+      const match = sessionHubs.find((h) => h.hmsHubId === requestedHmsHubId);
+      if (!match) return null;
+      return { id: match.id, name: match.name, hmsHubId: match.hmsHubId };
+    }
+    const hub = sessionHubs[0];
     return { id: hub.id, name: hub.name, hmsHubId: hub.hmsHubId };
   }
 
