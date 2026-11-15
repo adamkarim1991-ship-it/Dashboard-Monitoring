@@ -126,6 +126,7 @@ async function fetchJsonWithTimeout(url: URL, token: string, timeoutMs = REQUEST
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (res.status === 401) return { status: 401, json: null as any };
+  if (res.status === 400 && allowBadRequest) return { status: 400, json: null as any };
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return { status: res.status, json: await res.json() };
 }
@@ -181,8 +182,9 @@ async function searchOms(token: string, awb: string, hubId: string): Promise<Oms
     url.searchParams.set("hub_id", hubId);
     url.searchParams.set("facility_id", hubId);
 
-    const { status, json } = await fetchJsonWithTimeout(url, token, CSMS_TIMEOUT_MS);
+    const { status, json } = await fetchJsonWithTimeout(url, token, CSMS_TIMEOUT_MS, true);
     if (status === 401) return { status: "error", error: "CSMS/OMS token expired" };
+    if (status === 400) return { status: "not_found", error: "CSMS/OMS search rejected this AWB query" };
     const matches = extractRows(json).filter((row) => sameAwb(row, awb));
     if (matches.length === 0) return { status: "not_found" };
     const search = matches.sort((a, b) => numericTime(first(b, ["updated_at", "created_at", "shipment.updated_at"])) - numericTime(first(a, ["updated_at", "created_at", "shipment.updated_at"])))[0];
@@ -190,8 +192,9 @@ async function searchOms(token: string, awb: string, hubId: string): Promise<Oms
     if (!id) return { search, status: "partial" };
 
     const detailUrl = new URL(`${process.env.HMS_BASE_URL}/api/csms/shipment/v1/ui/shipment/${id}`);
-    const detailRes = await fetchJsonWithTimeout(detailUrl, token, CSMS_TIMEOUT_MS);
+    const detailRes = await fetchJsonWithTimeout(detailUrl, token, CSMS_TIMEOUT_MS, true);
     if (detailRes.status === 401) return { search, status: "partial", error: "CSMS/OMS detail token expired" };
+    if (detailRes.status === 400) return { search, status: "partial", error: "CSMS/OMS detail rejected the candidate ID; using verified search/HMS data only" };
     const detail = (detailRes.json?.data ?? detailRes.json) as Row;
     if (detail && typeof detail === "object" && sameAwb(detail, awb)) return { search, detail, status: "verified" };
     return { search, status: "partial", error: "CSMS/OMS detail AWB mismatch or missing" };
