@@ -87,7 +87,7 @@ test("actual UI incomplete guard blocks FTD updates for upstream and invalid sam
   assert.equal(guard({ meta: { complete: true, cycle_errors: [] }, couriers: [1] }, [1]), false);
   assert.ok(source.includes("if (!incomplete) {"));
 });
-test("moving total retries from page one once; only second stable snapshot counts", async () => {
+test("moving total retries from page one; only stable snapshot counts", async () => {
   let attempts = 0;
   const requested: number[] = [];
   const signal = new AbortController().signal;
@@ -103,7 +103,7 @@ test("moving total retries from page one once; only second stable snapshot count
   assert.equal(assignment.counts.get("b")?.count, 1);
   assert.equal(assignment.counts.get("c")?.count, 1);
 });
-test("moving ownership retries once without retaining earlier owners", async () => {
+test("moving ownership retries without retaining earlier owners", async () => {
   let attempts = 0;
   const assignment = await loadCurrentAssignmentsWithRetry(async n => {
     if (n === 1) attempts++;
@@ -113,15 +113,15 @@ test("moving ownership retries once without retaining earlier owners", async () 
   assert.equal(assignment.counts.has("a"), false);
   assert.equal(assignment.counts.get("b")?.count, 1);
 });
-test("both moving snapshots fail closed; no third snapshot", async () => {
+test("moving snapshots fail closed after four attempts", async () => {
   let attempts = 0, calls = 0;
   await assert.rejects(loadCurrentAssignmentsWithRetry(async n => {
     calls++;
     if (n === 1) attempts++;
     return page([row("x", "B")], n === 1 ? 2 : 3, n, 1);
   }, "1", new AbortController().signal), /total changed/);
-  assert.equal(attempts, 2);
-  assert.equal(calls, 4);
+  assert.equal(attempts, 4);
+  assert.equal(calls, 8);
 });
 test("schema, HTTP, page-size drift and truncation errors are not snapshot-retried", async () => {
   const responses = [

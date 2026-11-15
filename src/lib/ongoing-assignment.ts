@@ -16,7 +16,7 @@ export class MovingAssignmentSnapshotError extends Error {
     this.name = "MovingAssignmentSnapshotError";
   }
 }
-// At most two fresh snapshots. Neither pages nor counts from a failed snapshot survive.
+// At most four fresh snapshots. Neither pages nor counts from a failed snapshot survive.
 // The caller supplies the same route deadline; retries never extend it.
 export async function loadCurrentAssignmentsWithRetry(
   fetchPage: (page: number) => Promise<unknown>,
@@ -24,7 +24,7 @@ export async function loadCurrentAssignmentsWithRetry(
   signal: AbortSignal,
   maxPages = 120
 ): Promise<Assignment & { snapshotAttempts: number }> {
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= 4; attempt++) {
     signal.throwIfAborted();
     try {
       const assignment = await loadCurrentAssignments(async page => {
@@ -36,7 +36,7 @@ export async function loadCurrentAssignmentsWithRetry(
       return { ...assignment, snapshotAttempts: attempt };
     } catch (error) {
       signal.throwIfAborted();
-      if (!(error instanceof MovingAssignmentSnapshotError) || attempt === 2) throw error;
+      if (!(error instanceof MovingAssignmentSnapshotError) || attempt === 4) throw error;
     }
   }
   throw new Error("Current assignment snapshot attempts exhausted");
