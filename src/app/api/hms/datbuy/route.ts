@@ -119,7 +119,7 @@ function hmsHeaders(token: string) {
   return buildHmsHeaders(token);
 }
 
-async function fetchJsonWithTimeout(url: URL, token: string, timeoutMs = REQUEST_TIMEOUT_MS) {
+async function fetchJsonWithTimeout(url: URL, token: string, timeoutMs = REQUEST_TIMEOUT_MS, allowBadRequest = false) {
   const res = await fetch(url.toString(), {
     headers: hmsHeaders(token),
     cache: "no-store",
