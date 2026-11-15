@@ -121,7 +121,7 @@ export default function DatbuyTab({ hubId: _hubId }: { hubId?: string }) {
       const res = await fetch("/api/hms/datbuy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ awbs }),
+        body: JSON.stringify({ awbs, hubId: _hubId }),
         cache: "no-store",
         signal: controller.signal,
       });

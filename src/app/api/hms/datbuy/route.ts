@@ -11,6 +11,67 @@ const MAX_AWBS = 50;
 const CACHE_TTL_MS = 60 * 1000;
 const REQUEST_TIMEOUT_MS = 20 * 1000;
 const LEGS = ["last_mile", "first_mile"] as const;
+const CONTROL_ZONE_API_BASE = "https://vuvcjbjn.cn-east-fn-hj.bytedance.net";
+
+function mapControlZoneRow(row: Record<string, unknown>): DatbuyResult {
+  const lookupStatus = String(row.lookupStatus || "partial").toLowerCase();
+  const sourceStatus = row.sourceStatus && typeof row.sourceStatus === "object" ? row.sourceStatus as Record<string, unknown> : {};
+  const hasSourceError = Object.values(sourceStatus).some((value) => String(value).toLowerCase() === "error");
+  const status = lookupStatus === "not_found" ? "not_found" : hasSourceError ? "error" : "partial";
+  const message = status === "error"
+    ? String(row.error || "Control Zone lookup found incomplete source data.")
+    : "Verified through Control Zone Datbuy service (HMS/TMS + CSMS/OMS where available).";
+
+  return {
+    awb: String(row.awb || ""),
+    status,
+    sourceStatus: JSON.stringify(sourceStatus),
+    message,
+    package: {
+      status: row.status,
+      hub: row.source,
+      driver: row.driver,
+      paymentType: row.paymentType,
+      weight: row.weight,
+      shipmentId: row.shipmentId,
+      omsShipmentId: row.omsShipmentId,
+    },
+    receiver: {
+      name: row.receiverName,
+      phone: row.phone,
+      address: row.address,
+      subdistrict: row.subdistrict,
+    },
+    order: {
+      seller: row.seller,
+      platform: row.platform,
+      codPrice: row.codNominal,
+      productName: row.productDetail,
+      productLink: safeUrl(row.productLink),
+      trackingLink: safeUrl(row.trackingLink),
+    },
+  };
+}
+
+async function fetchControlZoneDatbuy(awbs: string[]) {
+  const url = new URL("/api/v1/datbuy/lookup", CONTROL_ZONE_API_BASE);
+  url.searchParams.set("hub", "gtldsw");
+  url.searchParams.set("awbs", awbs.join(","));
+  const res = await fetch(url.toString(), {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`Control Zone Datbuy failed: ${res.status}`);
+  const json = await res.json();
+  if (!Array.isArray(json?.rows)) throw new Error("Control Zone Datbuy returned invalid payload");
+  const rows = new Map<string, Record<string, unknown>>();
+  for (const row of json.rows as Record<string, unknown>[]) {
+    const awb = String(row.awb || "").trim();
+    if (awb) rows.set(awb.toLowerCase(), row);
+  }
+  return { rows, checkedAt: json.checkedAt, windowDays: json.windowDays };
+}
 
 type Leg = (typeof LEGS)[number];
 type ShipmentRow = Record<string, unknown>;
@@ -178,6 +239,7 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json().catch(() => ({}));
   const awbs = normalizeAwbs(body.awbs ?? body.query);
+  const requestedHubId = String(body.hubId || "");
   if (awbs.length === 0) return NextResponse.json({ error: "Masukkan minimal satu nomor resi." }, { status: 400 });
   if (awbs.length > MAX_AWBS) return NextResponse.json({ error: `Maksimal ${MAX_AWBS} resi per pencarian.` }, { status: 400 });
 
@@ -187,6 +249,34 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ...cached.data, meta: { ...cached.data.meta, cached: true } });
   }
 
+  if (requestedHubId === "272") {
+    try {
+      const controlZone = await fetchControlZoneDatbuy(awbs);
+      const results = awbs.map((awb): DatbuyResult => {
+        const row = controlZone.rows.get(awb.toLowerCase());
+        if (!row) return { awb, status: "not_found", sourceStatus: "not_found", message: "Resi tidak ditemukan di Control Zone Datbuy." };
+        return { ...mapControlZoneRow(row), awb };
+      });
+      const data: CachedResponse = {
+        success: true,
+        count: results.length,
+        maxAwbs: MAX_AWBS,
+        results,
+        meta: {
+          sources: ["Control Zone Datbuy", "HMS/TMS", "CSMS/OMS"],
+          note: "Duren Sawit lookup uses the verified Control Zone Datbuy service. COD is mapped from codNominal/cod_price equivalent; missing fields remain blank.",
+          checkedAt: controlZone.checkedAt,
+          windowDays: controlZone.windowDays,
+          sourceErrors: [],
+        },
+      };
+      cache.set(cacheKey, { at: Date.now(), data });
+      return NextResponse.json(data);
+    } catch (error) {
+      // Fall back to direct HMS/TMS below so the tab still returns package status when the shared service is unavailable.
+      console.warn("Control Zone Datbuy unavailable; falling back to HMS/TMS only", error);
+    }
+  }
   const { token } = await resolveHmsToken(req, session.user.id, session.user);
   if (!token) {
     return NextResponse.json({ error: "Token GTL/HMS belum tersedia. Buka HMS atau sync GTL Bridge dulu." }, { status: 403 });
