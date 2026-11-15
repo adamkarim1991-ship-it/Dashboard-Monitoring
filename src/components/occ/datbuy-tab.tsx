@@ -23,7 +23,7 @@ type DatbuyResponse = {
 };
 
 const MAX_AWBS = 50;
-const REQUEST_TIMEOUT_MS = 60_000;
+const REQUEST_TIMEOUT_MS = 75_000;
 
 function parseAwbs(input: string) {
   const seen = new Set<string>();

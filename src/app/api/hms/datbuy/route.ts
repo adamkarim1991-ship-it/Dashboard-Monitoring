@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 const MAX_AWBS = 50;
 const CACHE_TTL_MS = 60 * 1000;
-const REQUEST_TIMEOUT_MS = 28 * 1000;
+const REQUEST_TIMEOUT_MS = 55 * 1000;
 const LEGS = ["last_mile", "first_mile"] as const;
 const CONTROL_ZONE_API_BASE = "https://vuvcjbjn.cn-east-fn-hj.bytedance.net";
 
@@ -274,11 +274,26 @@ export async function POST(req: NextRequest) {
       cache.set(cacheKey, { at: Date.now(), data });
       return NextResponse.json(data);
     } catch (error) {
-      // Fall back to direct HMS/TMS below so the tab still returns package status when the shared service is unavailable.
-      console.warn("Control Zone Datbuy unavailable; falling back to HMS/TMS only", error);
+      const message = error instanceof Error ? error.message : String(error);
+      const data: CachedResponse = {
+        success: true,
+        count: awbs.length,
+        maxAwbs: MAX_AWBS,
+        results: awbs.map((awb): DatbuyResult => ({
+          awb,
+          status: "error",
+          sourceStatus: "control_zone_error",
+          message: `Control Zone Datbuy belum berhasil mengembalikan buyer/phone: ${message}. Coba Search ulang; HMS-only fallback sengaja tidak dipakai untuk buyer phone.`,
+        })),
+        meta: {
+          sources: ["Control Zone Datbuy"],
+          note: "Jatinegara Datbuy requires Control Zone enrichment for receiver/phone. If this source times out, buyer phone is not guessed from HMS/TMS.",
+          sourceErrors: [message],
+        },
+      };
+      return NextResponse.json(data);
     }
-  }
-  const { token } = await resolveHmsToken(req, session.user.id, session.user);
+  }  const { token } = await resolveHmsToken(req, session.user.id, session.user);
   if (!token) {
     return NextResponse.json({ error: "Token GTL/HMS belum tersedia. Buka HMS atau sync GTL Bridge dulu." }, { status: 403 });
   }
