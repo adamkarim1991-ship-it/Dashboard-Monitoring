@@ -35,7 +35,8 @@ export default function LoginPage() {
       return;
     }
 
-    router.push("/");
+    const callbackUrl = new URLSearchParams(window.location.search).get("callbackUrl") || "/";
+    router.push(callbackUrl);
     router.refresh();
   }
 

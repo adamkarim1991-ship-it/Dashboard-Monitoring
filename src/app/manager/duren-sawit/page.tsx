@@ -5,7 +5,7 @@ import { OCC_HUBS } from "@/lib/occ-hubs";
 
 export default async function DurenSawitManagerHourly() {
   const session = await auth();
-  if (!session?.user) redirect("/login");
+  if (!session?.user) redirect("/login?callbackUrl=/manager/duren-sawit");
 
   const hub = OCC_HUBS["duren-sawit"];
 
