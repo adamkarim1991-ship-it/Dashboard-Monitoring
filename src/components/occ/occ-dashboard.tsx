@@ -12,8 +12,9 @@ import UrgentMonitoringTab from "./urgent-monitoring-tab";
 import CekAgingTab from "./cek-aging-tab";
 import CleanFloorTab from "./clean-floor-tab";
 import ForecastTab from "./forecast-tab";
+import DatbuyTab from "./datbuy-tab";
 
-type TabId = "hourly" | "ongoing" | "urgent" | "aging" | "cleanfloor" | "forecast";
+type TabId = "hourly" | "ongoing" | "urgent" | "aging" | "cleanfloor" | "forecast" | "datbuy";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "hourly", label: "Hourly" },
@@ -22,6 +23,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "aging", label: "Cek Aging" },
   { id: "cleanfloor", label: "Clean Floor" },
   { id: "forecast", label: "Forecast" },
+  { id: "datbuy", label: "Datbuy" },
 ];
 
 export type SessionUser = {
@@ -137,6 +139,7 @@ export default function OccDashboard({
         {activeTab === "aging" && <CekAgingTab hubId={hubId} />}
         {activeTab === "cleanfloor" && <CleanFloorTab hubId={hubId} />}
         {activeTab === "forecast" && <ForecastTab hubId={hubId} />}
+        {activeTab === "datbuy" && <DatbuyTab hubId={hubId} />}
       </main>
     </div>
   );
