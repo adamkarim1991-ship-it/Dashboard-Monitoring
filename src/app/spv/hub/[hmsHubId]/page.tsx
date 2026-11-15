@@ -32,6 +32,7 @@ export default async function SpvHubDashboard({
       hubId={hmsHubId}
       hubName={membership.hub.name}
       showSubdistrict={false}
+      backHref="/spv"
     />
   );
 }

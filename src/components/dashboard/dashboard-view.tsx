@@ -204,11 +204,13 @@ export default function DashboardView({
   hubId,
   hubName,
   showSubdistrict = true,
+  backHref,
 }: {
   user: SessionUser;
   hubId?: string;
   hubName?: string;
   showSubdistrict?: boolean;
+  backHref?: string;
 }) {
   const activeHubId = hubId || user.hmsHubIds?.[0] || "";
   const activeHubRef = useRef(activeHubId);
@@ -556,8 +558,8 @@ export default function DashboardView({
           </div>
 
           <div className="flex items-center gap-3 flex-shrink-0">
-            {hubId && (
-              <Link href="/spv">
+            {hubId && backHref && (
+              <Link href={backHref}>
                 <Button
                   variant="outline"
                   size="sm"
