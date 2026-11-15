@@ -197,7 +197,7 @@ export default function DatbuyTab({ hubId: _hubId }: { hubId?: string }) {
           <table className="min-w-[1500px] w-full text-left text-xs">
             <thead className="bg-slate-800 text-gray-300">
               <tr>
-                {["AWB", "Source", "Package Status", "Receiver", "Phone", "Address", "Driver", "Hub", "Payment", "COD", "Seller", "Platform", "Product", "Product Link", "Message"].map((h) => (
+                {["AWB", "Source", "Package Status", "Receiver", "Phone", "Address", "Driver", "Hub", "Payment", "COD", "Package Price", "Seller", "Platform", "Product", "Product Link", "Message"].map((h) => (
                   <th key={h} className="px-3 py-2 font-semibold">{h}</th>
                 ))}
               </tr>
@@ -215,6 +215,7 @@ export default function DatbuyTab({ hubId: _hubId }: { hubId?: string }) {
                   <td className="px-3 py-2">{textValue(row.package?.hub || row.package?.hubId)}</td>
                   <td className="px-3 py-2">{textValue(row.package?.paymentType)}</td>
                   <td className="px-3 py-2">{formatCod(row.order?.codPrice)}</td>
+                  <td className="px-3 py-2">{formatCod(row.order?.packagePrice)}</td>
                   <td className="px-3 py-2">{textValue(row.order?.seller)}</td>
                   <td className="px-3 py-2">{textValue(row.order?.platform)}</td>
                   <td className="px-3 py-2">{textValue(row.order?.productName)}</td>

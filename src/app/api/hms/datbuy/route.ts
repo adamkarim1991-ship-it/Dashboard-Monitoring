@@ -261,6 +261,7 @@ function mapResult(awb: string, hms?: HmsHit, oms?: OmsHit): DatbuyResult {
       seller: first(detail, ["seller_info.seller_name"]) ?? first(search, ["seller_info.seller_name"]) ?? first(h, ["seller_details.name"]),
       platform: first(detail, ["company_partner_name"]) ?? first(search, ["detail.company_partner_name"]),
       codPrice: cod,
+      packagePrice: numericCod(first(detail, ["detail.price", "detail.item_price", "detail.product_price", "detail.original_price", "detail.goods_price", "price", "item_price", "product_price", "original_price", "goods_price"])), 
       productName: first(detail, ["detail.product_name", "product_name"]),
       productLink: safeUrl(first(detail, ["detail.product_url", "product_url"])),
       trackingLink: safeUrl(first(h, ["destination_details.live_tracking_url"]) ?? first(detail, ["live_tracking_url"])),
