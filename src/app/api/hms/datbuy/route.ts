@@ -261,7 +261,7 @@ function mapResult(awb: string, hms?: HmsHit, oms?: OmsHit): DatbuyResult {
       seller: first(detail, ["seller_info.seller_name"]) ?? first(search, ["seller_info.seller_name"]) ?? first(h, ["seller_details.name"]),
       platform: first(detail, ["company_partner_name"]) ?? first(search, ["detail.company_partner_name"]),
       codPrice: cod,
-      packagePrice: numericCod(first(detail, ["detail.price", "detail.item_price", "detail.product_price", "detail.original_price", "detail.goods_price", "price", "item_price", "product_price", "original_price", "goods_price"])), 
+      packagePrice: numericCod(first(detail, ["detail.product_price", "detail.package_price", "detail.item_price", "detail.price", "detail.original_price", "detail.goods_price", "detail.goods_value", "detail.item_value", "detail.product_value", "detail.order_amount", "detail.total_price", "detail.total_amount", "detail.amount", "product_price", "package_price", "item_price", "price", "original_price", "goods_price", "goods_value", "item_value", "product_value", "order_amount", "total_price", "total_amount", "amount"])),
       productName: first(detail, ["detail.product_name", "product_name"]),
       productLink: safeUrl(first(detail, ["detail.product_url", "product_url"])),
       trackingLink: safeUrl(first(h, ["destination_details.live_tracking_url"]) ?? first(detail, ["live_tracking_url"])),
