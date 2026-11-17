@@ -13,14 +13,17 @@ import CekAgingTab from "./cek-aging-tab";
 import CleanFloorTab from "./clean-floor-tab";
 import ForecastTab from "./forecast-tab";
 import DatbuyTab from "./datbuy-tab";
+import AgingMonitoringTab from "./aging-monitoring-tab";
 
-type TabId = "hourly" | "ongoing" | "urgent" | "aging" | "cleanfloor" | "forecast" | "datbuy";
+type TabId = "hourly" | "ongoing" | "urgent" | "aging" | "cleanfloor" | "forecast" | "datbuy" | "aging-monitoring" | "aging-return";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "hourly", label: "Hourly" },
   { id: "ongoing", label: "Ongoing Courier" },
   { id: "urgent", label: "Urgent Monitoring" },
   { id: "aging", label: "Cek Aging" },
+  { id: "aging-monitoring", label: "Aging Monitoring" },
+  { id: "aging-return", label: "Aging Return" },
   { id: "cleanfloor", label: "Clean Floor" },
   { id: "forecast", label: "Forecast" },
   { id: "datbuy", label: "Datbuy" },
@@ -48,7 +51,7 @@ export default function OccDashboard({
   const hubId = initialHub.hmsHubId;
   const hubName = initialHub.name;
   const hubShortName = initialHub.shortName;
-  const visibleTabs = TABS.filter((tab) => initialHub.fmDistrict ? true : tab.id !== "forecast" && tab.id !== "datbuy");
+  const visibleTabs = TABS.filter((tab) => initialHub.fmDistrict ? true : tab.id !== "forecast" && tab.id !== "datbuy" && tab.id !== "aging-monitoring" && tab.id !== "aging-return");
 
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
@@ -140,6 +143,8 @@ export default function OccDashboard({
         {activeTab === "cleanfloor" && <CleanFloorTab hubId={hubId} />}
         {activeTab === "forecast" && <ForecastTab hubId={hubId} />}
         {activeTab === "datbuy" && <DatbuyTab hubId={hubId} />}
+        {activeTab === "aging-monitoring" && <AgingMonitoringTab mode="forward" hubId={hubId} />}
+        {activeTab === "aging-return" && <AgingMonitoringTab mode="return" hubId={hubId} />}
       </main>
     </div>
   );
