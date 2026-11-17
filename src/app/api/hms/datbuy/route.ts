@@ -183,7 +183,22 @@ function extractRows(json: any): Row[] {
 const HUB_FACILITY_CODES: Record<string, string> = {
   "460450593288": "GTLJTN",
   "272": "GTLDSW",
+  "207": "GTLDSW",
 };
+
+const HUB_QUERY_ALIASES: Record<string, string[]> = {
+  // HMS exposes Duren Sawit as internal hub id 207 in some endpoints and TMS hub
+  // id 272 in other payloads. Query both but keep the external scope as DSW only.
+  "272": ["272", "207"],
+};
+
+function expandHubQueryIds(hubIds: string[]) {
+  return Array.from(new Set(hubIds.flatMap((hubId) => HUB_QUERY_ALIASES[hubId] ?? [hubId])));
+}
+
+function allowedHubIds(hubIds: string[]) {
+  return new Set(expandHubQueryIds(hubIds));
+}
 
 const CSMS_LOOKBACK_DAYS = 45;
 
@@ -226,7 +241,7 @@ async function queryOmsAcrossHubs(token: string, awb: string, hubIds: string[]):
   const matches = extractRows(json).filter((row) => sameAwb(row, awb));
   if (matches.length === 0) return { status: "not_found" };
 
-  const allowedCodes = new Set(hubIds.map((hubId) => HUB_FACILITY_CODES[hubId]).filter(Boolean) as string[]);
+  const allowedCodes = new Set(expandHubQueryIds(hubIds).map((hubId) => HUB_FACILITY_CODES[hubId]).filter(Boolean) as string[]);
   const scoped = matches.filter((row) => {
     const code = csmsHubCode(row);
     if (!code) return true; // facility not exposed on the search row: validate on detail
@@ -403,7 +418,10 @@ export async function POST(req: NextRequest) {
   let currentToken = token;
   let refreshedAny = false;
 
-  for (const hubId of scope.hubIds) {
+  const queryHubIds = expandHubQueryIds(scope.hubIds);
+  const acceptedHubIds = allowedHubIds(scope.hubIds);
+
+  for (const hubId of queryHubIds) {
     for (const leg of LEGS) {
       try {
         const response = await fetchLegWithRefresh(currentToken, session.user.id, awbs, leg, hubId);
@@ -415,7 +433,7 @@ export async function POST(req: NextRequest) {
           const requested = awbs.find((awb) => normalizeAwb(awb) === actualAwb);
           if (!requested) continue;
           const foundHub = rowHubId(row);
-          if (foundHub && !scope.hubIds.includes(foundHub)) continue;
+          if (foundHub && !acceptedHubIds.has(foundHub)) continue;
           const key = requested.toLowerCase();
           hmsHits.set(key, { row: pickPreferred(hmsHits.get(key)?.row, row), leg, hubId: foundHub || hubId });
         }
