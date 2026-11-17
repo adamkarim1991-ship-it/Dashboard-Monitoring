@@ -9,7 +9,6 @@ import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { dbRead } from "@/lib/db-safe";
 import {
-  recallLastToken,
   recallToken,
   readTokenFromCookies,
   rememberToken,
@@ -135,7 +134,7 @@ export async function resolveHmsToken(
     });
   }
 
-  const fromMemory = recallToken(userId) ?? recallLastToken();
+  const fromMemory = recallToken(userId);
   if (fromMemory) {
     candidates.push({
       token: fromMemory.token,
@@ -183,22 +182,24 @@ export async function resolveHmsToken(
   const hubRows = await dbRead(
     () =>
       prisma.hub.findMany({
-        where: { hmsToken: { not: null } },
-        select: { hmsToken: true },
+        where: {
+          hmsToken: { not: null },
+          users: { some: { userId } },
+        },
+        select: { hmsToken: true, hmsTokenExpiresAt: true, hmsHubId: true },
       }),
-    [] as Array<{ hmsToken: string | null }>,
-    "hub.hmsToken"
+    [] as Array<{ hmsToken: string | null; hmsTokenExpiresAt: Date | null; hmsHubId: string }>,
+    "hub.hmsToken.scoped"
   );
   for (const row of hubRows) {
     if (row.hmsToken) {
       candidates.push({
         token: row.hmsToken,
-        source: "hub",
-        expiresAt: Number.MAX_SAFE_INTEGER,
+        source: `hub:${row.hmsHubId}`,
+        expiresAt: row.hmsTokenExpiresAt?.getTime() ?? 0,
       });
     }
   }
-
   const picked = await pickAcceptedToken(userId, candidates);
   if (!picked) {
     const best = newest(candidates);

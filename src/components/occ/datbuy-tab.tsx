@@ -5,7 +5,7 @@ import { RefreshCw, Search, XCircle } from "lucide-react";
 
 type DatbuyResult = {
   awb: string;
-  status: "partial" | "not_found" | "error";
+  status: "found" | "partial" | "not_found" | "error";
   sourceStatus: string;
   message?: string;
   package?: Record<string, unknown>;
@@ -45,12 +45,14 @@ function textValue(v: unknown) {
 }
 
 function statusClass(status: DatbuyResult["status"]) {
+  if (status === "found") return "bg-emerald-500/15 text-emerald-300 border-emerald-500/40";
   if (status === "partial") return "bg-amber-500/15 text-amber-300 border-amber-500/40";
   if (status === "not_found") return "bg-slate-500/15 text-slate-300 border-slate-500/40";
   return "bg-red-500/15 text-red-300 border-red-500/40";
 }
 
 function formatCod(value: unknown) {
+  if (value === undefined || value === null || String(value).trim() === "") return "-";
   const n = Number(value);
   if (!Number.isFinite(n)) return textValue(value);
   return new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(n);
@@ -154,7 +156,7 @@ export default function DatbuyTab({ hubId: _hubId, scopeLabel = "OCC hub" }: { h
         <h2 className="text-xl font-bold text-white">Buyer / receiver lookup</h2>
         <p className="text-xs text-gray-400 mt-1">
           Lookup manual berdasarkan AWB/resi via HMS/TMS + CSMS/OMS live untuk {scopeLabel}. Maksimal {MAX_AWBS} resi, pisahkan dengan koma atau baris baru.
-          CSMS/OMS belum terhubung, jadi field seller/product/buyer hanya tampil bila memang dikembalikan upstream; data kosong tidak ditebak.
+          Server hanya memakai hub yang assigned ke akun login; East coverage bukan lookup tenant-wide. Field kosong tidak ditebak.
         </p>
       </div>
 

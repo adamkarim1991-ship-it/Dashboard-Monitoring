@@ -32,7 +32,7 @@ export default async function EastOccPage() {
         <div className="border-b border-slate-800 bg-slate-900/70 px-6 py-3">
           <span className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white">Datbuy</span>
         </div>
-        <DatbuyTab hubId="all" scopeLabel="SPV East coverage" />
+        <DatbuyTab hubId="east" scopeLabel="SPV East coverage" />
       </main>
     </div>
   );

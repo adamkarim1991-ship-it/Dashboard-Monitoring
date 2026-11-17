@@ -252,7 +252,7 @@ export async function GET(req: NextRequest) {
             ongoing_created_at_to: dayStart + 86400 - 1,
             ongoing_pages: assignment.pages,
             ongoing_snapshot_attempts: assignment.snapshotAttempts,
-            ongoing_snapshot_attempt_limit: 2,
+            ongoing_snapshot_attempt_limit: 4,
             ongoing_page_limit: 120,
             ongoing_page_concurrency: 3,
             upstream_deadline_ms: 25000,

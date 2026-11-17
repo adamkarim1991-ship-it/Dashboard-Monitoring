@@ -239,7 +239,9 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
     table.style.lineHeight = "1.2";
 
     const headers = [
+      "Rank",
       "Nama Kurir",
+      "Ongoing",
       "Pembawaan Fresh C1",
       "SD <12PM %",
       "Total Pembawaan",
@@ -279,7 +281,9 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
         color?: string;
         weight?: string;
       }> = [
+        { value: String(i + 1), align: "right", color: "#000", weight: "700" },
         { value: c.name, align: "left", color: "#000", weight: "600" },
+        { value: c.ongoing.toLocaleString("id-ID"), align: "right", color: "#000", weight: "700" },
         { value: c.freshC1.toLocaleString("id-ID"), align: "right", color: "#000", weight: "600" },
         {
           value: `${c.sd12Pct.toFixed(1)}%`,
@@ -365,6 +369,23 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
         </div>
       )}
 
+      <div className="rounded-xl border border-blue-900/40 bg-blue-950/20 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-blue-300">Delivery Nerve</p>
+            <h2 className="mt-1 text-lg font-bold text-white">Ongoing driver performance nerve center</h2>
+            <p className="mt-1 text-xs text-slate-400">
+              Live HMS productivity + latest assigned ongoing ownership. Waiting Approval Reassign, Attempts, rolling-month FTD, and COD settlement stay explicitly blocked until their verified source endpoints are available.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-[10px] sm:grid-cols-4">
+            <NerveStatus label="Ongoing" status="Live" tone="green" />
+            <NerveStatus label="Daily FTD Record" status="Browser-safe" tone="blue" />
+            <NerveStatus label="Attempts / Reassign" status="Source pending" tone="amber" />
+            <NerveStatus label="COD Settlement" status="Source pending" tone="amber" />
+          </div>
+        </div>
+      </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <SummaryCard
           label="Total Carried"
@@ -486,7 +507,9 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
           <table className="w-full min-w-[760px] text-[15px] leading-relaxed md:min-w-0 md:text-xs md:leading-normal text-slate-200">
             <thead className="bg-[#0f1e3d] text-white">
               <tr>
+                <th className="whitespace-nowrap px-3 py-3.5 md:px-4 md:py-3 text-[12px] md:text-xs font-semibold text-right">Rank</th>
                 <th className="whitespace-nowrap px-3 py-3.5 md:px-4 md:py-3 text-[12px] md:text-xs font-semibold text-left">Nama Kurir</th>
+                <th className="whitespace-nowrap px-3 py-3.5 md:px-4 md:py-3 text-[12px] md:text-xs font-semibold text-right">Ongoing</th>
                 <th className="whitespace-nowrap px-3 py-3.5 md:px-4 md:py-3 text-[12px] md:text-xs font-semibold text-right">Pembawaan Fresh C1</th>
                 <th className="whitespace-nowrap px-3 py-3.5 md:px-4 md:py-3 text-[12px] md:text-xs font-semibold text-right">SD &lt;12PM %</th>
                 <th className="whitespace-nowrap px-3 py-3.5 md:px-4 md:py-3 text-[12px] md:text-xs font-semibold text-right">Total Pembawaan</th>
@@ -498,14 +521,16 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
             <tbody>
               {displayList.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-8 text-center text-slate-500">
+                  <td colSpan={9} className="py-8 text-center text-slate-500">
                     {loading ? "Loading..." : "Tidak ada data kurir untuk periode ini"}
                   </td>
                 </tr>
               ) : (
-                displayList.map((c) => (
+                displayList.map((c, idx) => (
                   <tr key={c.name} className="border-b border-slate-800 hover:bg-slate-800/50">
+                    <td className="px-3 py-3.5 md:px-4 md:py-2.5 text-right tabular-nums font-bold text-blue-300">{idx + 1}</td>
                     <td className="whitespace-nowrap px-3 py-3.5 md:px-4 md:py-2.5 font-semibold text-white">{c.name}</td>
+                    <td className="px-3 py-3.5 md:px-4 md:py-2.5 text-right tabular-nums font-bold text-amber-300">{c.ongoing.toLocaleString("id-ID")}</td>
                     <td className="px-3 py-3.5 md:px-4 md:py-2.5 text-right tabular-nums">{c.freshC1.toLocaleString("id-ID")}</td>
                     <td className="px-3 py-3.5 md:px-4 md:py-2.5 text-right">
                       <span
@@ -547,13 +572,34 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
       </div>
 
       <p className="text-center text-[10px] text-gray-500 py-2">
-        Delivery Nerve - Ongoing driver performance | Auto-refresh 60s |{" "}
+        Delivery Nerve - Ongoing driver performance | Auto-refresh 5min |{" "}
         {lastUpdate ? `Last: ${lastUpdate.toLocaleTimeString("id-ID")}` : ""}
       </p>
     </div>
   );
 }
 
+function NerveStatus({
+  label,
+  status,
+  tone,
+}: {
+  label: string;
+  status: string;
+  tone: "green" | "blue" | "amber";
+}) {
+  const colors = {
+    green: "border-emerald-500/30 bg-emerald-500/10 text-emerald-200",
+    blue: "border-blue-500/30 bg-blue-500/10 text-blue-200",
+    amber: "border-amber-500/30 bg-amber-500/10 text-amber-200",
+  } as const;
+  return (
+    <div className={`rounded-lg border px-3 py-2 ${colors[tone]}`}>
+      <p className="font-bold text-white">{label}</p>
+      <p className="mt-0.5">{status}</p>
+    </div>
+  );
+}
 function SummaryCard({
   label,
   value,
