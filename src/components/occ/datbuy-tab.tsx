@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
-import { RefreshCw, Search, XCircle } from "lucide-react";
+import { Check, ClipboardCopy, RefreshCw, Search, XCircle } from "lucide-react";
 
 type DatbuyResult = {
   awb: string;
@@ -89,6 +89,15 @@ function greeting() {
   return "malam";
 }
 
+
+function shareBlock(row: DatbuyResult) {
+  return [row.awb, textValue(row.receiver?.name), textValue(row.receiver?.phone)].join("\n");
+}
+
+function shareText(rows: DatbuyResult[]) {
+  return rows.map(shareBlock).join("\n\n");
+}
+
 function buildWhatsAppLink(row: DatbuyResult) {
   const phone = phoneForWhatsApp(row.receiver?.phone);
   if (!phone) return null;
@@ -109,6 +118,7 @@ export default function DatbuyTab({ hubId: _hubId, scopeLabel = "OCC hub" }: { h
   const [data, setData] = useState<DatbuyResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const requestSeq = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -144,7 +154,10 @@ export default function DatbuyTab({ hubId: _hubId, scopeLabel = "OCC hub" }: { h
       });
       const json = (await res.json().catch(() => ({}))) as DatbuyResponse;
       if (!res.ok || json.error) throw new Error(json.error || `Lookup failed (${res.status})`);
-      if (seq === requestSeq.current) setData(json);
+      if (seq === requestSeq.current) {
+        setData(json);
+        setCopied(false);
+      }
     } catch (err) {
       if (seq !== requestSeq.current) return;
       if (err instanceof DOMException && err.name === "AbortError") setError("Lookup timeout atau dibatalkan. Coba lagi dengan batch lebih kecil.");
@@ -162,6 +175,27 @@ export default function DatbuyTab({ hubId: _hubId, scopeLabel = "OCC hub" }: { h
     setData(null);
     setError(null);
     setLoading(false);
+    setCopied(false);
+  }
+
+  async function copyShareFormat() {
+    if (!data?.results?.length) return;
+    const text = shareText(data.results);
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.style.position = "fixed";
+      area.style.left = "-9999px";
+      document.body.appendChild(area);
+      area.focus();
+      area.select();
+      document.execCommand("copy");
+      document.body.removeChild(area);
+    }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 2000);
   }
 
   return (
@@ -211,7 +245,22 @@ export default function DatbuyTab({ hubId: _hubId, scopeLabel = "OCC hub" }: { h
       )}
 
       {data?.results && (
-        <div className="overflow-x-auto rounded-xl border border-slate-700 bg-slate-900">
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-700 bg-slate-900 p-3">
+            <div className="text-xs text-gray-300">
+              <p className="font-semibold text-white">Share format</p>
+              <p>Copy otomatis: AWB number, Nama Buyer, Nomor tlp Buyer. Multi AWB dipisah baris kosong.</p>
+            </div>
+            <button
+              onClick={copyShareFormat}
+              disabled={data.results.length === 0}
+              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {copied ? <Check className="h-4 w-4" /> : <ClipboardCopy className="h-4 w-4" />}
+              {copied ? "Copied" : "Copy Share Format"}
+            </button>
+          </div>
+          <div className="overflow-x-auto rounded-xl border border-slate-700 bg-slate-900">
           <table className="min-w-[1700px] w-full text-left text-xs">
             <thead className="bg-slate-800 text-gray-300">
               <tr>
@@ -251,6 +300,7 @@ export default function DatbuyTab({ hubId: _hubId, scopeLabel = "OCC hub" }: { h
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </section>
