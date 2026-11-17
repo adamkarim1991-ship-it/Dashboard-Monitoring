@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { auth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 
 export async function POST(req: NextRequest) {
+  const session = await auth()
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
   let body: {
     hubName?: string
     hubId?: string
@@ -25,6 +31,13 @@ export async function POST(req: NextRequest) {
   if (!hub && hubId) hub = await prisma.hub.findUnique({ where: { hmsHubId: hubId } })
   if (!hub) return NextResponse.json({ error: 'Hub not found', hubName, hubId }, { status: 404 })
 
+  const membership = await prisma.userHub.findUnique({
+    where: { userId_hubId: { userId: session.user.id, hubId: hub.id } },
+  })
+  if (!membership) {
+    return NextResponse.json({ error: 'Forbidden: this account is not assigned to the target hub.' }, { status: 403 })
+  }
+
   await prisma.hub.update({
     where: { id: hub.id },
     data: {
@@ -35,6 +48,6 @@ export async function POST(req: NextRequest) {
     },
   })
 
-  console.log("[hub-set-token] OK " + hub.name)
+  console.log('[hub-set-token] OK ' + hub.name + ' by ' + session.user.id)
   return NextResponse.json({ success: true, hub: hub.name })
 }
