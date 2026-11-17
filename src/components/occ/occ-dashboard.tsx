@@ -19,7 +19,7 @@ type TabId = "hourly" | "ongoing" | "urgent" | "aging" | "cleanfloor" | "forecas
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "hourly", label: "Hourly" },
-  { id: "ongoing", label: "Ongoing Courier" },
+  { id: "ongoing", label: "Delivery Nerve" },
   { id: "urgent", label: "Urgent Monitoring" },
   { id: "aging", label: "Cek Aging" },
   { id: "aging-monitoring", label: "Aging Monitoring" },

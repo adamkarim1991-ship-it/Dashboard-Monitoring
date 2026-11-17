@@ -224,7 +224,7 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
     printDiv.style.color = "#000000";
 
     const title = document.createElement("div");
-    title.textContent = "OCC Ongoing Courier Report";
+    title.textContent = "OCC Delivery Nerve Report";
     title.style.fontSize = "18px";
     title.style.fontWeight = "700";
     title.style.marginBottom = "8px";
@@ -547,7 +547,7 @@ export default function OngoingCourierTab({ hubId }: { hubId: string }) {
       </div>
 
       <p className="text-center text-[10px] text-gray-500 py-2">
-        HMS driver productivity (cycle 1-3) | Auto-refresh 60s |{" "}
+        Delivery Nerve - Ongoing driver performance | Auto-refresh 60s |{" "}
         {lastUpdate ? `Last: ${lastUpdate.toLocaleTimeString("id-ID")}` : ""}
       </p>
     </div>
