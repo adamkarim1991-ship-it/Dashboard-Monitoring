@@ -253,6 +253,19 @@ function sourceStatus(hms?: HmsHit, oms?: OmsHit) {
   return JSON.stringify({ hmsTms: hms ? "verified" : "not_found", hmsHubId: hms?.hubId, csmsOms: oms?.status ?? "not_found", csmsHubId: oms?.hubId });
 }
 
+function packageDetails(hmsRow?: Row, omsRow?: Row) {
+  return {
+    weight: first(hmsRow, ["package.weight", "package_details.weight", "weight"]) ?? first(omsRow, ["detail.weight", "weight"]),
+    volume: first(hmsRow, ["package.volume", "package_details.volume", "volume"]),
+    dimension: first(hmsRow, ["package.dimension", "package_details.dimension", "dimension"]),
+    size: first(hmsRow, ["package.size", "package_details.size", "size"]),
+    invoiceNumber: first(hmsRow, ["invoice_number", "invoice_no"]) ?? first(omsRow, ["invoice_number", "invoice_no"]),
+    serviceType: first(hmsRow, ["service_type", "shipping_type"]) ?? first(omsRow, ["service_name", "detail.service_name"]),
+    orderType: first(hmsRow, ["order_type"]) ?? first(omsRow, ["detail.order_type"]),
+    shippingType: first(hmsRow, ["shipping_type"]) ?? first(omsRow, ["detail.shipping_type", "shipping_type"]),
+  };
+}
+
 function mapResult(awb: string, hms?: HmsHit, oms?: OmsHit): DatbuyResult {
   const h = hms?.row;
   const search = oms?.search;
@@ -280,7 +293,8 @@ function mapResult(awb: string, hms?: HmsHit, oms?: OmsHit): DatbuyResult {
       hubId: hms?.hubId ?? first(h, ["hub_id", "facility_id"]) ?? first(detail, ["hub_id", "facility_id"]),
       driver: first(h, ["route.driver_name", "assigned_drivers", "driver_name", "driver"]),
       paymentType: first(h, ["payment_type", "payment_method"]) ?? (first(detail, ["is_cod"]) === true ? "cod" : null),
-      weight: first(h, ["package_details.weight"]) ?? first(detail, ["detail.weight"]),
+      physicalDetails: packageDetails(h, detail),
+      weight: packageDetails(h, detail).weight,
       shipmentId: first(detail, ["id", "shipment_id", "shipmentId"]) ?? first(search, ["id", "shipment_id", "shipmentId"]),
       omsShipmentId: first(detail, ["oms_shipment_id", "omsShipmentId"]) ?? first(search, ["oms_shipment_id", "omsShipmentId"]),
     },

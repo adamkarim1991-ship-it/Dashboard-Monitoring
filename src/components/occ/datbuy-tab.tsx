@@ -58,6 +58,21 @@ function formatCod(value: unknown) {
   return new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(n);
 }
 
+function detailEntries(row: DatbuyResult): Array<[string, unknown]> {
+  const details = (row.package?.physicalDetails ?? {}) as Record<string, unknown>;
+  const entries: Array<[string, unknown]> = [
+    ["Product", row.order?.productName],
+    ["Weight", details.weight],
+    ["Volume", details.volume],
+    ["Dimension", details.dimension ?? details.size],
+    ["Invoice", details.invoiceNumber],
+    ["Service", details.serviceType],
+    ["Order type", details.orderType],
+    ["Shipping type", details.shippingType],
+  ];
+  return entries.filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== "");
+}
+
 function phoneForWhatsApp(value: unknown) {
   const digits = String(value || "").replace(/\D+/g, "");
   if (!digits) return null;
@@ -157,6 +172,7 @@ export default function DatbuyTab({ hubId: _hubId, scopeLabel = "OCC hub" }: { h
         <p className="text-xs text-gray-400 mt-1">
           Lookup manual berdasarkan AWB/resi via HMS/TMS + CSMS/OMS live untuk {scopeLabel}. Maksimal {MAX_AWBS} resi, pisahkan dengan koma atau baris baru.
           Server hanya memakai hub yang assigned ke akun login; East coverage bukan lookup tenant-wide. Field kosong tidak ditebak.
+          Detail barang menampilkan profil paket yang benar-benar dikembalikan HMS/TMS (berat, volume, dimensi, invoice/service) dan nama produk hanya bila CSMS/OMS menyediakannya; SKU/item list tidak ditebak jika sumber resmi tidak mengembalikannya.
         </p>
       </div>
 
@@ -196,10 +212,10 @@ export default function DatbuyTab({ hubId: _hubId, scopeLabel = "OCC hub" }: { h
 
       {data?.results && (
         <div className="overflow-x-auto rounded-xl border border-slate-700 bg-slate-900">
-          <table className="min-w-[1500px] w-full text-left text-xs">
+          <table className="min-w-[1700px] w-full text-left text-xs">
             <thead className="bg-slate-800 text-gray-300">
               <tr>
-                {["AWB", "Source", "Package Status", "Receiver", "Phone", "Address", "Driver", "Hub", "Payment", "COD", "Package Price", "Seller", "Platform", "Product", "Product Link", "Message"].map((h) => (
+                {["AWB", "Source", "Package Status", "Receiver", "Phone", "Address", "Driver", "Hub", "Payment", "COD", "Package Price", "Seller", "Platform", "Item / Package Details", "Product Link", "Message"].map((h) => (
                   <th key={h} className="px-3 py-2 font-semibold">{h}</th>
                 ))}
               </tr>
@@ -220,7 +236,15 @@ export default function DatbuyTab({ hubId: _hubId, scopeLabel = "OCC hub" }: { h
                   <td className="px-3 py-2">{formatCod(row.order?.packagePrice)}</td>
                   <td className="px-3 py-2">{textValue(row.order?.seller)}</td>
                   <td className="px-3 py-2">{textValue(row.order?.platform)}</td>
-                  <td className="px-3 py-2">{textValue(row.order?.productName)}</td>
+                  <td className="px-3 py-2 max-w-[280px] whitespace-normal">
+                    {detailEntries(row).length > 0 ? (
+                      <div className="space-y-1">
+                        {detailEntries(row).map(([label, value]) => (
+                          <div key={label}><span className="font-semibold text-gray-400">{label}:</span> <span>{textValue(value)}</span></div>
+                        ))}
+                      </div>
+                    ) : "-"}
+                  </td>
                   <td className="px-3 py-2 max-w-[240px] truncate">{row.order?.productLink ? <a className="text-blue-300 underline" href={String(row.order.productLink)} target="_blank" rel="noreferrer">Open</a> : "-"}</td>
                   <td className="px-3 py-2 max-w-[360px] whitespace-normal text-gray-400">{textValue(row.message || row.sourceStatus)}</td>
                 </tr>
