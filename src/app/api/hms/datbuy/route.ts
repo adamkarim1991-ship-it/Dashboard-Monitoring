@@ -180,60 +180,82 @@ function extractRows(json: any): Row[] {
   return [];
 }
 
-async function queryOmsHub(token: string, awb: string, hubId: string): Promise<OmsHit> {
-  const url = new URL(`${process.env.HMS_BASE_URL}/api/csms/shipment/v1/ui/shipment/search`);
-  url.searchParams.set("page", "1");
-  url.searchParams.set("limit", "20");
-  url.searchParams.set("page_size", "20");
-  url.searchParams.set("awb", awb);
-  url.searchParams.set("awb_number", awb);
-  url.searchParams.set("keyword", awb);
-  url.searchParams.set("query", awb);
-  url.searchParams.set("hub_id", hubId);
-  url.searchParams.set("facility_id", hubId);
+const HUB_FACILITY_CODES: Record<string, string> = {
+  "460450593288": "GTLJTN",
+  "272": "GTLDSW",
+};
 
-  const { status, json } = await fetchJsonWithTimeout(url, token, CSMS_TIMEOUT_MS, true);
-  if (status === 401) return { status: "error", hubId, error: "CSMS/OMS token expired" };
-  if (status === 400) return { status: "error", hubId, error: `CSMS/OMS rejected scoped query for hub ${hubId}` };
+const CSMS_LOOKBACK_DAYS = 45;
 
-  const matches = extractRows(json).filter((row) => sameAwb(row, awb));
-  if (matches.length === 0) return { status: "not_found", hubId };
-  const scopedMatches = matches.filter((row) => {
-    const foundHub = rowHubId(row);
-    return !foundHub || foundHub === hubId;
-  });
-  if (scopedMatches.length === 0) return { status: "not_found", hubId, error: "CSMS/OMS returned this AWB outside the allowed hub scope" };
-
-  const search = scopedMatches.sort((a, b) => numericTime(first(b, ["updated_at", "created_at", "shipment.updated_at"])) - numericTime(first(a, ["updated_at", "created_at", "shipment.updated_at"])))[0];
-  const id = first(search, ["id", "shipment_id", "shipmentId", "oms_shipment_id"]);
-  if (!id) return { search, status: "partial", hubId };
-
-  const detailUrl = new URL(`${process.env.HMS_BASE_URL}/api/csms/shipment/v1/ui/shipment/${id}`);
-  const detailRes = await fetchJsonWithTimeout(detailUrl, token, CSMS_TIMEOUT_MS, true);
-  if (detailRes.status === 401) return { search, status: "partial", hubId, error: "CSMS/OMS detail token expired" };
-  if (detailRes.status === 400) return { search, status: "partial", hubId, error: "CSMS/OMS detail rejected the candidate ID; using verified search/HMS data only" };
-  const detail = (detailRes.json?.data ?? detailRes.json) as Row;
-  if (detail && typeof detail === "object" && sameAwb(detail, awb)) {
-    const detailHub = rowHubId(detail);
-    if (!detailHub || detailHub === hubId) return { search, detail, status: "verified", hubId };
-    return { search, status: "partial", hubId, error: "CSMS/OMS detail hub mismatch; using search/HMS data only" };
-  }
-  return { search, status: "partial", hubId, error: "CSMS/OMS detail AWB mismatch or missing" };
+function wibIsoDayStart(offsetDays: number) {
+  // WIB = UTC+7. Build an ISO-8601 timestamp with the +07:00 offset that the
+  // CSMS shipment search endpoint validates against.
+  const now = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + offsetDays));
+  const y = day.getUTCFullYear();
+  const m = String(day.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(day.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}T00:00:00+07:00`;
 }
 
-async function searchOms(token: string, awb: string, hubIds: string[], preferredHubId?: string): Promise<OmsHit> {
-  const ordered = Array.from(new Set([preferredHubId, ...hubIds].filter(Boolean) as string[]));
-  let lastError: string | undefined;
-  for (const hubId of ordered) {
-    try {
-      const hit = await queryOmsHub(token, awb, hubId);
-      if (hit.status !== "not_found" && hit.status !== "error") return hit;
-      if (hit.error) lastError = hit.error;
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-    }
+function csmsHubCode(row: unknown) {
+  const code = first(row, ["detail.current_hub.hub_code", "current_hub.hub_code", "hub_code"]);
+  return code === null ? null : String(code).toUpperCase();
+}
+
+// Verified CSMS/OMS UI contract (captured from the live OMS order-management page):
+//   GET /api/csms/shipment/v1/ui/shipment/search?page=1&limit=200&awb=<AWB>
+//        &created_at_gte=<ISO +07:00>&created_at_lte=<ISO +07:00>
+// Any extra query parameter (page_size, awb_number, keyword, query, hub_id,
+// facility_id) makes CSMS answer HTTP 400, which is exactly what broke the
+// previously working Datbuy lookups. Facility scoping is validated from the
+// response (current_hub.hub_code), not by injecting a hub filter into the query.
+async function queryOmsAcrossHubs(token: string, awb: string, hubIds: string[]): Promise<OmsHit> {
+  const url = new URL(`${process.env.HMS_BASE_URL}/api/csms/shipment/v1/ui/shipment/search`);
+  url.searchParams.set("page", "1");
+  url.searchParams.set("limit", "200");
+  url.searchParams.set("awb", awb);
+  url.searchParams.set("created_at_gte", wibIsoDayStart(-CSMS_LOOKBACK_DAYS));
+  url.searchParams.set("created_at_lte", wibIsoDayStart(1));
+
+  const { status, json } = await fetchJsonWithTimeout(url, token, CSMS_TIMEOUT_MS, true);
+  if (status === 401) return { status: "error", error: "CSMS/OMS token expired" };
+  if (status === 403) return { status: "error", error: "CSMS/OMS token is not allowed to read shipments" };
+  if (status === 400) return { status: "error", error: "CSMS/OMS rejected the shipment search query" };
+
+  const matches = extractRows(json).filter((row) => sameAwb(row, awb));
+  if (matches.length === 0) return { status: "not_found" };
+
+  const allowedCodes = new Set(hubIds.map((hubId) => HUB_FACILITY_CODES[hubId]).filter(Boolean) as string[]);
+  const scoped = matches.filter((row) => {
+    const code = csmsHubCode(row);
+    if (!code) return true; // facility not exposed on the search row: validate on detail
+    return allowedCodes.has(code);
+  });
+  if (scoped.length === 0) {
+    return { status: "not_found", error: "CSMS/OMS returned this AWB outside the Jatinegara/Duren Sawit facility scope" };
   }
-  return lastError ? { status: "error", error: lastError } : { status: "not_found" };
+
+  const search = scoped.sort((a, b) => numericTime(first(b, ["updated_at", "created_at", "shipment.updated_at"])) - numericTime(first(a, ["updated_at", "created_at", "shipment.updated_at"])))[0];
+  const id = first(search, ["id", "shipment_id", "shipmentId", "oms_shipment_id"]);
+  if (!id) return { search, status: "partial", error: "CSMS/OMS search row has no shipment id" };
+
+  // Verified detail route used by the OMS UI: /ui/shipment/<id> (the
+  // /ui/shipment/detail endpoint answers 401/400 for this session).
+  const detailUrl = new URL(`${process.env.HMS_BASE_URL}/api/csms/shipment/v1/ui/shipment/${id}`);
+  const detailRes = await fetchJsonWithTimeout(detailUrl, token, CSMS_TIMEOUT_MS, true);
+  if (detailRes.status === 401) return { search, status: "partial", error: "CSMS/OMS detail token expired" };
+  if (!detailRes.json) return { search, status: "partial", error: "CSMS/OMS detail returned no payload" };
+
+  const detail = (detailRes.json?.data?.shipment ?? detailRes.json?.data ?? detailRes.json) as Row;
+  if (!detail || typeof detail !== "object") return { search, status: "partial", error: "CSMS/OMS detail payload is not an object" };
+  if (!sameAwb(detail, awb)) return { search, status: "partial", error: "CSMS/OMS detail AWB mismatch" };
+
+  const code = csmsHubCode(detail);
+  if (code && !allowedCodes.has(code)) {
+    return { search, status: "not_found", error: "CSMS/OMS detail belongs to a facility outside Jatinegara/Duren Sawit" };
+  }
+  return { search, detail, status: "verified" };
 }
 
 async function mapLimit<T, R>(items: T[], limit: number, mapper: (item: T) => Promise<R>) {
@@ -403,7 +425,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const omsList = await mapLimit(awbs, 4, (awb) => searchOms(currentToken, awb, scope.hubIds, hmsHits.get(awb.toLowerCase())?.hubId));
+  const omsList = await mapLimit(awbs, 4, (awb) => queryOmsAcrossHubs(currentToken, awb, scope.hubIds));
   const omsHits = new Map<string, OmsHit>();
   awbs.forEach((awb, index) => omsHits.set(awb.toLowerCase(), omsList[index]));
 
