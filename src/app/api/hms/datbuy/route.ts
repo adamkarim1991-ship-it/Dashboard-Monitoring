@@ -43,6 +43,7 @@ type CacheEntry = { at: number; userId: string; tokenHash: string; scopeKey: str
 type HmsHit = { row: Row; leg: Leg; hubId: string };
 type OmsHit = { search?: Row; detail?: Row; status: "verified" | "partial" | "not_found" | "error"; hubId?: string; error?: string };
 type DatbuyScope = { requested: string; label: string; hubIds: string[]; scopeKey: string };
+type TokenChoice = { token: string; source: string };
 
 const cache = new Map<string, CacheEntry>();
 
@@ -159,11 +160,11 @@ async function fetchLeg(token: string, awbs: string[], leg: Leg, hubId: string) 
   return { status, rows: rows as Row[] };
 }
 
-async function fetchLegWithRefresh(token: string, userId: string, awbs: string[], leg: Leg, hubId: string) {
+async function fetchLegWithRefresh(token: string, userId: string | null, awbs: string[], leg: Leg, hubId: string) {
   let currentToken = token;
   let refreshed = false;
   let response = await fetchLeg(currentToken, awbs, leg, hubId);
-  if (response.status === 401) {
+  if (response.status === 401 && userId) {
     const newToken = await refreshStoredHmsToken(userId, currentToken);
     if (newToken?.token) {
       currentToken = newToken.token;
@@ -174,8 +175,7 @@ async function fetchLegWithRefresh(token: string, userId: string, awbs: string[]
   return { ...response, token: currentToken, refreshed };
 }
 
-
-async function resolveSharedHubToken(hubIds: string[]): Promise<{ token: string | null; source: string }> {
+async function resolveSharedHubTokens(hubIds: string[]): Promise<Record<string, TokenChoice>> {
   const queryIds = expandHubQueryIds(hubIds);
   const rows = await dbRead(
     () =>
@@ -188,17 +188,39 @@ async function resolveSharedHubToken(hubIds: string[]): Promise<{ token: string 
     "datbuy.sharedHubToken"
   );
 
+  const out: Record<string, TokenChoice> = {};
   for (const row of rows) {
     if (!row.hmsToken) continue;
     try {
       const probe = await fetchLeg(row.hmsToken, ["GTL_DUMMY_PROBE"], "last_mile", row.hmsHubId);
-      if (probe.status !== 401) return { token: row.hmsToken, source: `shared-hub:${row.hmsHubId}` };
+      if (probe.status !== 401) out[row.hmsHubId] = { token: row.hmsToken, source: `shared-hub:${row.hmsHubId}` };
     } catch {
-      // Network or upstream hiccup: keep trying the next stored shared token.
+      // Network or upstream hiccup: keep trying other stored shared tokens.
     }
   }
 
-  return { token: null, source: "shared-hub:none" };
+  return out;
+}
+
+function uniqueTokenChoices(choices: Array<TokenChoice | null | undefined>) {
+  const seen = new Set<string>();
+  const out: TokenChoice[] = [];
+  for (const choice of choices) {
+    if (!choice?.token) continue;
+    const key = `${choice.source}:${choice.token}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(choice);
+  }
+  return out;
+}
+
+function chooseHubToken(hubId: string, sharedTokens: Record<string, TokenChoice>, fallback: TokenChoice | null) {
+  return sharedTokens[hubId] ?? fallback;
+}
+
+function summarizeTokenSources(choices: TokenChoice[]) {
+  return choices.map((choice) => choice.source).join(", ");
 }
 
 function extractRows(json: any): Row[] {
@@ -311,6 +333,22 @@ async function mapLimit<T, R>(items: T[], limit: number, mapper: (item: T) => Pr
   }
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return out;
+}
+
+async function queryOmsAcrossTokens(tokens: TokenChoice[], awb: string, hubIds: string[]): Promise<OmsHit> {
+  const rank: Record<OmsHit["status"], number> = {
+    error: 0,
+    not_found: 1,
+    partial: 2,
+    verified: 3,
+  };
+  let best: OmsHit = { status: "error", error: "CSMS/OMS token is not available for this lookup" };
+  for (const choice of uniqueTokenChoices(tokens)) {
+    const hit = await queryOmsAcrossHubs(choice.token, awb, hubIds);
+    if (rank[hit.status] >= rank[best.status]) best = hit;
+    if (hit.status === "verified") return hit;
+  }
+  return best;
 }
 
 function sourceStatus(hms?: HmsHit, oms?: OmsHit) {
@@ -478,13 +516,14 @@ export async function POST(req: NextRequest) {
   const scope = resolveScope(requestedHubId, userHubIds);
   if ("error" in scope) return NextResponse.json({ error: scope.error }, { status: scope.status });
 
-  const userToken = await resolveHmsToken(req, session.user.id, session.user);
-  const sharedToken = scope.requested === "east" ? await resolveSharedHubToken(scope.hubIds) : { token: null, source: "shared-hub:skipped" };
-  const token = sharedToken.token ?? userToken.token;
-  const tokenSource = sharedToken.token ? sharedToken.source : userToken.source;
-  if (!token) return NextResponse.json({ error: "Token GTL/HMS belum tersedia. Datbuy membutuhkan token shared hub Jatinegara/Duren Sawit atau sync GTL Bridge." }, { status: 403 });
+  const resolvedUserToken = await resolveHmsToken(req, session.user.id, session.user);
+  let userTokenChoice: TokenChoice | null = resolvedUserToken.token ? { token: resolvedUserToken.token, source: resolvedUserToken.source } : null;
+  const sharedTokens = scope.requested === "east" ? await resolveSharedHubTokens(scope.hubIds) : {} as Record<string, TokenChoice>;
+  const queryHubIds = expandHubQueryIds(scope.hubIds);
+  const availableTokens = uniqueTokenChoices([...queryHubIds.map((hubId) => sharedTokens[hubId]), userTokenChoice]);
+  if (availableTokens.length === 0) return NextResponse.json({ error: "Token GTL/HMS belum tersedia. Datbuy membutuhkan token shared hub Jatinegara/Duren Sawit atau sync GTL Bridge." }, { status: 403 });
 
-  const keyTokenHash = tokenHash(token);
+  const keyTokenHash = tokenHash(availableTokens.map((choice) => choice.token).sort().join("|"));
   const cacheKey = JSON.stringify([session.user.id, keyTokenHash, scope.scopeKey, awbs.map((awb) => awb.toLowerCase()).sort()]);
   const cached = cache.get(cacheKey);
   if (cached && cached.userId === session.user.id && cached.tokenHash === keyTokenHash && cached.scopeKey === scope.scopeKey && Date.now() - cached.at < CACHE_TTL_MS) {
@@ -493,17 +532,23 @@ export async function POST(req: NextRequest) {
 
   const hmsHits = new Map<string, HmsHit>();
   const sourceErrors: string[] = [];
-  let currentToken = token;
   let refreshedAny = false;
 
-  const queryHubIds = expandHubQueryIds(scope.hubIds);
   const acceptedHubIds = allowedHubIds(scope.hubIds);
 
   for (const hubId of queryHubIds) {
     for (const leg of LEGS) {
+      const tokenChoice = chooseHubToken(hubId, sharedTokens, userTokenChoice);
+      if (!tokenChoice?.token) {
+        sourceErrors.push(`No HMS token available for hub ${hubId}`);
+        continue;
+      }
       try {
-        const response = await fetchLegWithRefresh(currentToken, session.user.id, awbs, leg, hubId);
-        currentToken = response.token;
+        const usingSharedToken = !!sharedTokens[hubId];
+        const response = await fetchLegWithRefresh(tokenChoice.token, usingSharedToken ? null : session.user.id, awbs, leg, hubId);
+        if (!usingSharedToken && response.token !== tokenChoice.token) {
+          userTokenChoice = { token: response.token, source: `${tokenChoice.source}:refreshed` };
+        }
         refreshedAny = refreshedAny || response.refreshed;
         if (response.status === 401) throw new Error(`HMS ${leg} token expired for hub ${hubId}`);
         for (const row of response.rows) {
@@ -521,7 +566,15 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const omsList = await mapLimit(awbs, 4, (awb) => queryOmsAcrossHubs(currentToken, awb, scope.hubIds));
+  const omsList = await mapLimit(awbs, 4, (awb) => {
+    const hmsHit = hmsHits.get(awb.toLowerCase());
+    const tokenChoices = uniqueTokenChoices([
+      hmsHit ? chooseHubToken(hmsHit.hubId, sharedTokens, userTokenChoice) : null,
+      ...queryHubIds.map((hubId) => chooseHubToken(hubId, sharedTokens, userTokenChoice)),
+      userTokenChoice,
+    ]);
+    return queryOmsAcrossTokens(tokenChoices, awb, scope.hubIds);
+  });
   const omsHits = new Map<string, OmsHit>();
   awbs.forEach((awb, index) => omsHits.set(awb.toLowerCase(), omsList[index]));
 
@@ -537,7 +590,7 @@ export async function POST(req: NextRequest) {
       scope: scope.label,
       requestedScope: scope.requested,
       hubIds: scope.hubIds,
-      tokenSource,
+      tokenSource: summarizeTokenSources(availableTokens),
       sourceErrors,
       refreshed: refreshedAny,
     },
