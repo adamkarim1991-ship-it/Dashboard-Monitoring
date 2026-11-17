@@ -334,8 +334,10 @@ async function getUserHubIds(userId: string, sessionUser: any): Promise<string[]
 function resolveScope(requested: string, userHubIds: string[]): DatbuyScope | { error: string; status: number } {
   const normalized = requested.trim().toLowerCase();
   if (normalized === "east") {
-    const hubIds = EAST_HUB_IDS.filter((hubId) => userHubIds.includes(hubId));
-    if (hubIds.length === 0) return { status: 403, error: "Akun ini belum punya akses ke Datbuy Jatinegara/Duren Sawit. Tambahkan akses UserHub untuk GTL Jatinegara atau GTL Duren Sawit terlebih dahulu." };
+    // Temporary rollback-safe rollout: East Datbuy is deliberately constrained to
+    // the two hubs that were already working for the operator account.  Do not
+    // fan out to the full East cluster until SPV shared-team coverage is verified.
+    const hubIds = EAST_HUB_IDS;
     return { requested: "east", label: "Jatinegara + Duren Sawit coverage", hubIds, scopeKey: `jtn-dsw:${hubIds.join(",")}` };
   }
   if (normalized === "all") {
