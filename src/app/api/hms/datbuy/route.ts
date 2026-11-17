@@ -16,7 +16,7 @@ const REQUEST_TIMEOUT_MS = 55 * 1000;
 const CSMS_TIMEOUT_MS = 12 * 1000;
 const LEGS = ["last_mile", "first_mile"] as const;
 const DEFAULT_HUB_ID = "460450593288";
-const EAST_HUB_IDS = ["294", "272", "460450593288", "303", "460450593308", "460450593295", "275", "460450593312", "302"];
+const EAST_HUB_IDS = ["460450593288", "272"];
 
 type Leg = (typeof LEGS)[number];
 type Row = Record<string, unknown>;
@@ -335,8 +335,8 @@ function resolveScope(requested: string, userHubIds: string[]): DatbuyScope | { 
   const normalized = requested.trim().toLowerCase();
   if (normalized === "east") {
     const hubIds = EAST_HUB_IDS.filter((hubId) => userHubIds.includes(hubId));
-    if (hubIds.length === 0) return { status: 403, error: "Akun ini belum punya akses ke hub East coverage. Tambahkan akses UserHub untuk coverage SPV Afif terlebih dahulu." };
-    return { requested: "east", label: "SPV East coverage", hubIds, scopeKey: `east:${hubIds.join(",")}` };
+    if (hubIds.length === 0) return { status: 403, error: "Akun ini belum punya akses ke Datbuy Jatinegara/Duren Sawit. Tambahkan akses UserHub untuk GTL Jatinegara atau GTL Duren Sawit terlebih dahulu." };
+    return { requested: "east", label: "Jatinegara + Duren Sawit coverage", hubIds, scopeKey: `jtn-dsw:${hubIds.join(",")}` };
   }
   if (normalized === "all") {
     if (userHubIds.length === 0) return { status: 403, error: "Akun ini belum punya akses hub untuk Datbuy." };
@@ -413,7 +413,7 @@ export async function POST(req: NextRequest) {
     results,
     meta: {
       sources: ["HMS/TMS shipments", "CSMS/OMS shipment search/detail"],
-      note: "Datbuy uses only the hubs assigned to this login. East coverage is resolved server-side from the account hub assignments and never as an unfiltered tenant-wide lookup.",
+      note: "Datbuy uses only GTL Jatinegara and GTL Duren Sawit when East coverage is requested for the temporary rollout. The final East-wide SPV coverage remains disabled until its official shared-team credential scope is verified.",
       scope: scope.label,
       requestedScope: scope.requested,
       hubIds: scope.hubIds,
