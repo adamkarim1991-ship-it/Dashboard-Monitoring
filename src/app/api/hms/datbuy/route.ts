@@ -174,6 +174,33 @@ async function fetchLegWithRefresh(token: string, userId: string, awbs: string[]
   return { ...response, token: currentToken, refreshed };
 }
 
+
+async function resolveSharedHubToken(hubIds: string[]): Promise<{ token: string | null; source: string }> {
+  const queryIds = expandHubQueryIds(hubIds);
+  const rows = await dbRead(
+    () =>
+      prisma.hub.findMany({
+        where: { hmsHubId: { in: queryIds }, hmsToken: { not: null } },
+        select: { hmsHubId: true, hmsToken: true, hmsTokenExpiresAt: true, hmsTokenUpdatedAt: true },
+        orderBy: [{ hmsTokenExpiresAt: "desc" }, { hmsTokenUpdatedAt: "desc" }],
+      }),
+    [] as Array<{ hmsHubId: string; hmsToken: string | null; hmsTokenExpiresAt: Date | null; hmsTokenUpdatedAt: Date | null }>,
+    "datbuy.sharedHubToken"
+  );
+
+  for (const row of rows) {
+    if (!row.hmsToken) continue;
+    try {
+      const probe = await fetchLeg(row.hmsToken, ["GTL_DUMMY_PROBE"], "last_mile", row.hmsHubId);
+      if (probe.status !== 401) return { token: row.hmsToken, source: `shared-hub:${row.hmsHubId}` };
+    } catch {
+      // Network or upstream hiccup: keep trying the next stored shared token.
+    }
+  }
+
+  return { token: null, source: "shared-hub:none" };
+}
+
 function extractRows(json: any): Row[] {
   const candidates = [json?.data?.list, json?.data?.rows, json?.data?.shipments, json?.data?.items, json?.list, json?.rows, json?.shipments, json?.items, json?.data];
   for (const value of candidates) if (Array.isArray(value)) return value as Row[];
@@ -403,8 +430,11 @@ export async function POST(req: NextRequest) {
   const scope = resolveScope(requestedHubId, userHubIds);
   if ("error" in scope) return NextResponse.json({ error: scope.error }, { status: scope.status });
 
-  const { token, source: tokenSource } = await resolveHmsToken(req, session.user.id, session.user);
-  if (!token) return NextResponse.json({ error: "Token GTL/HMS belum tersedia. Buka HMS atau sync GTL Bridge dulu." }, { status: 403 });
+  const userToken = await resolveHmsToken(req, session.user.id, session.user);
+  const sharedToken = scope.requested === "east" ? await resolveSharedHubToken(scope.hubIds) : { token: null, source: "shared-hub:skipped" };
+  const token = sharedToken.token ?? userToken.token;
+  const tokenSource = sharedToken.token ? sharedToken.source : userToken.source;
+  if (!token) return NextResponse.json({ error: "Token GTL/HMS belum tersedia. Datbuy membutuhkan token shared hub Jatinegara/Duren Sawit atau sync GTL Bridge." }, { status: 403 });
 
   const keyTokenHash = tokenHash(token);
   const cacheKey = JSON.stringify([session.user.id, keyTokenHash, scope.scopeKey, awbs.map((awb) => awb.toLowerCase()).sort()]);
