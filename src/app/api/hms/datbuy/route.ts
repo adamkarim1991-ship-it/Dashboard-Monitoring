@@ -179,8 +179,10 @@ async function searchOms(token: string, awb: string, hubId: string): Promise<Oms
     url.searchParams.set("awb_number", awb);
     url.searchParams.set("keyword", awb);
     url.searchParams.set("query", awb);
-    url.searchParams.set("hub_id", hubId);
-    url.searchParams.set("facility_id", hubId);
+    if (hubId) {
+      url.searchParams.set("hub_id", hubId);
+      url.searchParams.set("facility_id", hubId);
+    }
 
     const { status, json } = await fetchJsonWithTimeout(url, token, CSMS_TIMEOUT_MS, true);
     if (status === 401) return { status: "error", error: "CSMS/OMS token expired" };
@@ -275,14 +277,15 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json().catch(() => ({}));
   const awbs = normalizeAwbs(body.awbs ?? body.query);
-  const requestedHubId = String(body.hubId || "460450593288");
+  const requestedHubId = String(body.hubId ?? "460450593288");
+  const scopedHubId = requestedHubId === "all" ? "" : requestedHubId;
   if (awbs.length === 0) return NextResponse.json({ error: "Masukkan minimal satu nomor resi." }, { status: 400 });
   if (awbs.length > MAX_AWBS) return NextResponse.json({ error: `Maksimal ${MAX_AWBS} resi per pencarian.` }, { status: 400 });
   if (awbs.some((awb) => awb.length > 80 || !/^[A-Z0-9_-]+$/.test(awb))) {
     return NextResponse.json({ error: "Format resi tidak valid. Gunakan huruf, angka, underscore, atau minus." }, { status: 400 });
   }
 
-  const cacheKey = `${requestedHubId}:${awbs.map((awb) => awb.toLowerCase()).sort().join("|")}`;
+  const cacheKey = `${requestedHubId || "all"}:${awbs.map((awb) => awb.toLowerCase()).sort().join("|")}`;
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return NextResponse.json({ ...cached.data, meta: { ...cached.data.meta, cached: true } });
 
@@ -296,7 +299,7 @@ export async function POST(req: NextRequest) {
 
   for (const leg of LEGS) {
     try {
-      const response = await fetchLegWithRefresh(currentToken, session.user.id, awbs, leg, requestedHubId);
+      const response = await fetchLegWithRefresh(currentToken, session.user.id, awbs, leg, scopedHubId);
       currentToken = response.token;
       refreshedAny = refreshedAny || response.refreshed;
       if (response.status === 401) throw new Error(`HMS ${leg} token expired`);
@@ -312,7 +315,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const omsList = await mapLimit(awbs, 5, (awb) => searchOms(currentToken, awb, requestedHubId));
+  const omsList = await mapLimit(awbs, 5, (awb) => searchOms(currentToken, awb, scopedHubId));
   const omsHits = new Map<string, OmsHit>();
   awbs.forEach((awb, index) => omsHits.set(awb.toLowerCase(), omsList[index]));
 

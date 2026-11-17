@@ -87,7 +87,7 @@ function buildWhatsAppLink(row: DatbuyResult) {
   return `https://web.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(message)}`;
 }
 
-export default function DatbuyTab({ hubId: _hubId }: { hubId?: string }) {
+export default function DatbuyTab({ hubId: _hubId, scopeLabel = "OCC hub" }: { hubId?: string; scopeLabel?: string }) {
   const [input, setInput] = useState("");
   const [data, setData] = useState<DatbuyResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -153,7 +153,7 @@ export default function DatbuyTab({ hubId: _hubId }: { hubId?: string }) {
         <p className="text-[10px] font-bold tracking-widest text-blue-300 uppercase">Datbuy</p>
         <h2 className="text-xl font-bold text-white">Buyer / receiver lookup</h2>
         <p className="text-xs text-gray-400 mt-1">
-          Lookup manual berdasarkan AWB/resi via HMS/TMS live. Maksimal {MAX_AWBS} resi, pisahkan dengan koma atau baris baru.
+          Lookup manual berdasarkan AWB/resi via HMS/TMS + CSMS/OMS live untuk {scopeLabel}. Maksimal {MAX_AWBS} resi, pisahkan dengan koma atau baris baru.
           CSMS/OMS belum terhubung, jadi field seller/product/buyer hanya tampil bila memang dikembalikan upstream; data kosong tidak ditebak.
         </p>
       </div>
