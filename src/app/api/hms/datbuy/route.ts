@@ -2,7 +2,7 @@ import { auth } from "@/lib/auth";
 import { dbRead } from "@/lib/db-safe";
 import { resolveHmsToken } from "@/lib/hms-context";
 import { buildHmsHeaders } from "@/lib/hms-headers";
-import { refreshStoredHmsToken } from "@/lib/hms-token-refresh";
+import { refreshStoredHmsToken, refreshStoredHubToken } from "@/lib/hms-token-refresh";
 import { prisma } from "@/lib/prisma";
 import { createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
@@ -43,7 +43,7 @@ type CacheEntry = { at: number; userId: string; tokenHash: string; scopeKey: str
 type HmsHit = { row: Row; leg: Leg; hubId: string };
 type OmsHit = { search?: Row; detail?: Row; status: "verified" | "partial" | "not_found" | "error"; hubId?: string; error?: string };
 type DatbuyScope = { requested: string; label: string; hubIds: string[]; scopeKey: string };
-type TokenChoice = { token: string; source: string };
+type TokenChoice = { token: string; source: string; kind: "user" | "hub"; hubId?: string };
 
 const cache = new Map<string, CacheEntry>();
 
@@ -181,7 +181,7 @@ async function resolveSharedHubTokens(hubIds: string[]): Promise<Record<string, 
     () =>
       prisma.hub.findMany({
         where: { hmsHubId: { in: queryIds }, hmsToken: { not: null } },
-        select: { hmsHubId: true, hmsToken: true, hmsTokenExpiresAt: true, hmsTokenUpdatedAt: true },
+        select: { hmsHubId: true, hmsToken: true, hmsRefreshToken: true, hmsTokenExpiresAt: true, hmsTokenUpdatedAt: true },
         orderBy: [{ hmsTokenExpiresAt: "desc" }, { hmsTokenUpdatedAt: "desc" }],
       }),
     [] as Array<{ hmsHubId: string; hmsToken: string | null; hmsTokenExpiresAt: Date | null; hmsTokenUpdatedAt: Date | null }>,
@@ -193,7 +193,7 @@ async function resolveSharedHubTokens(hubIds: string[]): Promise<Record<string, 
     if (!row.hmsToken) continue;
     try {
       const probe = await fetchLeg(row.hmsToken, ["GTL_DUMMY_PROBE"], "last_mile", row.hmsHubId);
-      if (probe.status !== 401) out[row.hmsHubId] = { token: row.hmsToken, source: `shared-hub:${row.hmsHubId}` };
+      if (probe.status !== 401) out[row.hmsHubId] = { token: row.hmsToken, source: `shared-hub:${row.hmsHubId}`, kind: "hub", hubId: row.hmsHubId };
     } catch {
       // Network or upstream hiccup: keep trying other stored shared tokens.
     }
@@ -566,7 +566,7 @@ export async function POST(req: NextRequest) {
   if ("error" in scope) return NextResponse.json({ error: scope.error }, { status: scope.status });
 
   const resolvedUserToken = await resolveHmsToken(req, session.user.id, session.user);
-  let userTokenChoice: TokenChoice | null = resolvedUserToken.token ? { token: resolvedUserToken.token, source: resolvedUserToken.source } : null;
+  let userTokenChoice: TokenChoice | null = resolvedUserToken.token ? { token: resolvedUserToken.token, source: resolvedUserToken.source, kind: "user" } : null;
   const sharedTokens = scope.requested === "east" ? await resolveSharedHubTokens(scope.hubIds) : {} as Record<string, TokenChoice>;
   const queryHubIds = expandHubQueryIds(scope.hubIds);
   const availableTokens = uniqueTokenChoices([...queryHubIds.map((hubId) => sharedTokens[hubId]), userTokenChoice]);
@@ -596,10 +596,31 @@ export async function POST(req: NextRequest) {
         const usingSharedToken = !!sharedTokens[hubId];
         const response = await fetchLegWithRefresh(tokenChoice.token, usingSharedToken ? null : session.user.id, awbs, leg, hubId);
         if (!usingSharedToken && response.token !== tokenChoice.token) {
-          userTokenChoice = { token: response.token, source: `${tokenChoice.source}:refreshed` };
+          userTokenChoice = { token: response.token, source: `${tokenChoice.source}:refreshed`, kind: "user" };
         }
         refreshedAny = refreshedAny || response.refreshed;
-        if (response.status === 401) throw new Error(`HMS ${leg} token expired for hub ${hubId}`);
+        if (response.status === 401) {
+          if (usingSharedToken) {
+            const refreshed = await refreshStoredHubToken(hubId, tokenChoice.token);
+            if (refreshed?.token) {
+              const retry = await fetchLeg(refreshed.token, awbs, leg, hubId);
+              if (retry.status !== 401) {
+                sharedTokens[hubId] = { token: refreshed.token, source: `shared-hub:${hubId}:refreshed`, kind: "hub", hubId };
+                for (const row of retry.rows) {
+                  const actualAwb = rowAwb(row);
+                  const requested = awbs.find((awb) => normalizeAwb(awb) === actualAwb);
+                  if (!requested) continue;
+                  const foundHub = rowHubId(row);
+                  if (foundHub && !acceptedHubIds.has(foundHub)) continue;
+                  const k = requested.toLowerCase();
+                  hmsHits.set(k, { row: pickPreferred(hmsHits.get(k)?.row, row), leg, hubId: foundHub || hubId });
+                }
+                continue;
+              }
+            }
+          }
+          throw new Error(`HMS ${leg} token expired for hub ${hubId}`);
+        }
         for (const row of response.rows) {
           const actualAwb = rowAwb(row);
           const requested = awbs.find((awb) => normalizeAwb(awb) === actualAwb);
@@ -652,7 +673,7 @@ export async function POST(req: NextRequest) {
           );
 
           if (!usingSharedToken && response.token !== tokenChoice.token) {
-            userTokenChoice = { token: response.token, source: `${tokenChoice.source}:refreshed` };
+            userTokenChoice = { token: response.token, source: `${tokenChoice.source}:refreshed`, kind: "user" };
           }
           refreshedAny = refreshedAny || response.refreshed;
           if (response.status === 401) continue;
