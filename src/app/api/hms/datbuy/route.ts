@@ -578,6 +578,55 @@ export async function POST(req: NextRequest) {
   const omsHits = new Map<string, OmsHit>();
   awbs.forEach((awb, index) => omsHits.set(awb.toLowerCase(), omsList[index]));
 
+  // Best-effort enrichment: if some AWBs still miss key receiver fields (phone/name),
+  // re-query HMS/TMS per-AWB to avoid bulk-response truncation/incomplete rows.
+  await mapLimit(awbs, 2, async (awb) => {
+    const key = awb.toLowerCase();
+    const current = mapResult(awb, hmsHits.get(key), omsHits.get(key));
+    const receiver = current.receiver || {};
+    const missingPhone = !receiver.phone || String(receiver.phone).trim() === "-";
+    const missingName = !receiver.name || String(receiver.name).trim() === "-";
+    if (!missingPhone && !missingName) return;
+
+    for (const hubId of queryHubIds) {
+      for (const leg of LEGS) {
+        const tokenChoice = chooseHubToken(hubId, sharedTokens, userTokenChoice);
+        if (!tokenChoice?.token) continue;
+        try {
+          const usingSharedToken = !!sharedTokens[hubId];
+          const response = await fetchLegWithRefresh(
+            tokenChoice.token,
+            usingSharedToken ? null : session.user.id,
+            [awb],
+            leg,
+            hubId
+          );
+
+          if (!usingSharedToken && response.token !== tokenChoice.token) {
+            userTokenChoice = { token: response.token, source: `${tokenChoice.source}:refreshed` };
+          }
+          refreshedAny = refreshedAny || response.refreshed;
+          if (response.status === 401) continue;
+
+          for (const row of response.rows) {
+            if (rowAwb(row) !== normalizeAwb(awb)) continue;
+            const foundHub = rowHubId(row);
+            if (foundHub && !acceptedHubIds.has(foundHub)) continue;
+            hmsHits.set(key, { row: pickPreferred(hmsHits.get(key)?.row, row), leg, hubId: foundHub || hubId });
+          }
+
+          const after = mapResult(awb, hmsHits.get(key), omsHits.get(key));
+          const afterReceiver = after.receiver || {};
+          const afterMissingPhone = !afterReceiver.phone || String(afterReceiver.phone).trim() === "-";
+          const afterMissingName = !afterReceiver.name || String(afterReceiver.name).trim() === "-";
+          if (!afterMissingPhone && !afterMissingName) return;
+        } catch (error) {
+          sourceErrors.push(error instanceof Error ? error.message : String(error));
+        }
+      }
+    }
+  });
+
   const results = awbs.map((awb) => mapResult(awb, hmsHits.get(awb.toLowerCase()), omsHits.get(awb.toLowerCase())));
   const data: CachedResponse = {
     success: true,
