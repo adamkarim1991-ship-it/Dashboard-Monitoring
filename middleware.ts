@@ -50,9 +50,10 @@ export async function middleware(req: NextRequest) {
   return NextResponse.next();
 }
 
+
 export const config = {
   matcher: [
-    // Match all paths except static assets and public files
-    "/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)",
+    "/datbuy/:path*",
+    "/api/hms/datbuy",
   ],
 };
