@@ -459,10 +459,59 @@ function mapResult(awb: string, hms?: HmsHit, oms?: OmsHit): DatbuyResult {
       platform: first(detail, ["company_partner_name"]) ?? first(search, ["detail.company_partner_name"]),
       codPrice: cod,
       packagePrice: numericCod(first(detail, ["detail.product_price", "detail.package_price", "detail.item_price", "detail.price", "detail.original_price", "detail.goods_price", "detail.goods_value", "detail.item_value", "detail.product_value", "detail.order_amount", "detail.total_price", "detail.total_amount", "detail.amount", "product_price", "package_price", "item_price", "price", "original_price", "goods_price", "goods_value", "item_value", "product_value", "order_amount", "total_price", "total_amount", "amount"])),
-      productName: first(detail, ["detail.product_name", "product_name"]),
-      productLink: safeUrl(first(detail, ["detail.product_url", "product_url"])),
+      productName: first(detail, ["detail.product_name", "product_name"]) ?? (extractOmsItems(detail)[0] ? String(first(extractOmsItems(detail)[0], ["product_name","name","title","item_name"]) || "") || null : null),
+      productLink: safeUrl(first(detail, ["detail.product_url", "product_url"])) ?? (extractOmsItems(detail)[0] ? safeUrl(first(extractOmsItems(detail)[0], ["product_url","url","link"])) : null),
+      items: extractOmsItems(detail).slice(0, 50).map((it) => mapOmsItem(it as Row)),
       trackingLink: safeUrl(first(h, ["destination_details.live_tracking_url"]) ?? first(detail, ["live_tracking_url"])),
     },
+  };
+}
+
+
+function extractOmsItems(detail: any): Row[] {
+  const candidates = [
+    detail?.detail?.items,
+    detail?.detail?.order_items,
+    detail?.detail?.item_list,
+    detail?.detail?.products,
+    detail?.items,
+    detail?.order_items,
+    detail?.item_list,
+    detail?.products,
+    detail?.data?.items,
+    detail?.data?.order_items,
+  ];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate) && candidate.length) return candidate as Row[];
+  }
+  return [];
+}
+
+function mapOmsItem(item: Row) {
+  const name = first(item, [
+    "product_name",
+    "name",
+    "title",
+    "item_name",
+    "sku_name",
+  ]);
+  const qtyRaw = first(item, ["quantity", "qty", "count", "amount"]);
+  const qty = qtyRaw === null ? null : Number(qtyRaw);
+  const url = safeUrl(first(item, ["product_url", "url", "link", "productLink"]));
+  const price = numericCod(first(item, [
+    "product_price",
+    "price",
+    "item_price",
+    "unit_price",
+    "original_price",
+  ]));
+  const sku = first(item, ["sku_id", "sku", "sku_code", "seller_sku"]);
+  return {
+    name: name ?? null,
+    qty: Number.isFinite(qty) ? qty : null,
+    price,
+    sku: sku ?? null,
+    url,
   };
 }
 

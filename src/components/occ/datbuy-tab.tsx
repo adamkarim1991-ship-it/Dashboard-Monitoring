@@ -98,6 +98,23 @@ function shareText(rows: DatbuyResult[]) {
   return rows.map(shareBlock).join("\n\n");
 }
 
+
+function itemsSummary(row: DatbuyResult) {
+  const items = Array.isArray((row.order as any)?.items) ? ((row.order as any).items as any[]) : [];
+  if (!items.length) return null;
+  const parts: string[] = [];
+  for (const item of items.slice(0, 6)) {
+    const name = String(item?.name || "").trim();
+    if (!name) continue;
+    const qty = Number(item?.qty);
+    const prefix = Number.isFinite(qty) && qty > 0 ? `${qty}x ` : "";
+    parts.push(prefix + name);
+  }
+  if (!parts.length) return null;
+  const suffix = items.length > 6 ? ` +${items.length - 6} more` : "";
+  return `Items: ${parts.join(" | ")}${suffix}`;
+}
+
 function buildWhatsAppLink(row: DatbuyResult) {
   const phone = phoneForWhatsApp(row.receiver?.phone);
   if (!phone) return null;
