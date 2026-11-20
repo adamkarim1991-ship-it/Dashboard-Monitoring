@@ -133,9 +133,23 @@ function sameAwb(row: unknown, awb: string) {
 
 function pickPreferred(current: Row | undefined, next: Row) {
   if (!current) return next;
+
+  // Prefer rows with richer destination details (phone/name/address) so we don't
+  // overwrite complete data with a newer-but-sparser row.
+  const currentPhone = first(current, ["destination_details.destination_phone", "destination_details.phone", "destination_details.phone_number"]);
+  const nextPhone = first(next, ["destination_details.destination_phone", "destination_details.phone", "destination_details.phone_number"]);
+  if (nextPhone && !currentPhone) return next;
+  if (currentPhone && !nextPhone) return current;
+
+  const currentName = first(current, ["destination_details.destination_name"]);
+  const nextName = first(next, ["destination_details.destination_name"]);
+  if (nextName && !currentName) return next;
+  if (currentName && !nextName) return current;
+
   const currentDelivered = String(first(current, ["status"]) || "").toLowerCase() === "delivered";
   const nextDelivered = String(first(next, ["status"]) || "").toLowerCase() === "delivered";
   if (nextDelivered && !currentDelivered) return next;
+
   const currentTime = Math.max(numericTime(first(current, ["updated_at", "delivered_time", "created_at"])));
   const nextTime = Math.max(numericTime(first(next, ["updated_at", "delivered_time", "created_at"])));
   return nextTime >= currentTime ? next : current;
