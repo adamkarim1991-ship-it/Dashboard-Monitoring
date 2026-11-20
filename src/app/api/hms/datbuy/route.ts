@@ -599,11 +599,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Format resi tidak valid. Gunakan huruf, angka, underscore, atau minus." }, { status: 400 });
   }
 
-  const userHubIds = await getUserHubIds(session.user.id, session.user);
+  const userHubIds = await getUserHubIds((session?.user?.id || "public"), session.user);
   const scope = resolveScope(requestedHubId, userHubIds);
+  // no-session guard: Datbuy server-mode supports only East coverage.
+  if (!session?.user?.id && String(requestedHubId).toLowerCase() !== "east") {
+    return NextResponse.json({ error: "Forbidden", message: "Datbuy server-mode supports only East coverage." }, { status: 403 });
+  }
   if ("error" in scope) return NextResponse.json({ error: scope.error }, { status: scope.status });
 
-  const resolvedUserToken = await resolveHmsToken(req, session.user.id, session.user);
+  const resolvedUserToken = await resolveHmsToken(req, (session?.user?.id || "public"), session.user);
   let userTokenChoice: TokenChoice | null = resolvedUserToken.token ? { token: resolvedUserToken.token, source: resolvedUserToken.source, kind: "user" } : null;
   const sharedTokens = scope.requested === "east" ? await resolveSharedHubTokens(scope.hubIds) : {} as Record<string, TokenChoice>;
   const queryHubIds = expandHubQueryIds(scope.hubIds);
@@ -611,9 +615,9 @@ export async function POST(req: NextRequest) {
   if (availableTokens.length === 0) return NextResponse.json({ error: "Token GTL/HMS belum tersedia. Datbuy membutuhkan token shared hub Jatinegara/Duren Sawit atau sync GTL Bridge." }, { status: 403 });
 
   const keyTokenHash = tokenHash(availableTokens.map((choice) => choice.token).sort().join("|"));
-  const cacheKey = JSON.stringify([session.user.id, keyTokenHash, scope.scopeKey, awbs.map((awb) => awb.toLowerCase()).sort()]);
+  const cacheKey = JSON.stringify([(session?.user?.id || "public"), keyTokenHash, scope.scopeKey, awbs.map((awb) => awb.toLowerCase()).sort()]);
   const cached = cache.get(cacheKey);
-  if (cached && cached.userId === session.user.id && cached.tokenHash === keyTokenHash && cached.scopeKey === scope.scopeKey && Date.now() - cached.at < CACHE_TTL_MS) {
+  if (cached && cached.userId === (session?.user?.id || "public") && cached.tokenHash === keyTokenHash && cached.scopeKey === scope.scopeKey && Date.now() - cached.at < CACHE_TTL_MS) {
     return NextResponse.json({ ...cached.data, meta: { ...cached.data.meta, cached: true } });
   }
 
@@ -639,7 +643,7 @@ export async function POST(req: NextRequest) {
       }
       try {
         const usingSharedToken = !!sharedTokens[hubId];
-        const response = await fetchLegWithRefresh(tokenChoice.token, usingSharedToken ? null : session.user.id, awbs, leg, hubId);
+        const response = await fetchLegWithRefresh(tokenChoice.token, usingSharedToken ? null : (session?.user?.id || "public"), awbs, leg, hubId);
         if (!usingSharedToken && response.token !== tokenChoice.token) {
           userTokenChoice = { token: response.token, source: `${tokenChoice.source}:refreshed`, kind: "user" };
         }
@@ -711,7 +715,7 @@ export async function POST(req: NextRequest) {
           const usingSharedToken = !!sharedTokens[hubId];
           const response = await fetchLegWithRefresh(
             tokenChoice.token,
-            usingSharedToken ? null : session.user.id,
+            usingSharedToken ? null : (session?.user?.id || "public"),
             [awb],
             leg,
             hubId
@@ -759,6 +763,6 @@ export async function POST(req: NextRequest) {
       refreshed: refreshedAny,
     },
   };
-  cache.set(cacheKey, { at: Date.now(), userId: session.user.id, tokenHash: keyTokenHash, scopeKey: scope.scopeKey, data });
+  cache.set(cacheKey, { at: Date.now(), userId: (session?.user?.id || "public"), tokenHash: keyTokenHash, scopeKey: scope.scopeKey, data });
   return NextResponse.json(data);
 }
