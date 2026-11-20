@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+﻿import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 // Datbuy-only access gate (no dashboard login required).
@@ -20,20 +20,28 @@ function hasValidKey(req: NextRequest) {
 }
 
 export async function middleware(req: NextRequest) {
-  // If user passes key in query/header, persist it into a cookie for convenience.
   const url = req.nextUrl;
 
+  // IMPORTANT: do not gate the access page itself, or we create a redirect loop.
+  if (url.pathname === "/datbuy/access") {
+    return NextResponse.next();
+  }
+
+  // If user passes key in query/header, persist it into a cookie for convenience.
   if (hasValidKey(req)) {
-    const res = NextResponse.next();
-    // Persist only if query/header provided (cookie might already exist).
+    // Persist only if query provided (cookie might already exist).
     const q = url.searchParams.get("key");
     if (q && q === ACCESS_KEY) {
       // remove key from url to avoid leaking via screenshots/shared links
-      url.searchParams.delete("key");
-      res.headers.set("Location", url.toString());
+      const cleanUrl = url.clone();
+      cleanUrl.searchParams.delete("key");
+
+      const res = NextResponse.redirect(cleanUrl);
       res.cookies.set(COOKIE_NAME, ACCESS_KEY, { httpOnly: true, sameSite: "lax", secure: true, path: "/" });
       return res;
     }
+
+    const res = NextResponse.next();
     // If header matches, also set cookie
     if (req.headers.get("x-datbuy-key") === ACCESS_KEY) {
       res.cookies.set(COOKIE_NAME, ACCESS_KEY, { httpOnly: true, sameSite: "lax", secure: true, path: "/" });
