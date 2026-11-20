@@ -16,7 +16,21 @@ const REQUEST_TIMEOUT_MS = 55 * 1000;
 const CSMS_TIMEOUT_MS = 12 * 1000;
 const LEGS = ["last_mile", "first_mile"] as const;
 const DEFAULT_HUB_ID = "460450593288";
-const EAST_HUB_IDS = ["460450593288", "272"];
+const EAST_HUB_IDS = ["294", "272", "460450593288", "303", "460450593308", "460450593295", "275", "460450593312", "302"];
+
+// Query aliases per hub (tms_hub_id -> [tms_hub_id, internal id]) captured from SPV HMS /tms/api/lms/v1/users/hub
+const HUB_QUERY_ALIASES: Record<string, string[]> = {
+  "294": ["294", "250587130116"], // Ciracas (tms_hub_id + facility_id)
+  "272": ["272", "207"], // Duren Sawit
+  "460450593288": ["460450593288", "250625739524"], // Jatinegara
+  "303": ["303", "250940978948"], // Kramatjati
+  "460450593308": ["460450593308", "253287110660"], // Matraman
+  "460450593295": ["460450593295", "252806427652"], // Pasar Rebo
+  "275": ["275", "210"], // Pulogadung
+  "460450593312": ["460450593312", "253287112452"], // Senen
+  "302": ["302", "250023243524"], // Tanahabang
+};
+
 
 type Leg = (typeof LEGS)[number];
 type Row = Record<string, unknown>;
@@ -231,15 +245,25 @@ function extractRows(json: any): Row[] {
 
 const HUB_FACILITY_CODES: Record<string, string> = {
   "460450593288": "GTLJTN",
+  "250625739524": "GTLJTN",
   "272": "GTLDSW",
   "207": "GTLDSW",
+  "275": "GTLPGN",
+  "210": "GTLPGN",
+  "294": "GTLCRC",
+  "250587130116": "GTLCRC",
+  "303": "GTLKJT",
+  "250940978948": "GTLKJT",
+  "460450593308": "GTLMTR",
+  "253287110660": "GTLMTR",
+  "460450593295": "GTLPSB",
+  "252806427652": "GTLPSB",
+  "460450593312": "GTLSEN",
+  "253287112452": "GTLSEN",
+  "302": "GTLTNA",
+  "250023243524": "GTLTNA",
 };
 
-const HUB_QUERY_ALIASES: Record<string, string[]> = {
-  // HMS exposes Duren Sawit as internal hub id 207 in some endpoints and TMS hub
-  // id 272 in other payloads. Query both but keep the external scope as DSW only.
-  "272": ["272", "207"],
-};
 
 function expandHubQueryIds(hubIds: string[]) {
   return Array.from(new Set(hubIds.flatMap((hubId) => HUB_QUERY_ALIASES[hubId] ?? [hubId])));
