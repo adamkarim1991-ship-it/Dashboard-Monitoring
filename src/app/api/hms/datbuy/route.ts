@@ -623,8 +623,15 @@ export async function POST(req: NextRequest) {
 
   const acceptedHubIds = allowedHubIds(scope.hubIds);
 
-  for (const hubId of queryHubIds) {
-    for (const leg of LEGS) {
+  // Two-pass HMS scan to reduce latency:
+  // 1) query last_mile across hubs
+  // 2) only if still missing, query first_mile across hubs
+  const remainingAwbs = () => awbs.filter((awb) => !hmsHits.has(awb.toLowerCase()));
+
+  for (const leg of ["last_mile", "first_mile"] as const) {
+    const targets = remainingAwbs();
+    if (targets.length === 0) break;
+    for (const hubId of queryHubIds) {
       const tokenChoice = chooseHubToken(hubId, sharedTokens, userTokenChoice);
       if (!tokenChoice?.token) {
         sourceErrors.push(`No HMS token available for hub ${hubId}`);
@@ -641,12 +648,12 @@ export async function POST(req: NextRequest) {
           if (usingSharedToken) {
             const refreshed = await refreshStoredHubToken(hubId, tokenChoice.token);
             if (refreshed?.token) {
-              const retry = await fetchLeg(refreshed.token, awbs, leg, hubId);
+              const retry = await fetchLeg(refreshed.token, targets, leg, hubId);
               if (retry.status !== 401) {
                 sharedTokens[hubId] = { token: refreshed.token, source: `shared-hub:${hubId}:refreshed`, kind: "hub", hubId };
                 for (const row of retry.rows) {
                   const actualAwb = rowAwb(row);
-                  const requested = awbs.find((awb) => normalizeAwb(awb) === actualAwb);
+                  const requested = targets.find((awb) => normalizeAwb(awb) === actualAwb) ?? awbs.find((awb) => normalizeAwb(awb) === actualAwb);
                   if (!requested) continue;
                   const foundHub = rowHubId(row);
                   if (foundHub && !acceptedHubIds.has(foundHub)) continue;
@@ -661,7 +668,7 @@ export async function POST(req: NextRequest) {
         }
         for (const row of response.rows) {
           const actualAwb = rowAwb(row);
-          const requested = awbs.find((awb) => normalizeAwb(awb) === actualAwb);
+          const requested = targets.find((awb) => normalizeAwb(awb) === actualAwb) ?? awbs.find((awb) => normalizeAwb(awb) === actualAwb);
           if (!requested) continue;
           const foundHub = rowHubId(row);
           if (foundHub && !acceptedHubIds.has(foundHub)) continue;
