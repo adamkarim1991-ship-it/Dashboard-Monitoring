@@ -15,6 +15,8 @@ export async function GET() {
       nextAuthUrl: process.env.NEXTAUTH_URL,
       hasCronSecret: !!process.env.CRON_SECRET,
       hasHmsBaseUrl: !!process.env.HMS_BASE_URL,
+      railwayGitSha: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.RAILWAY_GIT_SHA || null,
+      vercelGitSha: process.env.VERCEL_GIT_COMMIT_SHA || null,
       hmsBaseUrl: process.env.HMS_BASE_URL,
     },
     database: { connected: false, userCount: 0, error: null },

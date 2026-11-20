@@ -729,7 +729,7 @@ export async function POST(req: NextRequest) {
     results,
     meta: {
       sources: ["HMS/TMS shipments", "CSMS/OMS shipment search/detail"],
-      note: "Datbuy uses only GTL Jatinegara and GTL Duren Sawit when East coverage is requested for the temporary rollout. The final East-wide SPV coverage remains disabled until its official shared-team credential scope is verified.",
+      note: scope.requested === "east" ? `Datbuy East coverage (SPV Jabodetabek-East): ${scope.hubIds.join(", ")}` : "Datbuy live lookup scoped to your assigned hubs.",
       scope: scope.label,
       requestedScope: scope.requested,
       hubIds: scope.hubIds,
