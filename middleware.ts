@@ -1,68 +1,59 @@
 ﻿import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { auth } from "@/lib/auth";
 
-// Datbuy-only access gate (no dashboard login required).
-//
-// This is intentionally scoped ONLY to /datbuy/* and /api/hms/datbuy.
-// Users must provide a shared access key (team secret) to use Datbuy.
-const ACCESS_KEY = process.env.DATBUY_ACCESS_KEY || "";
-const COOKIE_NAME = "datbuy_access";
-
-function hasValidKey(req: NextRequest) {
-  if (!ACCESS_KEY) return false;
-  const fromHeader = req.headers.get("x-datbuy-key") || "";
-  if (fromHeader && fromHeader === ACCESS_KEY) return true;
-  const fromQuery = req.nextUrl.searchParams.get("key") || "";
-  if (fromQuery && fromQuery === ACCESS_KEY) return true;
-  const fromCookie = req.cookies.get(COOKIE_NAME)?.value || "";
-  if (fromCookie && fromCookie === ACCESS_KEY) return true;
-  return false;
-}
+// Datbuy East must be restricted to Jatinegara team (admin allowed).
+// Jatinegara HMS hub id (authoritative scope gate)
+const JATINEGARA_HMS_HUB_ID = "460450593288";
 
 export async function middleware(req: NextRequest) {
   const url = req.nextUrl;
 
-  // IMPORTANT: do not gate the access page itself, or we create a redirect loop.
-  if (url.pathname === "/datbuy/access") {
+  // Public routes (leave the rest of the site unchanged)
+  if (url.pathname === "/login" || url.pathname.startsWith("/api/auth")) {
     return NextResponse.next();
   }
 
-  // If user passes key in query/header, persist it into a cookie for convenience.
-  if (hasValidKey(req)) {
-    // Persist only if query provided (cookie might already exist).
-    const q = url.searchParams.get("key");
-    if (q && q === ACCESS_KEY) {
-      // remove key from url to avoid leaking via screenshots/shared links
-      const cleanUrl = url.clone();
-      cleanUrl.searchParams.delete("key");
-
-      const res = NextResponse.redirect(cleanUrl);
-      res.cookies.set(COOKIE_NAME, ACCESS_KEY, { httpOnly: true, sameSite: "lax", secure: true, path: "/" });
-      return res;
-    }
-
-    const res = NextResponse.next();
-    // If header matches, also set cookie
-    if (req.headers.get("x-datbuy-key") === ACCESS_KEY) {
-      res.cookies.set(COOKIE_NAME, ACCESS_KEY, { httpOnly: true, sameSite: "lax", secure: true, path: "/" });
-    }
-    return res;
-  }
-
-  // No key: block.
+  const session = await auth();
   const isApi = url.pathname.startsWith("/api/");
-  if (isApi) {
-    return NextResponse.json({ error: "Forbidden", detail: "Datbuy access key required" }, { status: 403 });
+
+  if (!session?.user?.id) {
+    if (isApi) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const loginUrl = new URL("/login", req.url);
+    loginUrl.searchParams.set("next", url.pathname + url.search);
+    return NextResponse.redirect(loginUrl);
   }
-  // Redirect user to an access page.
-  const accessUrl = new URL("/datbuy/access", req.url);
-  accessUrl.searchParams.set("next", url.pathname + url.search);
-  return NextResponse.redirect(accessUrl);
+
+  const role = String((session.user as any).role || "").toLowerCase();
+  const hmsHubIds: string[] = Array.isArray((session.user as any).hmsHubIds)
+    ? (session.user as any).hmsHubIds.map(String)
+    : [];
+
+  const allowed = role === "admin" || hmsHubIds.includes(JATINEGARA_HMS_HUB_ID);
+
+  if (!allowed) {
+    if (isApi) {
+      return NextResponse.json(
+        {
+          error: "Forbidden",
+          detail: "Datbuy East is restricted to Jatinegara users only.",
+        },
+        { status: 403 }
+      );
+    }
+    const deniedUrl = new URL("/login", req.url);
+    deniedUrl.searchParams.set("denied", "1");
+    return NextResponse.redirect(deniedUrl);
+  }
+
+  return NextResponse.next();
 }
 
 export const config = {
   matcher: [
-    "/datbuy/:path*",
+    "/datbuy/east/:path*",
     "/api/hms/datbuy",
   ],
 };
