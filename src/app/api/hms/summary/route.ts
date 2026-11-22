@@ -8,7 +8,7 @@ import {
   resolveMetricLock,
   setMetricLockCookie,
 } from "@/lib/metric-lock";
-import { opcCurrDate, opcCycleList, wibDate, wibUnixAt, wibHour } from "@/lib/operating-day";
+import { opcCurrDate, opcCycleList, opcDayRangeUnix, wibDate, wibUnixAt, wibHour } from "@/lib/operating-day";
 import { refreshStoredHmsToken, type RefreshedHmsToken } from "@/lib/hms-token-refresh";
 import { prisma } from "@/lib/prisma";
 import { readTokenChunkCount, writeTokenCookies } from "@/lib/hms-token-store";
@@ -43,6 +43,8 @@ type SliceSnapshot = {
     delivered: number;
     ongoing: number;
     ftd: number;
+    others: number;
+    pending: number;
     scanned: number;
   };
 };
@@ -325,9 +327,69 @@ function normalizeHubName(name: string): string {
     .trim();
 }
 
-async function computeC1FromInboundScan(hmsToken: string, hubName: string) {
-  const fromTs = get12amWIBUnix();
-  const toTs = get8amWIBUnix();
+type CohortCounts = {
+  total: number;
+  deliveredBefore12: number;
+  delivered: number;
+  ongoing: number;
+  ftd: number;
+  others: number;
+  pending: number;
+  scanned: number;
+};
+
+function normalizeShipmentStatus(status: unknown): string {
+  return String(status || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+}
+
+function classifyCohortShipment(shipment: any): "delivered" | "delivering" | "failed" | "other" | "pending" {
+  const status = normalizeShipmentStatus(shipment?.status);
+  const details = shipment?.destination_details || {};
+
+  if (details.delivery_time || status === "delivered" || status === "pod_confirmed" || status === "success_delivery") {
+    return "delivered";
+  }
+  if (details.out_for_delivery_time || status === "ofd" || status === "out_for_delivery" || status === "ongoing_delivery" || status === "on_delivery" || status === "delivering" || status === "in_driver") {
+    return "delivering";
+  }
+  if (status === "ftd" || status === "failed_to_deliver" || status === "failed_delivery") {
+    return "failed";
+  }
+  if (status === "ready_to_return" || status === "rtr" || status === "cancelled" || status === "canceled" || status === "wbc" || status === "return_to_hub" || status === "returned_to_hub") {
+    return "other";
+  }
+  if (status === "arrived_at_hub" || status === "arrive_at_hub" || status === "inbound_to_sorting" || status === "inbounded_to_sorting" || status === "vehicle_arrival" || status === "still_in_hub" || status === "at_hub" || status === "pending_at_hub" || status === "bagged" || status === "driver_allocated" || status === "assigned_to_driver" || status === "waiting_confirmation" || status === "received") {
+    return "pending";
+  }
+  if (Number(shipment?.delivery_attempts) > 0) {
+    return "failed";
+  }
+  return "pending";
+}
+
+function shipmentPriority(shipment: any): number {
+  const cls = classifyCohortShipment(shipment);
+  const rank = cls === "delivered" ? 5 : cls === "other" ? 4 : cls === "failed" ? 3 : cls === "delivering" ? 2 : 1;
+  const updatedAt = toUnixSeconds(
+    shipment?.updated_at ||
+      shipment?.destination_details?.delivery_time ||
+      shipment?.destination_details?.out_for_delivery_time
+  );
+  return rank * 10_000_000_000 + updatedAt;
+}
+
+async function fetchInboundAwbMap(
+  hmsToken: string,
+  hubName: string,
+  fromTs: number,
+  toTs: number
+) {
+  const normalizedTarget = normalizeHubName(hubName);
+  const inboundByAwb = new Map<string, number>();
+
   const firstPage = await fetchInboundTasksPage(hmsToken, 1, fromTs, toTs);
   const totalRecords = Number(firstPage?.data?.pagination?.total) || 0;
   const totalPages = Math.ceil(totalRecords / 100);
@@ -339,87 +401,96 @@ async function computeC1FromInboundScan(hmsToken: string, hubName: string) {
       const results = await Promise.all(
         pages
           .slice(i, i + 5)
-          .map((page) => fetchInboundTasksPage(hmsToken, page, fromTs, toTs))
+          .map((page) => fetchInboundTasksPage(hmsToken, page, fromTs, toTs).catch(() => null))
       );
       for (const result of results) {
-        allTasks = allTasks.concat(result?.data?.tasks || []);
+        if (result) allTasks = allTasks.concat(result?.data?.tasks || []);
       }
     }
   }
 
+  for (const task of allTasks) {
+    if (normalizeHubName(task.lm_facility || "") !== normalizedTarget) continue;
+    if (task.delivery_type && task.delivery_type !== "Forward") continue;
 
-  const normalizedTarget = normalizeHubName(hubName);
-  const hubTasks = allTasks.filter(
-    (task) => normalizeHubName(task.lm_facility || "") === normalizedTarget
-  );
-  const uniqueFreshC1Tasks = Array.from(
-    new Map(
-      hubTasks.map((task, index) => [
-        task.awb_number ||
-          task.tracking_number ||
-          task.id ||
-          `row-${index}`,
-        task,
-      ])
-    ).values()
-  );
-  // 12:00 WIB cutoff. Epoch comparisons are timezone free, but the delivery
-  // timestamp is rendered explicitly in WIB so an UTC host can never shift the
-  // boundary by 7 hours (12:00 WIB == 05:00 UTC).
-  const todayWibDate = formatDateYMD(toWIB());
-  const isDeliveredBeforeNoonWib = (shipment: any) => {
-    const deliveredAt = toUnixSeconds(shipment.destination_details?.delivery_time);
-    if (!deliveredAt) return false;
-    const wib = new Date((deliveredAt + 7 * 60 * 60) * 1000);
-    return formatDateYMD(wib) === todayWibDate && wib.getUTCHours() < 12;
+    const awb = String(task.awb_number || task.tracking_number || "").trim();
+    const receivedAt = toUnixSeconds(task.received_at);
+    if (!awb || !receivedAt) continue;
+
+    const existing = inboundByAwb.get(awb);
+    if (!existing || receivedAt < existing) inboundByAwb.set(awb, receivedAt);
+  }
+
+  return inboundByAwb;
+}
+
+async function computeMorningCutoffMetrics(hmsToken: string, hubName: string) {
+  const todayStartTs = get12amWIBUnix();
+  const cutoff8Ts = get8amWIBUnix();
+  const cutoff12Ts = getTodayWIBUnix(12);
+  const operationalFromTs = opcDayRangeUnix().from;
+  const inboundByAwb = await fetchInboundAwbMap(hmsToken, hubName, operationalFromTs, cutoff8Ts);
+  const awbs = Array.from(inboundByAwb.keys());
+
+  const empty: CohortCounts = {
+    total: 0,
+    deliveredBefore12: 0,
+    delivered: 0,
+    ongoing: 0,
+    ftd: 0,
+    others: 0,
+    pending: 0,
+    scanned: 0,
   };
-  const freshC1Awbs = uniqueFreshC1Tasks
-    .map((task) =>
-      String(task.awb_number || task.tracking_number || "").trim()
-    )
-    .filter(Boolean);
-  const shipments = await fetchShipmentsForAwbs(hmsToken, freshC1Awbs);
-  const deliveredBefore12 = new Set(
-    shipments
-      .filter(isDeliveredBeforeNoonWib)
-      .map((shipment) => String(shipment.awb_number || "").trim())
-      .filter(Boolean)
-  ).size;
 
-  // Per package status for the morning (C1) cohort. The shipments endpoint can
-  // return more than one row per AWB, so collapse to one row first.
+  if (awbs.length === 0) {
+    return { operational: empty, freshC1: empty };
+  }
+
+  const shipments = await fetchShipmentsForAwbs(hmsToken, awbs);
   const byAwb = new Map<string, any>();
   for (const shipment of shipments) {
     const awb = String(shipment.awb_number || "").trim();
-    if (!awb) continue;
+    if (!awb || !inboundByAwb.has(awb)) continue;
     const prev = byAwb.get(awb);
-    const prevDelivered = Boolean(prev?.destination_details?.delivery_time);
-    const currentDelivered = Boolean(shipment.destination_details?.delivery_time);
-    if (!prev || (currentDelivered && !prevDelivered)) byAwb.set(awb, shipment);
-  }
-
-  let c1Delivered = 0;
-  let c1Ongoing = 0;
-  let c1Ftd = 0;
-  for (const shipment of byAwb.values()) {
-    const details = shipment.destination_details || {};
-    if (details.delivery_time) {
-      c1Delivered += 1;
-    } else if (details.out_for_delivery_time) {
-      c1Ongoing += 1;
-    } else if (Number(shipment.delivery_attempts) > 0) {
-      c1Ftd += 1;
+    if (!prev || shipmentPriority(shipment) >= shipmentPriority(prev)) {
+      byAwb.set(awb, shipment);
     }
   }
 
-  return {
-    c1: uniqueFreshC1Tasks.length,
-    deliveredBefore12,
-    delivered: c1Delivered,
-    ongoing: c1Ongoing,
-    ftd: c1Ftd,
-    scanned: byAwb.size,
-  };
+  const operational: CohortCounts = { ...empty, total: awbs.length, scanned: byAwb.size };
+  const freshC1: CohortCounts = { ...empty };
+
+  for (const awb of awbs) {
+    const inboundAt = inboundByAwb.get(awb) || 0;
+    const isFreshC1 = inboundAt >= todayStartTs;
+    if (isFreshC1) freshC1.total += 1;
+
+    const shipment = byAwb.get(awb);
+    const cls = shipment ? classifyCohortShipment(shipment) : "pending";
+
+    if (cls === "delivered") operational.delivered += 1;
+    else if (cls === "delivering") operational.ongoing += 1;
+    else if (cls === "failed") operational.ftd += 1;
+    else if (cls === "other") operational.others += 1;
+
+    if (isFreshC1) {
+      if (cls === "delivered") freshC1.delivered += 1;
+      else if (cls === "delivering") freshC1.ongoing += 1;
+      else if (cls === "failed") freshC1.ftd += 1;
+      else if (cls === "other") freshC1.others += 1;
+
+      const deliveredAt = toUnixSeconds(shipment?.destination_details?.delivery_time);
+      if (deliveredAt >= todayStartTs && deliveredAt < cutoff12Ts) {
+        freshC1.deliveredBefore12 += 1;
+      }
+    }
+  }
+
+  operational.pending = Math.max(operational.total - operational.delivered - operational.ongoing - operational.ftd - operational.others, 0);
+  freshC1.pending = Math.max(freshC1.total - freshC1.delivered - freshC1.ongoing - freshC1.ftd - freshC1.others, 0);
+
+  return { operational, freshC1 };
 }
 
 async function fetchDedicatedMerged(holder: HmsTokenHolder, hubId: string) {
@@ -792,66 +863,107 @@ async function originalGET(req: NextRequest, startTimestamp: string) {
     const volumeLock = volumeLockResult.payload;
     const deliveryLock = deliveryLockResult.payload;
 
+    let morningMetrics: Awaited<ReturnType<typeof computeMorningCutoffMetrics>> | null = null;
+    if (wibHour() >= 8) {
+      try {
+        morningMetrics = await computeMorningCutoffMetrics(tokenHolder.token, HUB_NAME);
+        rememberSlice(HUB_ID, "c1", {
+          c1: morningMetrics.freshC1.total,
+          deliveredBefore12: morningMetrics.freshC1.deliveredBefore12,
+          delivered: morningMetrics.freshC1.delivered,
+          ongoing: morningMetrics.freshC1.ongoing,
+          ftd: morningMetrics.freshC1.ftd,
+          others: morningMetrics.freshC1.others,
+          pending: morningMetrics.freshC1.pending,
+          scanned: morningMetrics.freshC1.scanned,
+        });
+      } catch (e: any) {
+        console.warn("[morning-cutoff] fallback to lock:", e?.message ?? e);
+      }
+    }
+
     const volumeOverall = totalVolume || justArrived + backlog;
-    // SD < 12 PM mixes two OPC fields on purpose:
-    //   denominator = Today's Volume > Just Arrived (Fresh C1), frozen 08:00 WIB
-    //   numerator   = Delivered > Just Arrived, frozen 12:00 WIB
-    // Feeding just_arrived into both sides is what produced the 100% reading.
-    const freshC1 = volumeLock.values.just_arrived;
+    const fallbackFreshC1 = volumeLock.values.just_arrived;
+    const rememberedFreshC1 = recallSlice(HUB_ID, "c1");
+    const exactFreshC1 = morningMetrics?.freshC1 ?? (rememberedFreshC1
+      ? {
+          total: rememberedFreshC1.c1,
+          deliveredBefore12: rememberedFreshC1.deliveredBefore12,
+          delivered: rememberedFreshC1.delivered,
+          ongoing: rememberedFreshC1.ongoing,
+          ftd: rememberedFreshC1.ftd,
+          others: rememberedFreshC1.others,
+          pending: rememberedFreshC1.pending,
+          scanned: rememberedFreshC1.scanned,
+        }
+      : null);
+
+    const freshC1 = exactFreshC1?.total ?? fallbackFreshC1;
     const freshC2 = Math.max(justArrived - freshC1, 0);
-    const deliveredBefore12 =
-      freshC1 > 0 ? Math.min(deliveryLock.values.delivered_fresh, freshC1) : 0;
+    const deliveredBefore12 = exactFreshC1
+      ? Math.min(exactFreshC1.deliveredBefore12, exactFreshC1.total)
+      : (freshC1 > 0 ? Math.min(deliveryLock.values.delivered_fresh, freshC1) : 0);
     const sdBefore12 = metricPercent(deliveredBefore12, freshC1);
     const freshSuccess = metricPercent(deliveredSplit.fresh, justArrived);
     const successDelivered = metricPercent(deliveredSplit.total, volumeOverall);
 
+    const exactOperational = morningMetrics?.operational;
+    const cleanFloorNumerator = exactOperational
+      ? exactOperational.delivered + exactOperational.ongoing + exactOperational.ftd + exactOperational.others
+      : volumeLock.values.clean_floor_numerator;
+    const cleanFloorDenominator = exactOperational?.total || volumeLock.values.clean_floor_denominator || volumeOverall;
+    const cleanFloorDelivered = exactOperational?.delivered ?? volumeLock.values.delivered;
+    const cleanFloorOngoing = exactOperational?.ongoing ?? volumeLock.values.ongoing;
+    const cleanFloorFtd = exactOperational?.ftd ?? volumeLock.values.ftd;
+    const cleanFloorOthers = exactOperational?.others ?? volumeLock.values.others;
+    const cleanFloorPending = exactOperational?.pending ?? volumeLock.values.pending_at_hub;
+    const cleanFloorValue = metricPercent(cleanFloorNumerator, cleanFloorDenominator);
 
-
-    // Clean Floor = everything out of "Pending at Hub" over Today's Volume,
-    // both frozen at 08:00 WIB. The card therefore reports the same finish
-    // rate all day instead of drifting with live deliveries.
+    // After 08:00 WIB, recompute the morning cohort directly from inbound tasks +
+    // live shipment statuses so the dashboard stays exact even when first opened
+    // after the cutoff. The old lock remains only as fallback.
     const cleanFloor = {
-      value: Math.min(volumeLock.value, 100),
+      value: Math.min(cleanFloorValue, 100),
       breakdown: {
-        ongoing: volumeLock.values.ongoing,
-        delivered: volumeLock.values.delivered,
-        ftd: volumeLock.values.ftd,
-        others: volumeLock.values.others,
-        pending: volumeLock.values.pending_at_hub,
-        numerator: volumeLock.values.clean_floor_numerator,
-        today_volume: volumeLock.values.clean_floor_denominator,
+        ongoing: cleanFloorOngoing,
+        delivered: cleanFloorDelivered,
+        ftd: cleanFloorFtd,
+        others: cleanFloorOthers,
+        pending: cleanFloorPending,
+        numerator: cleanFloorNumerator,
+        today_volume: cleanFloorDenominator,
       },
       is_locked: volumeLock.is_locked,
       locked_at: volumeLock.is_locked ? volumeLock.captured_at : null,
-      captured_at: volumeLock.captured_at,
-      quality: volumeLock.quality,
-      lock_source: volumeLock.source,
+      captured_at: exactOperational ? new Date().toISOString() : volumeLock.captured_at,
+      quality: exactOperational ? "accurate" : volumeLock.quality,
+      lock_source: exactOperational ? "observed" : volumeLock.source,
       lock_hour_wib: volumeLock.lock_hour_wib,
       live_processed: processedLive,
       post_lock_volume: volumeOverall,
-      excluded_processed: 0,
+      excluded_processed: Math.max(0, processedLive - cleanFloorNumerator),
     };
 
     const cleanFloorC1 = {
-      value: Math.min(volumeLock.value, 100),
-      numerator: volumeLock.values.clean_floor_numerator,
-      denominator: volumeLock.values.clean_floor_denominator || volumeOverall,
+      value: Math.min(cleanFloorValue, 100),
+      numerator: cleanFloorNumerator,
+      denominator: cleanFloorDenominator,
       fresh_c1: freshC1,
-      backlog: volumeLock.values.backlog,
-      today_volume: volumeLock.values.today_volume,
-      delivered: volumeLock.values.delivered,
-      ongoing: volumeLock.values.ongoing,
-      ftd: volumeLock.values.ftd,
-      others: volumeLock.values.others,
+      backlog: Math.max(cleanFloorDenominator - freshC1, 0),
+      today_volume: cleanFloorDenominator,
+      delivered: cleanFloorDelivered,
+      ongoing: cleanFloorOngoing,
+      ftd: cleanFloorFtd,
+      others: cleanFloorOthers,
       target_hour_wib: volumeLock.lock_hour_wib,
       is_locked: volumeLock.is_locked,
-      captured_at: volumeLock.captured_at,
-      quality: volumeLock.quality,
-      lock_source: volumeLock.source,
+      captured_at: exactOperational ? new Date().toISOString() : volumeLock.captured_at,
+      quality: exactOperational ? "accurate" : volumeLock.quality,
+      lock_source: exactOperational ? "observed" : volumeLock.source,
       live_value: metricPercent(processedLive, volumeOverall),
       live_numerator: processedLive,
       live_denominator: volumeOverall,
-      source: "opc_main",
+      source: exactOperational ? "inbound_scan" : "opc_main",
     };
 
     // Pending 48H: first inbound older than 48 hours and still not delivered,

@@ -225,7 +225,12 @@ export default function HourlyTab({ hubId, hubName }: { hubId: string; hubName: 
       failed: acc.failed + row.failed, fresh_before_12: acc.fresh_before_12 + row.fresh_before_12,
       sd_before_12: acc.sd_before_12 + row.sd_before_12,
     }), { overall: 0, fresh: 0, backlog: 0, fresh_c1: 0, fresh_c2: 0, delivered: 0, delivering: 0, failed: 0, fresh_before_12: 0, sd_before_12: 0 });
-    return { ...totals, sd_before_12: visibleSubdistricts.length > 0 ? totals.sd_before_12 / visibleSubdistricts.length : 0 };
+    return {
+      ...totals,
+      sd_before_12: totals.fresh_c1 > 0
+        ? (totals.fresh_before_12 / totals.fresh_c1) * 100
+        : 0,
+    };
   }, [visibleSubdistricts]);
 
   const handleSubdistrictSort = (key: SubdistrictSortKey) => {

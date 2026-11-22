@@ -466,8 +466,8 @@ export default function DashboardView({
     );
     return {
       ...totals,
-      sd_before_12: visibleSubdistricts.length > 0
-        ? totals.sd_before_12 / visibleSubdistricts.length
+      sd_before_12: totals.fresh_c1 > 0
+        ? (totals.fresh_before_12 / totals.fresh_c1) * 100
         : 0,
     };
   }, [visibleSubdistricts]);
