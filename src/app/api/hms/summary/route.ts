@@ -1,4 +1,4 @@
-import { ScopedSingleflightCache } from "@/lib/cache-singleflight";
+﻿import { ScopedSingleflightCache } from "@/lib/cache-singleflight";
 import { SUMMARY_CACHE_TTL_MS } from "@/lib/constants";
 import { auth } from "@/lib/auth";
 import { resolveActiveHub, resolveHmsToken } from "@/lib/hms-context";
@@ -777,7 +777,7 @@ async function originalGET(req: NextRequest, startTimestamp: string) {
       }
     }
 
-    // ── HMS OPC field map ─────────────────────────────────────────────────
+    // â”€â”€ HMS OPC field map â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // A single OPC row carries every number the Performance page prints,
     // including the sub-totals under each card, so every metric below reads the
     // total and its printed breakdown from that row instead of recomputing.
@@ -861,7 +861,7 @@ async function originalGET(req: NextRequest, startTimestamp: string) {
     });
 
     const volumeLock = volumeLockResult.payload;
-    const deliveryLock = deliveryLockResult.payload;
+    const volumeOverall = totalVolume || justArrived + backlog;
 
     let morningMetrics: Awaited<ReturnType<typeof computeMorningCutoffMetrics>> | null = null;
     if (wibHour() >= 8) {
@@ -872,8 +872,12 @@ async function originalGET(req: NextRequest, startTimestamp: string) {
           computedMorningMetrics.freshC1.total > 0 ||
           computedMorningMetrics.operational.scanned > 0 ||
           computedMorningMetrics.operational.total > 0;
+        const violatesInvariant =
+          computedMorningMetrics.freshC1.total > justArrived ||
+          computedMorningMetrics.freshC1.deliveredBefore12 > computedMorningMetrics.freshC1.total ||
+          computedMorningMetrics.operational.total > volumeOverall;
 
-        if (hasObservedMorningMetrics) {
+        if (hasObservedMorningMetrics && !violatesInvariant) {
           morningMetrics = computedMorningMetrics;
           rememberSlice(HUB_ID, "c1", {
             c1: computedMorningMetrics.freshC1.total,
@@ -885,6 +889,15 @@ async function originalGET(req: NextRequest, startTimestamp: string) {
             pending: computedMorningMetrics.freshC1.pending,
             scanned: computedMorningMetrics.freshC1.scanned,
           });
+        } else if (violatesInvariant) {
+          console.warn("[morning-cutoff] invalid recompute, fallback to lock", {
+            hub: HUB_ID,
+            freshC1: computedMorningMetrics.freshC1.total,
+            justArrived,
+            deliveredBefore12: computedMorningMetrics.freshC1.deliveredBefore12,
+            operational: computedMorningMetrics.operational.total,
+            volumeOverall,
+          });
         } else {
           console.warn("[morning-cutoff] empty recompute, fallback to lock");
         }
@@ -892,8 +905,6 @@ async function originalGET(req: NextRequest, startTimestamp: string) {
         console.warn("[morning-cutoff] fallback to lock:", e?.message ?? e);
       }
     }
-
-    const volumeOverall = totalVolume || justArrived + backlog;
     const fallbackFreshC1 = volumeLock.values.just_arrived;
     const rememberedFreshC1 = recallSlice(HUB_ID, "c1");
     const exactFreshC1 = morningMetrics?.freshC1 ?? (rememberedFreshC1
