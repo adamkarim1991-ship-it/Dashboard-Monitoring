@@ -866,17 +866,28 @@ async function originalGET(req: NextRequest, startTimestamp: string) {
     let morningMetrics: Awaited<ReturnType<typeof computeMorningCutoffMetrics>> | null = null;
     if (wibHour() >= 8) {
       try {
-        morningMetrics = await computeMorningCutoffMetrics(tokenHolder.token, HUB_NAME);
-        rememberSlice(HUB_ID, "c1", {
-          c1: morningMetrics.freshC1.total,
-          deliveredBefore12: morningMetrics.freshC1.deliveredBefore12,
-          delivered: morningMetrics.freshC1.delivered,
-          ongoing: morningMetrics.freshC1.ongoing,
-          ftd: morningMetrics.freshC1.ftd,
-          others: morningMetrics.freshC1.others,
-          pending: morningMetrics.freshC1.pending,
-          scanned: morningMetrics.freshC1.scanned,
-        });
+        const computedMorningMetrics = await computeMorningCutoffMetrics(tokenHolder.token, HUB_NAME);
+        const hasObservedMorningMetrics =
+          computedMorningMetrics.freshC1.scanned > 0 ||
+          computedMorningMetrics.freshC1.total > 0 ||
+          computedMorningMetrics.operational.scanned > 0 ||
+          computedMorningMetrics.operational.total > 0;
+
+        if (hasObservedMorningMetrics) {
+          morningMetrics = computedMorningMetrics;
+          rememberSlice(HUB_ID, "c1", {
+            c1: computedMorningMetrics.freshC1.total,
+            deliveredBefore12: computedMorningMetrics.freshC1.deliveredBefore12,
+            delivered: computedMorningMetrics.freshC1.delivered,
+            ongoing: computedMorningMetrics.freshC1.ongoing,
+            ftd: computedMorningMetrics.freshC1.ftd,
+            others: computedMorningMetrics.freshC1.others,
+            pending: computedMorningMetrics.freshC1.pending,
+            scanned: computedMorningMetrics.freshC1.scanned,
+          });
+        } else {
+          console.warn("[morning-cutoff] empty recompute, fallback to lock");
+        }
       } catch (e: any) {
         console.warn("[morning-cutoff] fallback to lock:", e?.message ?? e);
       }
