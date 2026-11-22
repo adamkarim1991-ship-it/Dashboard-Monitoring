@@ -861,6 +861,7 @@ async function originalGET(req: NextRequest, startTimestamp: string) {
     });
 
     const volumeLock = volumeLockResult.payload;
+    const deliveryLock = deliveryLockResult.payload;
     const volumeOverall = totalVolume || justArrived + backlog;
 
     let morningMetrics: Awaited<ReturnType<typeof computeMorningCutoffMetrics>> | null = null;
