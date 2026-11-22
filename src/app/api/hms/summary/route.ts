@@ -863,9 +863,17 @@ async function originalGET(req: NextRequest, startTimestamp: string) {
     const volumeLock = volumeLockResult.payload;
     const deliveryLock = deliveryLockResult.payload;
     const volumeOverall = totalVolume || justArrived + backlog;
+    // Verified cutoff snapshots are authoritative; a later scan must not
+    // redefine their population or replace the historical 08:00/12:00 values.
+    const hasAccurateCutoff =
+      volumeLock.quality === "accurate" && deliveryLock.quality === "accurate" &&
+      Number.isSafeInteger(volumeLock.values.just_arrived) &&
+      Number.isSafeInteger(deliveryLock.values.delivered_fresh) &&
+      volumeLock.values.just_arrived >= 0 && deliveryLock.values.delivered_fresh >= 0 &&
+      deliveryLock.values.delivered_fresh <= volumeLock.values.just_arrived;
 
     let morningMetrics: Awaited<ReturnType<typeof computeMorningCutoffMetrics>> | null = null;
-    if (wibHour() >= 8) {
+    if (wibHour() >= 8 && !hasAccurateCutoff) {
       try {
         const computedMorningMetrics = await computeMorningCutoffMetrics(tokenHolder.token, HUB_NAME);
         const hasObservedMorningMetrics =
@@ -908,7 +916,7 @@ async function originalGET(req: NextRequest, startTimestamp: string) {
     }
     const fallbackFreshC1 = volumeLock.values.just_arrived;
     const rememberedFreshC1 = recallSlice(HUB_ID, "c1");
-    const exactFreshC1 = morningMetrics?.freshC1 ?? (rememberedFreshC1
+    const exactFreshC1 = hasAccurateCutoff ? null : (morningMetrics?.freshC1 ?? (rememberedFreshC1
       ? {
           total: rememberedFreshC1.c1,
           deliveredBefore12: rememberedFreshC1.deliveredBefore12,
@@ -919,7 +927,7 @@ async function originalGET(req: NextRequest, startTimestamp: string) {
           pending: rememberedFreshC1.pending,
           scanned: rememberedFreshC1.scanned,
         }
-      : null);
+      : null));
 
     const freshC1 = exactFreshC1?.total ?? fallbackFreshC1;
     const freshC2 = Math.max(justArrived - freshC1, 0);
