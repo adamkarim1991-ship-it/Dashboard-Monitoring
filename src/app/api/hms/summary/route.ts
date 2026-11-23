@@ -863,96 +863,29 @@ async function originalGET(req: NextRequest, startTimestamp: string) {
     const volumeLock = volumeLockResult.payload;
     const deliveryLock = deliveryLockResult.payload;
     const volumeOverall = totalVolume || justArrived + backlog;
-    // Verified cutoff snapshots are authoritative; a later scan must not
-    // redefine their population or replace the historical 08:00/12:00 values.
-    const hasAccurateCutoff =
-      volumeLock.quality === "accurate" && deliveryLock.quality === "accurate" &&
-      Number.isSafeInteger(volumeLock.values.just_arrived) &&
-      Number.isSafeInteger(deliveryLock.values.delivered_fresh) &&
-      volumeLock.values.just_arrived >= 0 && deliveryLock.values.delivered_fresh >= 0 &&
-      deliveryLock.values.delivered_fresh <= volumeLock.values.just_arrived;
-
-    let morningMetrics: Awaited<ReturnType<typeof computeMorningCutoffMetrics>> | null = null;
-    if (wibHour() >= 8 && !hasAccurateCutoff) {
-      try {
-        const computedMorningMetrics = await computeMorningCutoffMetrics(tokenHolder.token, HUB_NAME);
-        const hasObservedMorningMetrics =
-          computedMorningMetrics.freshC1.scanned > 0 ||
-          computedMorningMetrics.freshC1.total > 0 ||
-          computedMorningMetrics.operational.scanned > 0 ||
-          computedMorningMetrics.operational.total > 0;
-        const violatesInvariant =
-          computedMorningMetrics.freshC1.total > justArrived ||
-          computedMorningMetrics.freshC1.deliveredBefore12 > computedMorningMetrics.freshC1.total ||
-          computedMorningMetrics.operational.total > volumeOverall;
-
-        if (hasObservedMorningMetrics && !violatesInvariant) {
-          morningMetrics = computedMorningMetrics;
-          rememberSlice(HUB_ID, "c1", {
-            c1: computedMorningMetrics.freshC1.total,
-            deliveredBefore12: computedMorningMetrics.freshC1.deliveredBefore12,
-            delivered: computedMorningMetrics.freshC1.delivered,
-            ongoing: computedMorningMetrics.freshC1.ongoing,
-            ftd: computedMorningMetrics.freshC1.ftd,
-            others: computedMorningMetrics.freshC1.others,
-            pending: computedMorningMetrics.freshC1.pending,
-            scanned: computedMorningMetrics.freshC1.scanned,
-          });
-        } else if (violatesInvariant) {
-          console.warn("[morning-cutoff] invalid recompute, fallback to lock", {
-            hub: HUB_ID,
-            freshC1: computedMorningMetrics.freshC1.total,
-            justArrived,
-            deliveredBefore12: computedMorningMetrics.freshC1.deliveredBefore12,
-            operational: computedMorningMetrics.operational.total,
-            volumeOverall,
-          });
-        } else {
-          console.warn("[morning-cutoff] empty recompute, fallback to lock");
-        }
-      } catch (e: any) {
-        console.warn("[morning-cutoff] fallback to lock:", e?.message ?? e);
-      }
-    }
+    // Once a cutoff lock exists, keep serving that locked population.
+    // A later inbound/shipment scan can be useful for investigation, but it must
+    // not redefine C1 / Clean Floor populations or move SD<12 after the lock.
     const fallbackFreshC1 = volumeLock.values.just_arrived;
-    const rememberedFreshC1 = recallSlice(HUB_ID, "c1");
-    const exactFreshC1 = hasAccurateCutoff ? null : (morningMetrics?.freshC1 ?? (rememberedFreshC1
-      ? {
-          total: rememberedFreshC1.c1,
-          deliveredBefore12: rememberedFreshC1.deliveredBefore12,
-          delivered: rememberedFreshC1.delivered,
-          ongoing: rememberedFreshC1.ongoing,
-          ftd: rememberedFreshC1.ftd,
-          others: rememberedFreshC1.others,
-          pending: rememberedFreshC1.pending,
-          scanned: rememberedFreshC1.scanned,
-        }
-      : null));
 
-    const freshC1 = exactFreshC1?.total ?? fallbackFreshC1;
+    const freshC1 = fallbackFreshC1;
     const freshC2 = Math.max(justArrived - freshC1, 0);
-    const deliveredBefore12 = exactFreshC1
-      ? Math.min(exactFreshC1.deliveredBefore12, exactFreshC1.total)
-      : (freshC1 > 0 ? Math.min(deliveryLock.values.delivered_fresh, freshC1) : 0);
+    const deliveredBefore12 = freshC1 > 0
+      ? Math.min(deliveryLock.values.delivered_fresh, freshC1)
+      : 0;
     const sdBefore12 = metricPercent(deliveredBefore12, freshC1);
     const freshSuccess = metricPercent(deliveredSplit.fresh, justArrived);
     const successDelivered = metricPercent(deliveredSplit.total, volumeOverall);
 
-    const exactOperational = morningMetrics?.operational;
-    const cleanFloorNumerator = exactOperational
-      ? exactOperational.delivered + exactOperational.ongoing + exactOperational.ftd + exactOperational.others
-      : volumeLock.values.clean_floor_numerator;
-    const cleanFloorDenominator = exactOperational?.total || volumeLock.values.clean_floor_denominator || volumeOverall;
-    const cleanFloorDelivered = exactOperational?.delivered ?? volumeLock.values.delivered;
-    const cleanFloorOngoing = exactOperational?.ongoing ?? volumeLock.values.ongoing;
-    const cleanFloorFtd = exactOperational?.ftd ?? volumeLock.values.ftd;
-    const cleanFloorOthers = exactOperational?.others ?? volumeLock.values.others;
-    const cleanFloorPending = exactOperational?.pending ?? volumeLock.values.pending_at_hub;
+    const cleanFloorNumerator = volumeLock.values.clean_floor_numerator;
+    const cleanFloorDenominator = volumeLock.values.clean_floor_denominator || volumeOverall;
+    const cleanFloorDelivered = volumeLock.values.delivered;
+    const cleanFloorOngoing = volumeLock.values.ongoing;
+    const cleanFloorFtd = volumeLock.values.ftd;
+    const cleanFloorOthers = volumeLock.values.others;
+    const cleanFloorPending = volumeLock.values.pending_at_hub;
     const cleanFloorValue = metricPercent(cleanFloorNumerator, cleanFloorDenominator);
 
-    // After 08:00 WIB, recompute the morning cohort directly from inbound tasks +
-    // live shipment statuses so the dashboard stays exact even when first opened
-    // after the cutoff. The old lock remains only as fallback.
     const cleanFloor = {
       value: Math.min(cleanFloorValue, 100),
       breakdown: {
@@ -966,9 +899,9 @@ async function originalGET(req: NextRequest, startTimestamp: string) {
       },
       is_locked: volumeLock.is_locked,
       locked_at: volumeLock.is_locked ? volumeLock.captured_at : null,
-      captured_at: exactOperational ? new Date().toISOString() : volumeLock.captured_at,
-      quality: exactOperational ? "accurate" : volumeLock.quality,
-      lock_source: exactOperational ? "observed" : volumeLock.source,
+      captured_at: volumeLock.captured_at,
+      quality: volumeLock.quality,
+      lock_source: volumeLock.source,
       lock_hour_wib: volumeLock.lock_hour_wib,
       live_processed: processedLive,
       post_lock_volume: volumeOverall,
@@ -988,13 +921,13 @@ async function originalGET(req: NextRequest, startTimestamp: string) {
       others: cleanFloorOthers,
       target_hour_wib: volumeLock.lock_hour_wib,
       is_locked: volumeLock.is_locked,
-      captured_at: exactOperational ? new Date().toISOString() : volumeLock.captured_at,
-      quality: exactOperational ? "accurate" : volumeLock.quality,
-      lock_source: exactOperational ? "observed" : volumeLock.source,
+      captured_at: volumeLock.captured_at,
+      quality: volumeLock.quality,
+      lock_source: volumeLock.source,
       live_value: metricPercent(processedLive, volumeOverall),
       live_numerator: processedLive,
       live_denominator: volumeOverall,
-      source: exactOperational ? "inbound_scan" : "opc_main",
+      source: "opc_main",
     };
 
     // Pending 48H: first inbound older than 48 hours and still not delivered,
