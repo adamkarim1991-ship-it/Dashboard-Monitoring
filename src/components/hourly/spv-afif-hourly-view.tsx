@@ -176,7 +176,7 @@ async function fetchHubSummary(hub: SpvAfifHubConfig): Promise<HubSummaryState> 
 
 /* ---------- Main Component ---------- */
 
-export default function SpvAfifHourlyView({ user }: { user: SessionUser }) {
+export default function SpvAfifHourlyView({ user: _user }: { user: SessionUser }) {
   const [states, setStates] = useState<HubSummaryState[]>(() =>
     SPV_AFIF_HUBS.map((hub) => ({ hub, loading: true }))
   );
@@ -256,7 +256,7 @@ export default function SpvAfifHourlyView({ user }: { user: SessionUser }) {
               </span>
             </div>
             <h1 className="text-xl font-bold tracking-tight mt-1 text-white">COVERAGE - JABODETABEK EAST</h1>
-            <p className="text-[11px] text-gray-300 mt-0.5">SPV: {user.name || user.email || "active session"} | 9 hub coverage</p>
+            <p className="text-[11px] text-gray-300 mt-0.5">SPV: Afif Effendi | 9 hub coverage</p>
             <p className="text-[11px] text-gray-400 mt-0.5 flex items-center gap-1.5">
               <Info className="w-3 h-3 flex-shrink-0" />
               <span>Live observation at {opDate} {opTime} WIB</span>
@@ -362,28 +362,25 @@ function HubScorecard({ item }: { item: HubSummaryState }) {
           <div className="grid grid-cols-2 divide-x divide-gray-100">
             {/* Left column */}
             <div className="px-4 py-3 space-y-2.5">
-              <MetricRow label="Volume" value={fmtNum(d.today_volume)} valueClass="text-gray-900" />
-              <MetricRow label="Ongoing" value={fmtNum(d.ongoing_delivery)} valueClass="text-blue-600" />
-              <MetricRow label="FTD" value={fmtNum(d.ftd)} valueClass="text-red-600" />
-              <MetricRow label="SD < 12 PM" value={fmtPct(d.sd_before_12)} valueClass="text-blue-600" />
-              <MetricRow label="Urgent %" value={fmtPct(d.urgent_pct)} valueClass="text-red-600" />
-              <MetricRow label="Oncall Avg Prod" value={d.courier_avg_productivity != null ? d.courier_avg_productivity.toFixed(2) : "-"} valueClass="text-gray-900" sub={d.courier_check_in != null ? `${d.courier_check_in}/${d.courier_assigned ?? 0} check-in` : undefined} />
+              <MetricRow label="Volume Overall" value={fmtNum(d.today_volume)} valueClass="text-gray-900" />
+              <MetricRow label="Volume Fresh" value={fmtNum(d.just_arrived)} valueClass="text-purple-600" sub={d.fresh_c1 != null ? `C1: ${fmtNum(d.fresh_c1)} | C2: ${fmtNum(d.fresh_c2)}` : undefined} />
               <MetricRow label="Clean Floor" value={fmtPct(clean?.value)} valueClass="text-teal-600" sub={lockText(clean?.quality, clean?.captured_at)} />
+              <MetricRow label="SD < 12 PM" value={fmtPct(d.sd_before_12)} valueClass="text-blue-600" sub={lockText(d?.sd_before_12_quality, d?.sd_before_12_captured_at)} />
+              <MetricRow label="Fresh Success" value={fmtPct(d.fresh_success)} valueClass="text-green-600" />
+              <MetricRow label="Success Delivered" value={fmtPct(d.delivered_percentage)} valueClass="text-purple-600" />
               <MetricRow label="Pending 48H" value={fmtPct(d.pending_48h_pct)} valueClass="text-orange-600" sub={d.pending_48h_total != null ? `${fmtNum(d.pending_48h_total)} / ${fmtNum(d.pending_48h_volume)}` : undefined} />
-              <MetricRow label="Prod Ops" value={d.ops_productivity != null ? d.ops_productivity.toLocaleString("en-US", { maximumFractionDigits: 0 }) : "-"} valueClass="text-teal-600" sub={d.ops_check_in != null ? `${d.ops_check_in}/${d.ops_assigned ?? 0} check-in` : undefined} />
+              <MetricRow label="COD FD" value={fmtPct(d.cod_fd)} valueClass="text-purple-600" sub={d.cod_total_volume != null ? `${fmtNum(d.cod_total_volume)} COD` : undefined} />
             </div>
 
             {/* Right column */}
             <div className="px-4 py-3 space-y-2.5">
               <MetricRow label="Delivered" value={fmtNum(d.delivered)} valueClass="text-gray-900" />
               <MetricRow label="Pending at Hub" value={fmtNum(d.pending_at_hub)} valueClass="text-orange-600" />
-              <MetricRow label="Fresh Success" value={fmtPct(d.fresh_success)} valueClass="text-green-600" />
-              <MetricRow label="COD FD" value={fmtPct(d.cod_fd)} valueClass="text-purple-600" sub={d.cod_total_volume != null ? `${fmtNum(d.cod_total_volume)} COD` : undefined} />
+              <MetricRow label="FTD" value={fmtNum(d.ftd)} valueClass="text-red-600" />
+              <MetricRow label="Urgent %" value={fmtPct(d.urgent_pct)} valueClass="text-red-600" />
               <MetricRow label="Dedicated Actual" value={fmtNum(d.dedicated_actual)} valueClass="text-amber-600" />
               <MetricRow label="Dedicated Avg Del" value={d.dedicated_avg_delivered != null && d.dedicated_avg_delivered > 0 ? d.dedicated_avg_delivered.toFixed(0) : "-"} valueClass="text-amber-600" />
-              <MetricRow label="Dedicated Achievement" value={d.dedicated_achievement_pct != null && d.dedicated_achievement_pct > 0 ? `${d.dedicated_achievement_pct.toFixed(0)}%` : "-"} valueClass="text-amber-600" sub={d.dedicated_target != null ? `Target: ${d.dedicated_target}` : undefined} />
-              <MetricRow label="SD Overall" value={fmtPct(d.delivered_percentage)} valueClass="text-purple-600" />
-              <MetricRow label="SD Fresh" value={fmtPct(d.fresh_success)} valueClass="text-green-600" />
+              <MetricRow label="Prod Ops" value={d.ops_productivity != null ? d.ops_productivity.toLocaleString("en-US", { maximumFractionDigits: 0 }) : "-"} valueClass="text-teal-600" sub={d.ops_check_in != null ? `${d.ops_check_in}/${d.ops_assigned ?? 0} check-in` : undefined} />
             </div>
           </div>
 
@@ -394,7 +391,7 @@ function HubScorecard({ item }: { item: HubSummaryState }) {
               <p className="text-2xl font-bold text-green-600">{fmtPct(d.delivered_percentage)}</p>
             </div>
             <Link href={`/hourly/spv-afif/${item.hub.slug}`} className="inline-flex items-center gap-1.5 rounded-lg bg-[#0f1e3d] px-4 py-2.5 text-xs font-bold text-white transition hover:bg-[#1a2f5a]">
-              Open hub <ArrowRight className="w-3.5 h-3.5" />
+              Open detail <ArrowRight className="w-3.5 h-3.5" />
             </Link>
           </div>
         </>
