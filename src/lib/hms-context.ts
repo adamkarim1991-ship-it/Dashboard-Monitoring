@@ -1,4 +1,4 @@
-﻿// Token + hub resolution shared by the dashboard data routes.
+// Token + hub resolution shared by the dashboard data routes.
 //
 // Resolution order is designed so a dashboard keeps serving live HMS data even
 // when Postgres is unreachable: the identity data needed (user id, hub list)
@@ -379,3 +379,4 @@ export async function resolvePublicHmsToken(
   }
   return { token: picked.token, source: picked.source };
 }
+
