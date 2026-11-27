@@ -1,4 +1,4 @@
-﻿import { ScopedSingleflightCache } from "@/lib/cache-singleflight";
+import { ScopedSingleflightCache } from "@/lib/cache-singleflight";
 import { SUMMARY_CACHE_TTL_MS } from "@/lib/constants";
 import { auth } from "@/lib/auth";
 import { resolveActiveHub, resolveHmsToken, resolvePublicHmsToken } from "@/lib/hms-context";
@@ -575,6 +575,13 @@ async function fetchDedicatedMerged(holder: HmsTokenHolder, hubId: string) {
   return result;
 }
 
+function applyPublicCacheHeaders(response: NextResponse, isPublic: boolean) {
+  if (isPublic) {
+    response.headers.set('Cache-Control', 'public, s-maxage=300, stale-while-revalidate=60');
+  }
+  return response;
+}
+
 async function originalGET(req: NextRequest, startTimestamp: string) {
   const session = await auth();
   const requestedHubId = req.nextUrl.searchParams.get("hubId");
@@ -784,7 +791,7 @@ async function originalGET(req: NextRequest, startTimestamp: string) {
       }
     }
 
-    // â”€â”€ HMS OPC field map â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── HMS OPC field map ─────────────────────────────────────────────────
     // A single OPC row carries every number the Performance page prints,
     // including the sub-totals under each card, so every metric below reads the
     // total and its printed breakdown from that row instead of recomputing.
@@ -1070,7 +1077,7 @@ async function originalGET(req: NextRequest, startTimestamp: string) {
     };
 
 
-    const response = NextResponse.json({
+    const response = applyPublicCacheHeaders(NextResponse.json({
       success: true,
       meta: {
         cached: false,
@@ -1079,7 +1086,7 @@ async function originalGET(req: NextRequest, startTimestamp: string) {
         hub_name: HUB_NAME,
       },
       summary,
-    });
+    }), isPublic);
     setMetricLockCookie(response, volumeLockResult.cookie);
     setMetricLockCookie(response, deliveryLockResult.cookie);
     applyRefreshedToken(response, req, tokenHolder);
@@ -1192,6 +1199,7 @@ export async function GET(req: NextRequest) {
     );
   }
 }
+
 
 
 

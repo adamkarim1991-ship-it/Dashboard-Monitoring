@@ -1,4 +1,4 @@
-﻿import { auth } from "@/lib/auth";
+import { auth } from "@/lib/auth";
 import { resolveCleanFloor } from "@/lib/clean-floor";
 import { resolveActiveHub, resolveHmsToken, resolvePublicHmsToken } from "@/lib/hms-context";
 import { NextRequest, NextResponse } from "next/server";
@@ -320,6 +320,13 @@ async function getCleanFloor(
   return result.payload;
 }
 
+function applyPublicCacheHeaders(response: NextResponse, isPublic: boolean) {
+  if (isPublic) {
+    response.headers.set('Cache-Control', 'public, s-maxage=300, stale-while-revalidate=60');
+  }
+  return response;
+}
+
 export async function GET(req: NextRequest) {
   console.log("=== HIT /api/hms/subdistrict ===");
   const session = await auth();
@@ -417,13 +424,13 @@ export async function GET(req: NextRequest) {
   const cached = cache.get(HUB_ID);
   if (cached && now - cached.timestamp < CACHE_TTL_MS) {
     console.log("[subdistrict] Cache HIT", HUB_ID);
-    return NextResponse.json({
+    return applyPublicCacheHeaders(NextResponse.json({
       success: true,
       meta: { cached: true, hub_id: HUB_ID, hub_name: HUB_NAME },
       subdistricts: cached.data.subdistricts,
       cod: codData, urgent: urgentData,
       clean_floor: cleanFloorData,
-    });
+    }), isPublic);
   }
 
   console.log("[subdistrict] Cache MISS -> fetch shipments", HUB_ID);
@@ -520,7 +527,7 @@ export async function GET(req: NextRequest) {
 
     cache.set(HUB_ID, { data: { subdistricts }, timestamp: Date.now() });
 
-    return NextResponse.json({
+    return applyPublicCacheHeaders(NextResponse.json({
       success: true,
       meta: {
         cached: false,
@@ -545,7 +552,7 @@ export async function GET(req: NextRequest) {
       cod: codData,
       urgent: urgentData,
       clean_floor: cleanFloorData,
-    });
+    }), isPublic);
   } catch (e: any) {
     console.error("[subdistrict] Error:", e.message);
     return NextResponse.json(
@@ -554,5 +561,6 @@ export async function GET(req: NextRequest) {
     );
   }
 }
+
 
 
