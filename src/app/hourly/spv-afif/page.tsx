@@ -6,5 +6,5 @@ export default async function SpvAfifHourlyPage() {
   const session = await auth();
   if (!session?.user) redirect("/login?callbackUrl=/hourly/spv-afif");
 
-  return <SpvAfifHourlyView />;
+  return <SpvAfifHourlyView user={session.user as any} />;
 }

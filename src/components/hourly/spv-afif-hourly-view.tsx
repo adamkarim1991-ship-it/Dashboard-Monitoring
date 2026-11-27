@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
@@ -176,7 +176,7 @@ async function fetchHubSummary(hub: SpvAfifHubConfig): Promise<HubSummaryState> 
 
 /* ---------- Main Component ---------- */
 
-export default function SpvAfifHourlyView() {
+export default function SpvAfifHourlyView({ user: _user }: { user: SessionUser }) {
   const [states, setStates] = useState<HubSummaryState[]>(() =>
     SPV_AFIF_HUBS.map((hub) => ({ hub, loading: true }))
   );
@@ -266,11 +266,9 @@ export default function SpvAfifHourlyView() {
             <Button variant="outline" size="sm" onClick={() => loadAll()} disabled={refreshing} className="bg-white/10 border-white/20 text-white hover:bg-white/20 hover:text-white">
               <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${refreshing ? "animate-spin" : ""}`} /> Refresh
             </Button>
-            
             <Button variant="outline" size="sm" onClick={() => signOut({ callbackUrl: "/login" })} className="bg-white/10 border-white/20 text-white hover:bg-white/20 hover:text-white">
               <LogOut className="w-3.5 h-3.5 mr-1.5" /> Logout
             </Button>
-
           </div>
         </div>
       </header>
@@ -439,5 +437,3 @@ function FreshnessBadge({ fetchedAt }: { fetchedAt: string }) {
     </span>
   );
 }
-
-

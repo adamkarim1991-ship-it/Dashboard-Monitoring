@@ -206,13 +206,13 @@ export default function DashboardView({
   showSubdistrict = true,
   backHref,
 }: {
-  user?: SessionUser | null;
+  user: SessionUser;
   hubId?: string;
   hubName?: string;
   showSubdistrict?: boolean;
   backHref?: string;
 }) {
-  const activeHubId = hubId || user?.hmsHubIds?.[0] || "";
+  const activeHubId = hubId || user.hmsHubIds?.[0] || "";
   const activeHubRef = useRef(activeHubId);
   activeHubRef.current = activeHubId;
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
@@ -256,7 +256,7 @@ export default function DashboardView({
   const [now, setNow] = useState<Date | null>(null);
   const [mounted, setMounted] = useState(false);
   const [isTokenModalOpen, setIsTokenModalOpen] = useState(false);
-  const [leaderHmsTokenInput, setLeaderHmsTokenInput] = useState(user?.leaderHmsToken ?? "");
+  const [leaderHmsTokenInput, setLeaderHmsTokenInput] = useState(user.leaderHmsToken ?? "");
   const [tokenSaving, setTokenSaving] = useState(false);
   const [tokenMessage, setTokenMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [subdistrictSort, setSubdistrictSort] = useState<{
@@ -1306,8 +1306,3 @@ function CheckPill({ label, passed }: { label: string; passed: boolean }) {
     </span>
   );
 }
-
-
-
-
-
