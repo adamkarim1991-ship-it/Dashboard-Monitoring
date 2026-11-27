@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { signOut } from "next-auth/react";
@@ -205,14 +205,16 @@ export default function DashboardView({
   hubName,
   showSubdistrict = true,
   backHref,
+  publicMode = false,
 }: {
-  user: SessionUser;
+  user?: SessionUser | null;
   hubId?: string;
   hubName?: string;
   showSubdistrict?: boolean;
   backHref?: string;
+  publicMode?: boolean;
 }) {
-  const activeHubId = hubId || user.hmsHubIds?.[0] || "";
+  const activeHubId = hubId || user?.hmsHubIds?.[0] || "";
   const activeHubRef = useRef(activeHubId);
   activeHubRef.current = activeHubId;
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
@@ -256,7 +258,7 @@ export default function DashboardView({
   const [now, setNow] = useState<Date | null>(null);
   const [mounted, setMounted] = useState(false);
   const [isTokenModalOpen, setIsTokenModalOpen] = useState(false);
-  const [leaderHmsTokenInput, setLeaderHmsTokenInput] = useState(user.leaderHmsToken ?? "");
+  const [leaderHmsTokenInput, setLeaderHmsTokenInput] = useState(user?.leaderHmsToken ?? "");
   const [tokenSaving, setTokenSaving] = useState(false);
   const [tokenMessage, setTokenMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [subdistrictSort, setSubdistrictSort] = useState<{
@@ -274,7 +276,7 @@ export default function DashboardView({
     setLoading(true);
     try {
       const d = await fetchDashboardJson<any>(
-        `/api/hms/summary${activeHubId ? `?hubId=${activeHubId}` : ""}`
+        publicMode ? `/api/hms/summary?public=1&hubId=${activeHubId}` : `/api/hms/summary${activeHubId ? `?hubId=${activeHubId}` : ""}`
       );
       if (activeHubRef.current !== activeHubId) return;
       if (d?.success) {
@@ -347,7 +349,7 @@ export default function DashboardView({
     setSubLoading(true);
     try {
       const d = await fetchDashboardJson<any>(
-        `/api/hms/subdistrict${activeHubId ? `?hubId=${activeHubId}` : ""}`
+        publicMode ? `/api/hms/subdistrict?public=1&hubId=${activeHubId}` : `/api/hms/subdistrict${activeHubId ? `?hubId=${activeHubId}` : ""}`
       );
       if (activeHubRef.current !== activeHubId) return;
       if (d?.success) {
@@ -1059,8 +1061,8 @@ function SortableHeader({ label, sortKey, activeSort, onSort, align = "right" }:
       <button type="button" onClick={() => onSort(sortKey)} className={`inline-flex w-full items-center gap-1 hover:text-sky-300 ${align === "left" ? "justify-start" : "justify-end"}`} aria-label={`Sort by ${label}`}>
         <span>{label}</span>
         <span className="inline-flex text-[9px] leading-none" aria-hidden="true">
-          <span className={active && activeSort.direction === "asc" ? "text-sky-300" : "text-slate-500"}>▲</span>
-          <span className={active && activeSort.direction === "desc" ? "text-sky-300" : "text-slate-500"}>▼</span>
+          <span className={active && activeSort.direction === "asc" ? "text-sky-300" : "text-slate-500"}>â–²</span>
+          <span className={active && activeSort.direction === "desc" ? "text-sky-300" : "text-slate-500"}>â–¼</span>
         </span>
       </button>
     </th>
@@ -1306,3 +1308,6 @@ function CheckPill({ label, passed }: { label: string; passed: boolean }) {
     </span>
   );
 }
+
+
+
