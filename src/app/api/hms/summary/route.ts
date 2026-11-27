@@ -1130,18 +1130,26 @@ function applyRefreshedToken(
 export async function GET(req: NextRequest) {
   try {
     const session = await auth();
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
     const hubId = req.nextUrl.searchParams.get("hubId");
-    const activeHub = await resolveActiveHub(session.user.id, hubId, session.user as any);
-    if (!activeHub) return NextResponse.json({ error: "Hub not found" }, { status: 404 });
+    const isPublic = req.nextUrl.searchParams.get("public") === "1";
+
+    const activeHub = session?.user?.id
+      ? await resolveActiveHub(session.user.id, hubId, session.user as any)
+      : isPublic && isSpvAfifPublicHubId(hubId)
+        ? getSpvAfifHubByHmsHubId(hubId)
+        : null;
+    if (!activeHub) {
+      return NextResponse.json(
+        { error: session?.user?.id ? "Hub not found" : "Unauthorized" },
+        { status: session?.user?.id ? 404 : 401 }
+      );
+    }
 
     const HUB_ID = activeHub.hmsHubId;
     const today = wibDate();
     const hour = wibHour();
     const phase = hour < 8 ? "pre08" : (hour < 12 ? "08to12" : "post12");
-    const key = JSON.stringify([session.user.id, HUB_ID, today, phase]);
-
+    const key = JSON.stringify([session?.user?.id ?? `public:${HUB_ID}`, HUB_ID, today, phase]);
     const { data, source, leaderRes } = await globalCache.getOrFetch(
       key,
       SUMMARY_CACHE_TTL_MS,
