@@ -1,7 +1,7 @@
 ﻿import { ScopedSingleflightCache } from "@/lib/cache-singleflight";
 import { SUMMARY_CACHE_TTL_MS } from "@/lib/constants";
 import { auth } from "@/lib/auth";
-import { resolveActiveHub, resolveHmsToken } from "@/lib/hms-context";
+import { resolveActiveHub, resolveHmsToken, resolvePublicHmsToken } from "@/lib/hms-context";
 import { buildHmsHeaders } from '@/lib/hms-headers';
 import {
   metricPercent,
@@ -9,6 +9,7 @@ import {
   setMetricLockCookie,
 } from "@/lib/metric-lock";
 import { opcCurrDate, opcCycleList, opcDayRangeUnix, wibDate, wibUnixAt, wibHour } from "@/lib/operating-day";
+import { getSpvAfifHubByHmsHubId, isSpvAfifPublicHubId } from "@/lib/spv-afif-hubs";
 import { refreshStoredHmsToken, type RefreshedHmsToken } from "@/lib/hms-token-refresh";
 import { prisma } from "@/lib/prisma";
 import { readTokenChunkCount, writeTokenCookies } from "@/lib/hms-token-store";
@@ -575,22 +576,28 @@ async function fetchDedicatedMerged(holder: HmsTokenHolder, hubId: string) {
 }
 
 async function originalGET(req: NextRequest, startTimestamp: string) {
-  console.log("=== HIT /api/hms/summary ===");
   const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   const requestedHubId = req.nextUrl.searchParams.get("hubId");
-  const activeHub = await resolveActiveHub(session.user.id, requestedHubId, session.user);
+  const isPublic = req.nextUrl.searchParams.get("public") === "1";
+
+  const activeHub = session?.user?.id
+    ? await resolveActiveHub(session.user.id, requestedHubId, session.user)
+    : isPublic && isSpvAfifPublicHubId(requestedHubId)
+      ? getSpvAfifHubByHmsHubId(requestedHubId)
+      : null;
   if (!activeHub) {
-    return NextResponse.json({ error: "No hub access" }, { status: 403 });
+    return NextResponse.json(
+      { error: session?.user?.id ? "No hub access" : "Unauthorized" },
+      { status: session?.user?.id ? 403 : 401 }
+    );
   }
 
   const HUB_ID = activeHub.hmsHubId;
   const HUB_NAME = activeHub.name;
 
-  const resolvedToken = await resolveHmsToken(req, session.user.id, session.user);
+  const resolvedToken = session?.user?.id
+    ? await resolveHmsToken(req, session.user.id, session.user)
+    : await resolvePublicHmsToken(req, HUB_ID);
   if (!resolvedToken.token) {
     return NextResponse.json(
       {
@@ -606,7 +613,7 @@ async function originalGET(req: NextRequest, startTimestamp: string) {
   // push, database), so the first accepted one is what we use here.
   const tokenHolder: HmsTokenHolder = {
     token: resolvedToken.token,
-    userId: session.user.id,
+    userId: session?.user?.id ?? `public:${HUB_ID}`,
     hubId: HUB_ID,
     refreshed: false,
     triedHubToken: false,
@@ -1177,3 +1184,6 @@ export async function GET(req: NextRequest) {
     );
   }
 }
+
+
+
