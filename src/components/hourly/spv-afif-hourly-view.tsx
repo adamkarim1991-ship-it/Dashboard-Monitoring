@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
@@ -159,7 +159,7 @@ function unwrapSummary(payload: any): SummaryPayload {
 
 async function fetchHubSummary(hub: SpvAfifHubConfig): Promise<HubSummaryState> {
   try {
-    const response = await fetchDashboardJson<any>(`/api/hms/summary?hubId=${hub.hmsHubId}`);
+    const response = await fetchDashboardJson<any>(`/api/hms/summary?public=1&hubId=${hub.hmsHubId}`);
     if (!response?.success || !response?.summary) {
       const message = response?.message || response?.detail || response?.error || "HMS summary returned no data";
       throw new Error(String(message));
@@ -176,7 +176,7 @@ async function fetchHubSummary(hub: SpvAfifHubConfig): Promise<HubSummaryState> 
 
 /* ---------- Main Component ---------- */
 
-export default function SpvAfifHourlyView({ user: _user }: { user: SessionUser }) {
+export default function SpvAfifHourlyView({ publicMode = false }: { publicMode?: boolean }) {
   const [states, setStates] = useState<HubSummaryState[]>(() =>
     SPV_AFIF_HUBS.map((hub) => ({ hub, loading: true }))
   );
@@ -266,9 +266,11 @@ export default function SpvAfifHourlyView({ user: _user }: { user: SessionUser }
             <Button variant="outline" size="sm" onClick={() => loadAll()} disabled={refreshing} className="bg-white/10 border-white/20 text-white hover:bg-white/20 hover:text-white">
               <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${refreshing ? "animate-spin" : ""}`} /> Refresh
             </Button>
+            {!publicMode && (
             <Button variant="outline" size="sm" onClick={() => signOut({ callbackUrl: "/login" })} className="bg-white/10 border-white/20 text-white hover:bg-white/20 hover:text-white">
               <LogOut className="w-3.5 h-3.5 mr-1.5" /> Logout
             </Button>
+            )}
           </div>
         </div>
       </header>
@@ -437,3 +439,4 @@ function FreshnessBadge({ fetchedAt }: { fetchedAt: string }) {
     </span>
   );
 }
+

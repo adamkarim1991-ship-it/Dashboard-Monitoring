@@ -1,4 +1,4 @@
-// Token + hub resolution shared by the dashboard data routes.
+﻿// Token + hub resolution shared by the dashboard data routes.
 //
 // Resolution order is designed so a dashboard keeps serving live HMS data even
 // when Postgres is unreachable: the identity data needed (user id, hub list)
@@ -290,4 +290,92 @@ export async function resolveActiveHub(
   }
 
   return null;
+}
+
+
+export async function resolvePublicHmsToken(
+  req: NextRequest | null,
+  preferredHubId?: string | null
+): Promise<{ token: string | null; source: string }> {
+  const candidates: TokenCandidate[] = [];
+
+  const fromCookie = req ? readTokenFromCookies(req) : null;
+  if (fromCookie) {
+    candidates.push({
+      token: fromCookie.token,
+      source: "cookie",
+      expiresAt: fromCookie.expiresAt ?? 0,
+    });
+  }
+
+  if (process.env.HMS_TOKEN) {
+    candidates.push({
+      token: process.env.HMS_TOKEN,
+      source: "env",
+      expiresAt: 0,
+    });
+  }
+
+  if (preferredHubId) {
+    const preferredHub = await dbRead(
+      () => prisma.hub.findFirst({
+        where: { hmsHubId: preferredHubId, hmsToken: { not: null } },
+        select: { hmsToken: true, hmsTokenExpiresAt: true },
+      }),
+      null as { hmsToken: string | null; hmsTokenExpiresAt: Date | null } | null,
+      "public.hubToken.preferred"
+    );
+    if (preferredHub?.hmsToken) {
+      candidates.push({
+        token: preferredHub.hmsToken,
+        source: `hub:${preferredHubId}`,
+        expiresAt: preferredHub.hmsTokenExpiresAt?.getTime() ?? 0,
+      });
+    }
+  }
+
+  const userRows = await dbRead(
+    () => prisma.user.findMany({
+      where: { hmsToken: { not: null } },
+      select: { id: true, hmsToken: true, hmsTokenExpiresAt: true },
+    }),
+    [] as Array<{ id: string; hmsToken: string | null; hmsTokenExpiresAt: Date | null }>,
+    "public.userTokens"
+  );
+  for (const row of userRows) {
+    if (row.hmsToken) {
+      candidates.push({
+        token: row.hmsToken,
+        source: `user:${row.id}`,
+        expiresAt: row.hmsTokenExpiresAt?.getTime() ?? 0,
+      });
+    }
+  }
+
+  const hubRows = await dbRead(
+    () => prisma.hub.findMany({
+      where: { hmsToken: { not: null } },
+      select: { hmsHubId: true, hmsToken: true, hmsTokenExpiresAt: true },
+    }),
+    [] as Array<{ hmsHubId: string; hmsToken: string | null; hmsTokenExpiresAt: Date | null }>,
+    "public.hubTokens"
+  );
+  for (const row of hubRows) {
+    if (row.hmsToken) {
+      candidates.push({
+        token: row.hmsToken,
+        source: `hub:${row.hmsHubId}`,
+        expiresAt: row.hmsTokenExpiresAt?.getTime() ?? 0,
+      });
+    }
+  }
+
+  const picked = await pickAcceptedToken(`public:${preferredHubId ?? "all"}`, candidates);
+  if (!picked) {
+    const best = newest(candidates);
+    return best
+      ? { token: best.token, source: best.source }
+      : { token: null, source: "none" };
+  }
+  return { token: picked.token, source: picked.source };
 }

@@ -1,7 +1,8 @@
-import { auth } from "@/lib/auth";
+﻿import { auth } from "@/lib/auth";
 import { resolveCleanFloor } from "@/lib/clean-floor";
-import { resolveActiveHub, resolveHmsToken } from "@/lib/hms-context";
+import { resolveActiveHub, resolveHmsToken, resolvePublicHmsToken } from "@/lib/hms-context";
 import { NextRequest, NextResponse } from "next/server";
+import { getSpvAfifHubByHmsHubId, isSpvAfifPublicHubId } from "@/lib/spv-afif-hubs";
 
 const REFRESH_WINDOW_MS = 30 * 60 * 1000;
 
@@ -322,19 +323,26 @@ async function getCleanFloor(
 export async function GET(req: NextRequest) {
   console.log("=== HIT /api/hms/subdistrict ===");
   const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const requestedHubId = req.nextUrl.searchParams.get("hubId");
+  const isPublic = req.nextUrl.searchParams.get("public") === "1";
+
+  const activeHub = session?.user?.id
+    ? await resolveActiveHub(session.user.id, requestedHubId, session.user)
+    : isPublic && isSpvAfifPublicHubId(requestedHubId)
+      ? getSpvAfifHubByHmsHubId(requestedHubId)
+      : null;
+  if (!activeHub) {
+    return NextResponse.json(
+      { error: session?.user?.id ? "No hub access" : "Unauthorized" },
+      { status: session?.user?.id ? 403 : 401 }
+    );
   }
 
-  const { token: hmsToken } = await resolveHmsToken(req, session.user.id, session.user);
+  const { token: hmsToken } = session?.user?.id
+    ? await resolveHmsToken(req, session.user.id, session.user)
+    : await resolvePublicHmsToken(req, activeHub.hmsHubId);
   if (!hmsToken) {
     return NextResponse.json({ error: "No HMS token" }, { status: 403 });
-  }
-
-  const requestedHubId = req.nextUrl.searchParams.get("hubId");
-  const activeHub = await resolveActiveHub(session.user.id, requestedHubId, session.user);
-  if (!activeHub) {
-    return NextResponse.json({ error: "No hub access" }, { status: 403 });
   }
 
   const HUB_ID = activeHub.hmsHubId;
@@ -546,4 +554,5 @@ export async function GET(req: NextRequest) {
     );
   }
 }
+
 

@@ -21,3 +21,12 @@ export function getSpvAfifHub(slug?: string | null): SpvAfifHubConfig | null {
   if (!slug) return null;
   return SPV_AFIF_HUBS.find((hub) => hub.slug === slug) ?? null;
 }
+
+export function getSpvAfifHubByHmsHubId(hmsHubId?: string | null): SpvAfifHubConfig | null {
+  if (!hmsHubId) return null;
+  return SPV_AFIF_HUBS.find((hub) => hub.hmsHubId === hmsHubId) ?? null;
+}
+
+export function isSpvAfifPublicHubId(hmsHubId?: string | null): boolean {
+  return !!getSpvAfifHubByHmsHubId(hmsHubId);
+}
